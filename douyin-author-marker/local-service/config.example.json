@@ -1,0 +1,11 @@
+{
+  "_说明": "复制成 config.json 后按自己机器改。config.json 已被 .gitignore 排除，不会入库。不写也能跑——bridge.py 里有一份默认值，只是路径指不到东西。",
+  "port": 8790,
+  "bind": "127.0.0.1",
+  "download_db": "D:\\path\\to\\douyin-local-library\\browser\\data\\download_log.db",
+  "user_data": "D:\\path\\to\\douyin-local-library\\browser\\data\\user_data.json",
+  "recent_per_author": 12,
+  "build_aweme_index": true,
+  "auto_reload": true,
+  "verbose": true
+}

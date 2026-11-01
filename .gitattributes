@@ -1,0 +1,17 @@
+# .bat 必须是 CRLF，否则 cmd.exe 解析异常
+*.bat text eol=crlf
+*.vbs text eol=crlf
+
+# 源码用 LF
+*.py  text eol=lf
+*.js  text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md  text eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.zip binary
+*.db  binary

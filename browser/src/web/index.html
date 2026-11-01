@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f7f8fa">
+    <title>抖音下载浏览器</title>
+    <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261031c102">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261031c102">
+    <link rel="stylesheet" href="style.css?v=20261031c102">
+</head>
+<body>
+    <button class="sidebar-expand" id="sidebarExpand" title="展开侧边栏">»</button>
+    <!-- 顶栏 -->
+    <header class="topbar">
+        <div class="brand">
+            <span class="logo" aria-hidden="true">
+                <svg viewBox="0 0 32 32" fill="none">
+                    <path d="M20.6 5.2c.8 3.2 2.9 5.1 6 5.4v4.2a12.4 12.4 0 0 1-6-1.8v8.1a7.7 7.7 0 1 1-6.6-7.6v4.3a3.5 3.5 0 1 0 2.3 3.3V5.2h4.3Z" fill="currentColor"/>
+                </svg>
+            </span>
+            <span class="title">抖音下载浏览器</span>
+        </div>
+        <div class="search-box">
+            <select id="searchScope" title="搜索范围">
+                <option value="">全部</option>
+                <option value="nickname">昵称</option>
+                <option value="note">备注</option>
+                <option value="signature">简介</option>
+                <option value="works">作品</option>
+            </select>
+            <span class="search-field">
+                <input type="text" id="searchInput" placeholder="搜索昵称 / UID / SEC_UID / 抖音号 / 备注 / 简介 / 作品...">
+                <kbd class="search-kbd" aria-hidden="true">/</kbd>
+                <button id="searchClear" class="search-clear hidden" title="清空搜索">×</button>
+            </span>
+            <button id="searchBtn" title="搜索">🔍</button>
+        </div>
+        <div class="topbar-actions">
+            <span class="stat" id="statInfo">加载中...</span>
+            <button id="rescanBtn" class="ghost-btn" title="重新扫描目录">🔄 重新扫描</button>
+            <button id="annotateBtn" class="ghost-btn"
+                    title="标注台：在页面上框一下、画个箭头，写清哪儿想改，存下来我照着改"
+                    onclick="window.open('/annotate.html','_blank')">✏️ 标注</button>
+        </div>
+    </header>
+
+    <!-- 主体 -->
+    <div class="layout">
+        <!-- 侧边栏（可折叠：顶部 « 按钮收起，收起后浮出 » 按钮） -->
+        <aside class="sidebar" id="sidebar">
+            <button class="side-collapse" id="sidebarToggle" title="收起侧边栏">«</button>
+            <div class="side-section">
+                <div class="side-title">功能</div>
+                <ul class="side-list" id="featureList">
+                    <li class="side-item" data-action="batchProfile" title="后台批量获取昵称/抖音号/简介；点开始后可以关掉面板继续浏览，跑完自动提示">🧰 批量获取资料 <span class="batch-prog hidden" id="batchProgress"></span> <span class="count zero" id="batchBadge">0</span></li>
+                    <li class="side-item" data-action="fetchFavorites" title="抓取抖音最近收藏/喜欢的作者，按黑名单/已下载/未下载分类，可一键加入黑名单">💗 获取最近收藏</li>
+                    <li class="side-item" data-action="exportAuthors" title="把作者信息导出成表格：等级、标签、状态等都可以先选好范围，预览后再导出">📤 导出作者信息</li>
+                    <li class="side-item" data-action="newDownloads" title="只看最近下载下来的文件：按作者分组、组内按作品发布时间排，每张卡片下面标作者和发布时间">🆕 新下载 <span class="count zero" id="newDlBadge">0</span></li>
+                    <li class="side-item" data-action="files" title="改文件夹名（让文件夹跟着你标注的昵称走）、清理合并产生的重复文件">📁 文件管理</li>
+                    <li class="side-item" data-action="settings" title="设置：更新频率禁用状态、文件地址、缓存管理">⚙️ 设置</li>
+                </ul>
+            </div>
+            <div class="side-section">
+                <div class="side-title">分类</div>
+                <ul class="side-list" id="categoryList">
+                    <li class="side-item active" data-category="all">全部作者</li>
+                    <li class="side-item" data-category="starred">⭐ 星标</li>
+                    <li class="side-item" data-view="alts" title="按大小号分组管理账号">🔗 大小号 <span class="count" id="altEntryCount">0</span></li>
+                    <li class="side-item status-item" data-status="私密账号" title="只显示被标记为「私密账号」的账号">私密账号 <span class="count" id="statusCount_私密账号">0</span></li>
+                    <li class="side-item status-item" data-status="注销" title="只显示被标记为「注销」的账号">注销 <span class="count" id="statusCount_注销">0</span></li>
+                    <li class="side-item status-item" data-status="禁言/封号" title="只显示被标记为「禁言/封号」的账号">禁言/封号 <span class="count" id="statusCount_禁言/封号">0</span></li>
+                    <li class="side-item status-item" data-status="停更/偶更" title="只显示被标记为「停更/偶更」的账号">停更/偶更 <span class="count" id="statusCount_停更/偶更">0</span></li>
+                    <li class="side-item status-item" data-status="卖号" title="只显示被标记为「卖号」的账号">卖号 <span class="count" id="statusCount_卖号">0</span></li>
+                    <li class="side-item status-item" data-status="不好看了" title="只显示被标记为「不好看了」的账号">不好看了 <span class="count" id="statusCount_不好看了">0</span></li>
+                    <li class="side-item status-item" data-status="待修改" title="只显示被标记为「待修改」的账号">待修改 <span class="count" id="statusCount_待修改">0</span></li>
+                    <li class="side-item" data-view="blacklist" title="不下载的博主名单（可编辑、查看主页）">🚫 黑名单 <span class="count" id="blacklistCount">0</span></li>
+                </ul>
+            </div>
+            <div class="side-section">
+                <div class="side-title">等级</div>
+                <ul class="side-list" id="levelList">
+                    <li class="side-item level-item lv-hang" data-level="夯"
+                        title="更新频率：每天都要更新">夯 <span class="count" id="levelCount_夯">0</span></li>
+                    <li class="side-item level-item lv-top" data-level="顶级"
+                        title="更新频率：大约每 3 天">顶级 <span class="count" id="levelCount_顶级">0</span></li>
+                    <li class="side-item level-item lv-lv1" data-level="一般"
+                        title="更新频率：每周">一般 <span class="count" id="levelCount_一般">0</span></li>
+                    <li class="side-item level-item lv-lv2" data-level="拉"
+                        title="更新频率：基本不用管">拉 <span class="count" id="levelCount_拉">0</span></li>
+                </ul>
+            </div>
+            <div class="side-section">
+                <div class="side-title">更新频率</div>
+                <ul class="side-list" id="freqList">
+                    <li class="side-item freq-item" data-freq="day" title="每天都要更新">day <span class="count" id="freqCount_day">0</span></li>
+                    <li class="side-item freq-item" data-freq="3天" title="大约每 3 天更新">3天 <span class="count" id="freqCount_3天">0</span></li>
+                    <li class="side-item freq-item" data-freq="周" title="每周更新">周 <span class="count" id="freqCount_周">0</span></li>
+                    <li class="side-item freq-item" data-freq="月" title="基本不用管">月 <span class="count" id="freqCount_月">0</span></li>
+                </ul>
+            </div>
+            <div class="side-section">
+                <div class="side-title">标签 </div>
+                <div class="tag-cloud" id="tagCloud">
+                    <span class="tag-hint">暂无标签</span>
+                </div>
+            </div>
+            <div class="side-section">
+                <div class="side-title">下载年份</div>
+                <ul class="side-list" id="yearList"></ul>
+            </div>
+        </aside>
+
+        <!-- 内容区 -->
+        <main class="content">
+            <!-- 作者列表（样式布局保持原样） -->
+            <section id="authorView">
+                <div class="view-header">
+                    <h2 id="viewTitle">全部作者 <span class="view-sub" id="viewCount"></span></h2>
+                    <!-- 状态说明：只在点某个账号状态进来时出现，做成和搜索栏一样的单行输入 -->
+                    <input id="statusNoteInput" class="status-note-input hidden" type="text"
+                           placeholder="写点你对这个状态的理解…"
+                           oninput="onStatusNoteInput(this.value)"
+                           onblur="flushStatusNote()">
+                    <div class="view-sort">
+                        <div class="filter-wrap">
+                            <button id="filterBtn" class="btn" title="按 SEC_UID / 星标 / 已下载作品最后时间（3天~1年或自选）/ 等级 / 封面 / 状态 / 更新频率 筛选" onclick="toggleFilterPanel()">筛选<span class="filter-dot hidden" id="filterDot"></span></button>
+                            <div class="filter-panel hidden" id="filterPanel">
+                                <div class="filter-body">
+                                <div class="filter-group">
+                                    <div class="filter-label filter-label-q">不同属性之间<span class="hint-wrap"><button type="button" class="hint-q" aria-label="怎么组合" onmouseenter="showHintPop(this)" onmouseleave="hideHintPop(this)" onclick="toggleHintPop(event, this)">?</button><span class="hint-pop"><b>同一个属性里勾多个 = 并集</b>（命中任一即可，例如等级同时勾「夯」和「顶级」，两拨人都要）。<br><b>不同属性之间</b>默认 <b>交集</b>（必须同时满足，例如等级「夯」+ 状态「正常」= 既是夯又正常）；想「等级是夯 <b>或者</b> 状态是正常」，把这里切成 <b>并集</b>。</span></span></div>
+                                    <div class="filter-opts" data-key="match">
+                                        <label><input type="radio" name="fMatch" value="and" checked> 交集（都要满足）</label>
+                                        <label><input type="radio" name="fMatch" value="or"> 并集（命中任一）</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">SEC_UID</div>
+                                    <div class="filter-opts" data-key="sec_uid">
+                                        <label><input type="radio" name="fSec" value="" checked> 不限</label>
+                                        <label><input type="radio" name="fSec" value="has"> 有</label>
+                                        <label><input type="radio" name="fSec" value="none"> 没有</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">星标</div>
+                                    <div class="filter-opts" data-key="starred">
+                                        <label><input type="radio" name="fStar" value="" checked> 不限</label>
+                                        <label><input type="radio" name="fStar" value="yes"> 是</label>
+                                        <label><input type="radio" name="fStar" value="no"> 不是</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">已下载作品<br>最后时间</div>
+                                    <div class="filter-opts" data-key="latest">
+                                        <label><input type="radio" name="fLatest" value="" checked> 不限</label>
+                                        <label><input type="radio" name="fLatest" value="3d"> 3天内</label>
+                                        <label><input type="radio" name="fLatest" value="7d"> 1周内</label>
+                                        <label><input type="radio" name="fLatest" value="14d"> 2周内</label>
+                                        <label><input type="radio" name="fLatest" value="30d"> 1个月内</label>
+                                        <label><input type="radio" name="fLatest" value="60d"> 2个月内</label>
+                                        <label><input type="radio" name="fLatest" value="365d"> 1年内</label>
+                                        <label><input type="radio" name="fLatest" value="custom"> 自选</label>
+                                    </div>
+                                    <div class="filter-range hidden" id="filterRange">
+                                        <input type="date" id="latestFrom" title="起始日期（含当天）">
+                                        <span>至</span>
+                                        <input type="date" id="latestTo" title="结束日期（含当天）">
+                                        <button class="btn btn-mini" type="button" onclick="clearLatestRange()" title="清空日期">×</button>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">作者等级</div>
+                                    <div class="filter-opts" data-key="level">
+                                        <label><input type="checkbox" name="fLevel" value="夯"> 夯</label>
+                                        <label><input type="checkbox" name="fLevel" value="顶级"> 顶级</label>
+                                        <label><input type="checkbox" name="fLevel" value="一般"> 一般</label>
+                                        <label><input type="checkbox" name="fLevel" value="拉"> 拉</label>
+                                        <label><input type="checkbox" name="fLevel" value="__unset"> 未设置</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">封面</div>
+                                    <div class="filter-opts" data-key="cover">
+                                        <label><input type="radio" name="fCover" value="" checked> 不限</label>
+                                        <label><input type="radio" name="fCover" value="has"> 有封面</label>
+                                        <label><input type="radio" name="fCover" value="none"> 无封面</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">账号状态</div>
+                                    <div class="filter-opts filter-status" data-key="status">
+                                        <label><input type="checkbox" name="fStatus" value="__unset"> 未设置</label>
+                                        <label><input type="checkbox" name="fStatus" value="正常"> 正常</label>
+                                        <label><input type="checkbox" name="fStatus" value="私密账号"> 私密账号</label>
+                                        <label><input type="checkbox" name="fStatus" value="注销"> 注销</label>
+                                        <label><input type="checkbox" name="fStatus" value="禁言/封号"> 禁言/封号</label>
+                                        <label><input type="checkbox" name="fStatus" value="停更/偶更"> 停更/偶更</label>
+                                        <label><input type="checkbox" name="fStatus" value="卖号"> 卖号</label>
+                                        <label><input type="checkbox" name="fStatus" value="不好看了"> 不好看了</label>
+                                        <label><input type="checkbox" name="fStatus" value="待修改"> 待修改</label>
+                                    </div>
+                                </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">更新频率</div>
+                                    <div class="filter-opts" data-key="freq">
+                                        <label><input type="checkbox" name="fFreq" value="day"> 日更</label>
+                                        <label><input type="checkbox" name="fFreq" value="3天"> 3天</label>
+                                        <label><input type="checkbox" name="fFreq" value="周"> 周更</label>
+                                        <label><input type="checkbox" name="fFreq" value="月"> 月更</label>
+                                        <label><input type="checkbox" name="fFreq" value="__unset"> 未设置</label>
+                                    </div>
+                                </div>
+                                </div>
+                                <div class="filter-foot">
+                                    <button class="btn" onclick="resetFilterPanel()">重置</button>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn" id="refreshBtn" onclick="refreshAuthorList()" title="重新拉取当前列表（保留筛选 / 搜索 / 排序，回到顶部）">⟳ 刷新</button>
+                        <span>排序:</span>
+                        <select id="sortSelect" title="排序方式">
+                            <option value="nickname">昵称</option>
+                            <option value="uid">UID</option>
+                            <option value="work_count">作品数</option>
+                            <option value="video_count">视频数</option>
+                            <option value="image_count">图文数</option>
+                            <option value="latest">最新作品</option>
+                            <option value="earliest">最早作品</option>
+                            <option value="added">添加顺序</option>
+                            <option value="download">最后下载</option>
+                            <option value="level">作者等级</option>
+                        </select>
+                        <button class="btn" id="sortDirBtn" onclick="toggleSortDir()" title="切换正序 / 倒序">↑ 正序</button>
+                        <button class="btn hidden" id="exportBtn" onclick="exportSecUids()" title="把当前界面的作者（含所在大小号组）的 SEC_UID 导出成完整主页链接 txt">📤 导出 SECID</button>
+                    </div>
+                </div>
+                <div class="author-grid" id="authorGrid">
+                    <div class="loading">加载中...</div>
+                </div>
+                <div id="loadMore" class="load-more hidden">向下滚动加载更多</div>
+            </section>
+
+            <!-- 大小号：按组分类的「文件夹」视图（一组一个文件夹，组内账号都在里面） -->
+            <section id="altView" class="hidden">
+                <div class="view-header">
+                    <h2>大小号 <span class="view-sub" id="altViewSub"></span></h2>
+                    <div class="view-sort">
+                        <button class="btn" onclick="loadAltGroups()" title="重新读取分组（改过大小号后可用）">🔄 刷新</button>
+                    </div>
+                </div>
+                <div class="alt-folder-grid" id="altFolderGrid">
+                    <div class="loading">加载中...</div>
+                </div>
+            </section>
+
+            <!-- 黑名单：不下载的博主，按行列出来，右边给主页链接，可编辑查看 -->
+            <section id="blacklistView" class="hidden">
+                <div class="view-header">
+                    <h2>黑名单 <span class="view-sub" id="blacklistViewSub"></span></h2>
+                    <div class="view-sort">
+                        <button class="btn btn-primary" onclick="addBlacklistAccount()" title="手动添加一个不下载的博主">＋ 添加账号</button>
+                        <button class="btn" onclick="loadBlacklist()" title="重新读取黑名单">🔄 刷新</button>
+                    </div>
+                </div>
+                <div class="blacklist-wrap" id="blacklistBody">
+                    <div class="loading">加载中...</div>
+                </div>
+            </section>
+
+            <!-- 获取最近收藏：独立页面 -->
+            <section id="favoritesView" class="hidden">
+                <div class="view-header">
+                    <h2>获取最近收藏 <span class="view-sub" id="favoritesViewSub"></span></h2>
+                    <div class="view-sort">
+                        <button class="btn" onclick="clearFavoritesResult()" title="清空已获取的作者列表">🗑 清空</button>
+                        <button class="btn btn-primary" id="favRunBtn" onclick="runFetchFavorites()">开始获取</button>
+                    </div>
+                </div>
+                <div class="page-opts">
+                    <div class="fav-opt-row">
+                        <span class="fav-label">来源</span>
+                        <div class="seg-group" id="favSourceSeg"></div>
+                        <span class="fav-label">条数</span>
+                        <div class="seg-group" id="favCountSeg"></div>
+                    </div>
+                    <div class="fav-tip">按最近收藏的时间顺序抓取，提取这些作品的作者，自动分成「黑名单 / 已下载过 / 未下载过」三类。</div>
+                </div>
+                <div class="fav-result" id="favResult">
+                    <div class="tag-hint">点「开始获取」后，这里会列出抓到的作者。</div>
+                </div>
+            </section>
+
+            <!-- 导出作者信息：左选作者 / 右调 DouK 参数 + 导出格式 -->
+            <section id="exportView" class="hidden">
+                <div class="view-header">
+                    <h2>导出作者信息 <span class="view-sub" id="exportViewSub"></span></h2>
+                </div>
+
+                <!-- ===== 待下载区：由浏览器插件推送过来 ===== -->
+                <div class="export-panel queue-panel" id="queuePanel">
+                    <h3>📥 待下载区 <span class="export-panel-sub" id="queueSub">读取中…</span>
+                        <button class="btn btn-mini" onclick="queueTogglePreview()" id="queuePreviewBtn"
+                                title="展开看详情（抖音号 / 粉丝 / 备注）">预览</button>
+                        <button class="btn btn-mini" onclick="queueClear()" id="queueClearBtn"
+                                title="清空待下载区（清空后可以撤销）">清空</button>
+                        <button class="btn btn-mini hidden" onclick="queueUndo()" id="queueUndoBtn"
+                                title="把刚清空的内容放回来">取消清空</button>
+                        <button class="btn btn-mini" onclick="queueRefreshClick()" id="queueRefreshBtn"
+                                title="重新读取待下载区（插件刚推过来时可以点一下）">刷新</button>
+                    </h3>
+                    <div class="queue-body" id="queueBody"></div>
+                </div>
+
+                <div class="export-layout">
+
+                    <!-- ===== 左：选作者（同属性并集、跨属性交集） ===== -->
+                    <div class="export-col">
+                        <div class="export-panel">
+                            <h3>① 选作者 <span class="export-panel-sub" id="exportCountSub"></span>
+                                <button type="button" class="btn btn-mini export-reset-btn" onclick="resetExportFilters()"
+                                        title="把下面所有筛选条件恢复默认，并清掉上次的预览">↺ 重置</button>
+                            </h3>
+                            <div class="export-opt-row">
+                                <span class="fav-label">属性之间<span class="hint-wrap"><button type="button" class="hint-q" aria-label="怎么组合" onmouseenter="showHintPop(this)" onmouseleave="hideHintPop(this)" onclick="toggleHintPop(event, this)">?</button><span class="hint-pop"><b>同一个属性里勾多个 = 并集</b>（命中任一即可，例如等级同时勾「夯」和「顶级」，两拨人都要）。<br><b>不同属性之间</b>默认 <b>交集</b>（必须同时满足，例如等级「夯」+ 状态「正常」= 既是夯又正常）；想「等级是夯 <b>或者</b> 状态是正常」，把这里切成 <b>并集</b>。</span></span></span>
+                                <div class="export-radios" id="exportMatchRadios">
+                                    <label><input type="radio" name="expMatch" value="and" checked> 交集（都要满足）</label>
+                                    <label><input type="radio" name="expMatch" value="or"> 并集（命中任一）</label>
+                                </div>
+                            </div>
+                            <div class="export-opt-row">
+                                <span class="fav-label">作者等级</span>
+                                <div class="export-radios" id="exportLevelRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
+                                <span class="fav-label">标签</span>
+                                <div class="export-radios" id="exportTagRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
+                                <span class="fav-label">账号状态</span>
+                                <div class="export-radios" id="exportStatusRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
+                                <span class="fav-label">更新频率</span>
+                                <div class="export-radios" id="exportFreqRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
+                                <span class="fav-label">已下载作品<br>最后时间</span>
+                                <div class="export-radios" id="exportLatestRadios"></div>
+                                <div class="export-range hidden" id="exportLatestRange">
+                                    <input type="date" id="exportLatestFrom" title="起始日期（含当天）">
+                                    <span>至</span>
+                                    <input type="date" id="exportLatestTo" title="结束日期（含当天，可空）">
+                                </div>
+                            </div>
+                            <div class="export-foot-row">
+                                <button class="btn" onclick="clearExportAll()" title="清空上面的筛选条件、已选名单和下面的预览（切到别的界面不会自动清）">清空</button>
+                                <button class="btn" onclick="previewExport()">预览选中的作者</button>
+                            </div>
+                            <div class="export-preview hidden" id="exportPreview"></div>
+                        </div>
+                    </div>
+
+                    <!-- ===== 右：DouK 参数 + 导出 ===== -->
+                    <div class="export-col">
+                        <div class="export-panel">
+                            <h3>② DouK 下载参数 <span class="export-panel-sub" id="doukCfgSub">读取中…</span></h3>
+                            <div class="douk-fields" id="doukFields">读取中…</div>
+                            <div class="export-foot-row">
+                                <span class="douk-note">改完点保存；DouK 正在跑的话要重启才生效</span>
+                                <button class="btn hidden" id="doukCancelBtn" onclick="cancelDoukConfig()" title="放弃这次修改，全部恢复成现在 DouK 里的值">取消</button>
+                                <button class="btn btn-primary" id="doukSaveBtn" onclick="saveDoukConfig()" disabled
+                                        title="没有改动时不可点">保存到 DouK</button>
+                            </div>
+                        </div>
+
+                        <div class="export-panel">
+                            <h3>③ 导出</h3>
+                            <div class="export-opt-row">
+                                <span class="fav-label">格式</span>
+                                <div class="export-radios" id="exportFormatRadios">
+                                    <label><input type="radio" name="expFormat" value="csv" onchange="onExportFormatChange()"> CSV 表格</label>
+                                    <label><input type="radio" name="expFormat" value="txt" onchange="onExportFormatChange()"> TXT 链接（一行一个）</label>
+                                    <label><input type="radio" name="expFormat" value="json" checked onchange="onExportFormatChange()"> JSON（DouK 直接能用）</label>
+                                </div>
+                            </div>
+                            <div class="export-opt-row hidden" id="exportJsonModeRow">
+                                <span class="fav-label">JSON 内容</span>
+                                <div class="export-radios" id="exportJsonModeRadios">
+                                    <label><input type="radio" name="expJsonMode" value="settings" checked> 完整配置（连 cookie，覆盖 Volume/settings.json 就能跑）</label>
+                                    <label><input type="radio" name="expJsonMode" value="accounts"> 仅账号列表（accounts_urls）</label>
+                                </div>
+                            </div>
+                            <div class="export-opt-row hidden" id="exportEarliestRow">
+                                <span class="fav-label">最新日期<br>往前提</span>
+                                <div class="export-radios">
+                                    <span class="days-input" title="每位作者自己的已下载最新作品日期，往前推多少天">
+                                        <input type="number" id="exportEarliestDays" class="days-input-num" min="1" max="3650" value="7"
+                                               placeholder="留空">
+                                        <span class="days-input-unit">天</span>
+                                    </span>
+                                    <button type="button" class="days-clear" onclick="clearEarliestDays()"
+                                            title="清空 = 不设置，DouK 全部抓取">清空</button>
+                                </div>
+                            </div>
+                            <div class="export-tip hidden" id="exportEarliestTip">
+                                这一项写进 JSON 的 <code>earliest</code>：每位作者的<b>已下载最新作品日期往前推 N 天</b>，
+                                推几天就填几天（填 3 = 3 天前、填 7 = 一周前）。<b>留空 = 不设置</b>，DouK 会把作品整个抓一遍。<br>
+                                往前推是为了不漏边界 —— DouK 翻到早于这个日期的页就停（<code>early_stop</code>），
+                                所以设了它之后「每个号最多翻几页」建议留 0，别让页数先把它截断。
+                            </div>
+                            <div class="export-foot-row">
+                                <span class="douk-note" id="exportDoukNote">不生成文件 · 写完直接开 DouK 就能下</span>
+                                <button class="btn btn-primary" onclick="confirmExport()">导出</button>
+                                <button class="btn btn-douk" onclick="confirmExportToDouk()"
+                                        title="不再生成文件：把选中的作者直接写进 DouK 的 Volume\settings.json（整份替换账号队列，旧文件先备份到 backup\）">⚡ 一键写入 DouK</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 设置：独立页面（更新频率禁用状态 + 文件地址） -->
+            <section id="settingsView" class="hidden">
+                <div class="view-header">
+                    <h2>设置 <span class="view-sub" id="settingsViewSub"></span></h2>
+                </div>
+                <div class="page-opts settings-body" id="settingsBody">读取中…</div>
+            </section>
+
+            <!-- 文件管理：① 文件夹改名（跟着标注昵称走） ② 重复文件清理 -->
+            <!-- 新下载：只看最近下载下来的那批文件（按作者分组，卡片下标作者 + 发布时间） -->
+            <section id="newView" class="hidden">
+                <div class="view-header">
+                    <h2>新下载 <span class="view-sub" id="newViewSub"></span></h2>
+                    <div class="view-sort nd-range" id="ndRangeBar">
+                        <button class="btn on" data-range="today" onclick="ndPickRange('today')" title="只算今天（0 点以后）落盘的文件">今天</button>
+                        <button class="btn" data-range="3d" onclick="ndPickRange('3d')" title="最近 72 小时">近 3 天</button>
+                        <button class="btn" data-range="7d" onclick="ndPickRange('7d')" title="最近 7 天">近 7 天</button>
+                        <button class="btn" data-range="30d" onclick="ndPickRange('30d')" title="最近 30 天">近 30 天</button>
+                        <button class="btn" onclick="refreshNewDownloads(true)" title="重新读一遍下载记录库">🔄 刷新</button>
+                    </div>
+                </div>
+                <div class="nd-body">
+                    <div class="nd-list" id="newBody">读取中…</div>
+                    <aside class="nd-player" id="ndPlayer">
+                        <div class="ndp-stage" id="ndStage">
+                            <div class="ndp-empty">点左边的作品开始看<br>
+                                <span>也可以用 ‹ › 或键盘 ← → 连着翻</span></div>
+                        </div>
+                        <!-- 多图作品的缩略图带：把这个作品的每张图并排列出来，点哪张看哪张。
+                             只有图文作品且张数 > 1 时才显示（ndpStripRender 控制） -->
+                        <div class="ndp-strip hidden" id="ndpStrip"></div>
+                        <div class="ndp-panel">
+                            <!-- 一行搞定：作者 + 等级/频率/标签 + 第几个 + ›（整行可点进作者页）。
+                                 不放头像、不放左右翻页按钮 —— 翻页用键盘 ← → 或直接点左边卡片 -->
+                            <div class="ndp-who" id="ndpAuthor" onclick="ndPlayGoAuthor()" title="点击进入这位作者的详情页">
+                                <span class="ndp-name" id="ndpName">—</span>
+                                <span class="ndp-meta" id="ndpMeta"></span>
+                                <span class="ndp-pos" id="ndpPos" title="按键盘 ← → 也能翻">—</span>
+                                <span class="ndp-arrow">›</span>
+                            </div>
+                            <div class="ndp-line2">
+                                <span class="ndp-date" id="ndpDate"></span>
+                                <span class="ndp-desc" id="ndpDesc">还没选作品</span>
+                                <button class="ndp-raw" id="ndpRaw" onclick="ndPlayOpenRaw()" title="在新标签页打开原文件" disabled>↗</button>
+                            </div>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+
+            <section id="filesView" class="hidden">
+                <div class="view-header">
+                    <h2>文件管理 <span class="view-sub" id="filesViewSub"></span></h2>
+                    <div class="view-sort">
+                        <button class="btn" onclick="refreshFilesView()" title="重新读一遍磁盘状态">🔄 刷新</button>
+                    </div>
+                </div>
+                <div class="page-opts files-body" id="filesBody">读取中…</div>
+            </section>
+
+            <!-- 批量获取资料：独立页面（原来是个浮层，现在跟「大小号」一样占满内容区） -->
+            <section id="batchView" class="hidden">
+                <div class="view-header">
+                    <h2>批量获取资料 <span class="view-sub" id="batchViewSub"></span></h2>
+                    <div class="view-sort">
+                        <button class="btn btn-primary" id="batchRunBtn" onclick="runBatchProfiles()">开始获取</button>
+                        <button class="btn hidden" id="batchStopBtn" onclick="stopBatchProfiles()">停止</button>
+                        <button class="btn" onclick="refreshBatchView()" title="重新读取后台任务状态">🔄 刷新</button>
+                        <button class="btn" id="countBtn" onclick="startCountRefresh()"
+                                title="慢速读取抖音上的当前作品数（约 1.6 秒一个，可随时停）">📈 数作品</button>
+                        <button class="btn hidden" id="countStopBtn" onclick="stopCountRefresh()">停止数作品</button>
+                        <button class="btn" id="latestBtn" onclick="startLatestRefresh()"
+                                title="联网查「抖音最新作品发布时间」（登录态签名接口，约 3.5 秒一个、每 25 个停 30 秒，单轮最多 100 个，7 天内查过的跳过）">🕗 查发布时间</button>
+                        <button class="btn hidden" id="latestStopBtn" onclick="stopLatestRefresh()">停止查时间</button>
+                    </div>
+                </div>
+
+                <div class="batch-tipbar" id="batchRunTip">
+                    空字段（简介、本地没填的抖音号）直接补上；昵称或抖音号跟本地不一致的先列在下面等你决定。
+                    点「开始获取」后任务在后台跑，你可以切到别的页面继续浏览，跑完会提示。
+                </div>
+
+                <!-- 批量设置：获取哪些字段 / 跳过哪些状态 / 按什么顺序（2026-10-28） -->
+                <div class="batch-opts" id="batchOpts">
+                    <div class="batch-opt-row">
+                        <span class="batch-opt-label">获取内容</span>
+                        <label class="opt-chip"><input type="checkbox" data-field="nickname" checked onchange="onBatchOptionChange()"><span>昵称</span></label>
+                        <label class="opt-chip"><input type="checkbox" data-field="douyin_id" checked onchange="onBatchOptionChange()"><span>抖音号</span></label>
+                        <label class="opt-chip"><input type="checkbox" data-field="signature" checked onchange="onBatchOptionChange()"><span>简介</span></label>
+                        <span class="batch-opt-hint">只写勾选的字段；判断「是不是同一个人」照样会做</span>
+                    </div>
+                    <div class="batch-opt-row">
+                        <span class="batch-opt-label">跳过</span>
+                        <label class="opt-chip"><input type="checkbox" data-skip="禁言/封号" checked onchange="onBatchOptionChange()"><span>禁言/封号</span></label>
+                        <label class="opt-chip"><input type="checkbox" data-skip="注销" checked onchange="onBatchOptionChange()"><span>注销</span></label>
+                        <label class="opt-chip"><input type="checkbox" data-skip="私密账号" onchange="onBatchOptionChange()"><span>私密账号</span></label>
+                        <span class="batch-opt-hint">这些账号主页打不开或 404，查了白查，还会连续失败触发限流保护</span>
+                    </div>
+                    <div class="batch-opt-row">
+                        <span class="batch-opt-label">顺序</span>
+                        <select id="batchOrder" class="batch-opt-select" onchange="onBatchOptionChange()">
+                            <option value="added">添加时间（新 → 旧）</option>
+                            <option value="added_asc">添加时间（旧 → 新）</option>
+                            <option value="work_count">作品数（多 → 少）</option>
+                            <option value="latest">最近更新（新 → 旧）</option>
+                            <option value="earliest">最早发布（旧 → 新）</option>
+                            <option value="nickname">昵称（A → Z）</option>
+                        </select>
+                        <span class="batch-opt-count" id="batchOptCount">…</span>
+                    </div>
+                </div>
+
+                <div class="batch-summary hidden" id="batchSummary"></div>
+
+                <div class="batch-pane" id="paneConflict">
+                    <div class="batch-section-head">
+                        <span>待确认</span>
+                        <span class="batch-count" id="batchConflictCount">0 个</span>
+                        <span class="batch-hint">不确定的可以先点「↗ 进主页」核对 SEC_UID</span>
+                    </div>
+                    <div class="bc-list" id="batchConflictBody"></div>
+                </div>
+
+                <div class="batch-pane hidden" id="paneFilled">
+                    <div class="batch-section-head">
+                        <span>已自动补全</span>
+                        <span class="batch-count" id="batchFilledCount">0 个</span>
+                    </div>
+                    <div class="bc-list" id="batchFilledBox"></div>
+                </div>
+
+                <div class="batch-pane hidden" id="paneFailed">
+                    <div class="batch-section-head">
+                        <span>没取到资料</span>
+                        <span class="batch-count" id="batchFailedCount">0 个</span>
+                    </div>
+                    <div class="bc-list" id="batchFailedBox"></div>
+                </div>
+
+                <div class="batch-pane hidden" id="paneDone">
+                    <div class="batch-section-head">
+                        <span>已处理</span>
+                        <span class="batch-count" id="batchDoneCount">0 个</span>
+                        <a class="batch-clear" onclick="clearBatchDone()" title="清空这份记录（已经写进去的资料不受影响）">清空记录</a>
+                    </div>
+                    <div class="bc-list bc-done-list" id="batchDoneBody"></div>
+                </div>
+
+            </section>
+
+            <!-- 作者详情页：左侧一整块可滚动容器（含返回栏/作者信息/信息卡/视频列表）+ 右侧固定媒体区 -->
+            <section id="detailView" class="hidden">
+                <div class="detail-body">
+                    <!-- 左：固定返回栏 + 独立滚动容器，滚轮上下滚 -->
+                    <aside class="work-wall">
+                        <!-- ① 返回栏：固定在容器顶部，不参与滚动 -->
+                        <div class="detail-bar">
+                            <button class="btn back-btn" onclick="closeDetail()">← 返回</button>
+                            <button class="btn back-list-btn" onclick="backToList()" title="直接回到作者列表，跳过中间进过的页面">返回列表</button>
+                            <span class="detail-bar-title" id="detailBarTitle"></span>
+                            <div class="sel-actions hidden" id="selActions">
+                                <span class="sel-count" id="selCount">已选 0 个</span>
+                                <button class="btn sel-del" onclick="deleteSelectedWorks()" title="把选中的作品移入回收站（文件搬到 browser\recycle-bin，随时可以恢复）">移入回收站</button>
+                                <button class="btn" onclick="exitWorkSelect()">取消</button>
+                            </div>
+                            <button class="btn sel-btn" id="workSelBtn" onclick="enterWorkSelect()"
+                                    title="点一下进入多选，勾选不想要的作品后可以移入回收站">🗑</button>
+                            <button class="btn bar-top-btn" onclick="scrollToTop()" title="回到顶部">↑ 顶部</button>
+                        </div>
+                        <div class="wall-scroll" id="wallScroll">
+                            <!-- ② 作者信息（卡片式，5 列，全部展开） -->
+                            <div class="detail-head" id="detailTop"></div>
+                            <!-- ③ 视频列表标题 + 筛选 -->
+                            <div class="wall-head">
+                                <div class="wall-filters" id="detailFilter"></div>
+                            </div>
+                            <!-- ④ 视频卡片网格（16:9） -->
+                            <div class="wall-grid" id="workRail"></div>
+                        </div>
+                    </aside>
+                    <!-- 右：固定不变的预览 / 观看区 -->
+                    <div class="player-stage" id="playerStage"></div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- 返回顶部 -->
+    <button class="back-top hidden" id="backTopBtn" title="返回顶部" onclick="scrollToTop()">↑</button>
+
+    <!-- 关联大小号：账号搜索选择器（与顶部搜索同一套条件：昵称/抖音号/UID/sec_uid） -->
+    <div class="alt-picker hidden" id="altPicker">
+        <div class="alt-picker-mask" onclick="closeAltPicker()"></div>
+        <div class="alt-picker-panel">
+            <div class="alt-picker-head">
+                <strong>关联大小号</strong>
+                <span class="alt-picker-sub" id="altPickerGroup"></span>
+                <a class="alt-picker-close" title="关闭" onclick="closeAltPicker()">×</a>
+            </div>
+            <div class="alt-picker-tools">
+                <button class="btn btn-mini" onclick="detachCurrentAlt()" title="解除当前账号和它所在组里其他所有账号的关联">解除本号全部关联</button>
+                <button class="btn btn-mini" onclick="createAuthorPrompt()" title="粘贴一个新作者的主页链接（SEC-UID），自动查 UID、建档并和当前账号关联">➕ 新建作者</button>
+            </div>
+            <input class="alt-picker-input" id="altPickerInput"
+                   placeholder="搜备注 / 昵称 / 抖音号 / UID / sec_uid / 简介，也可以直接粘贴 UID 回车"
+                   oninput="altPickerSearch(this.value)"
+                   onkeydown="if(event.key==='Enter')altPickerSearch(this.value,true)">
+            <div class="alt-picker-result" id="altPickerResult"></div>
+            <div class="alt-picker-foot" id="altPickerFoot">同组账号会全部互相关联</div>
+        </div>
+    </div>
+
+    <!-- 详情页获取资料：已有值时的替换选择 -->
+    <div class="cache-panel hidden" id="profileChoice">
+        <div class="alt-picker-mask" onclick="closeProfileChoice()"></div>
+        <div class="cache-box pc-box">
+            <div class="alt-picker-head">
+                <strong>抖音返回的资料</strong>
+                <span class="alt-picker-sub" id="profileChoiceSub"></span>
+                <a class="alt-picker-close" title="关闭" onclick="closeProfileChoice()">×</a>
+            </div>
+            <div class="pc-body" id="profileChoiceBody"></div>
+        </div>
+    </div>
+
+    <!-- 黑名单原因标签编辑：勾选/新建标签 -->
+    <div class="cache-panel hidden" id="blTagPanel">
+        <div class="alt-picker-mask" onclick="closeBlTagPanel()"></div>
+        <div class="cache-box pc-box bltag-box">
+            <div class="alt-picker-head">
+                <strong>编辑黑名单标签</strong>
+                <span class="alt-picker-sub">给这个博主打上不下载的原因标签，可多选</span>
+                <a class="alt-picker-close" title="关闭" onclick="closeBlTagPanel()">×</a>
+            </div>
+            <div class="pc-body">
+                <div class="bltag-preview" id="blTagPreview"></div>
+                <input class="tag-picker-input" id="blTagInput" autocomplete="off"
+                       placeholder="选已有标签，或输入新名字回车创建"
+                       oninput="blTagInput(this.value)"
+                       onkeydown="if(event.key==='Enter'){event.preventDefault();blToggleTag(this.value.trim());}">
+                <div class="tag-picker-list" id="blTagPickerList"></div>
+            </div>
+            <div class="bltag-foot">
+                <button class="btn btn-ghost" onclick="closeBlTagPanel()">取消</button>
+                <button class="btn btn-primary" onclick="saveBlTags()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 提示条 -->
+    <div class="toast hidden" id="toast"></div>
+    <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
+    <div class="fatal-bar hidden" id="fatalBar"></div>
+
+    <script src="app.js?v=20261031c102"></script>
+</body>
+</html>

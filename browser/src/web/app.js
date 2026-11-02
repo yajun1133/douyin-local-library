@@ -2368,11 +2368,14 @@ function setFreq(uid, value) {
     }
     const cur = ((state.userData && state.userData.accounts[uid] && state.userData.accounts[uid].update_freq) || '').trim();
     const final = (value === cur) ? '' : value;   // 再点一次 = 取消
-    const targets = groupUidsWithSelf(uid);
-    targets.forEach((u) => setAccountFieldRaw(u, 'update_freq', final));
+    // 更新频率**只改当前账号**，不跟着大小号走（2026-11-02 用户要求取消这个关联）：
+    // 同一组小号可能发得勤、大号几个月不动，频率本来就该各自记；
+    // 联动之后改一个人的频率会把整组一起改掉，反而不好用。
+    // 等级仍然整组同步（setLevel 里 targets），那是「重要程度」不是「更新节奏」。
+    setAccountFieldRaw(uid, 'update_freq', final);
     saveUserData();
     refreshTop();
-    showToast(final ? `更新频率已设为「${final}」${targets.length > 1 ? '（已同步整组 ' + targets.length + ' 人）' : ''}` : '已清除更新频率');
+    showToast(final ? `更新频率已设为「${final}」` : '已清除更新频率');
 }
 
 // 等级列（侧边栏「等级」栏：夯 / 顶级 / 一般 / 拉）

@@ -42,6 +42,7 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── fill_secuid_from_export.py  # **扫完补 sec_uid**：读 export/*.csv 按 UID 匹配，纯本地不联网
 │   ├── secuid_check.py    # sec_uid 体检/纠错（联网，需 3.12 + curl_cffi，--by-secuid 批量反查）
 │   ├── clean_cache.py     # 清缩略图/转码缓存（--wipe 全清，--status 只看）
+│   ├── clean_index.py     # 把 data.json 里混进去的标注字段剥掉（--dry 只看；写前自动备份）
 │   ├── restore_backup.py  # 从备份恢复标注（--list / --latest / --file）
 │   ├── blacklist.py       # 黑名单（不下载名单）公共模块
 │   ├── block_author.py     # 把作者加入黑名单（--delete 连本地文件夹一起删）
@@ -49,7 +50,7 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   └── legacy/          # 早期一次性脚本（补 SEC_UID、迁大小号、导报表…），留档备用
 ├── data/              # 标注（不可再生）+ 索引（可重生成）
 │   ├── user_data.json      # 账号标注：标签/星标/大小号/状态/等级/别名/历史/封面
-│   ├── data.json           # 扫描产物（≈75MB，作者 + 作品索引，可随时重生成）
+│   ├── data.json           # 扫描产物（≈72MB，作者 + 作品索引，可随时重生成）
 │   ├── count_cache.json    # 「抖音当前作品数」缓存
 │   ├── secuid_check.json   # sec_uid 联网核查结果缓存（重跑可跳过已确认的）
 │   ├── uid_secuid_对照表.csv
@@ -77,10 +78,10 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 
 | 指标 | 口径 |
 |---|---|
-| 作者数 | `/api/meta.total_authors`（2026-10-31：**1716**）。比磁盘文件夹多出来的几个是「合成账号」——只在 `user_data.json` 里有、本地没作品 |
-| 作品总数 | `data.json` 里各账号 `works` 之和（2026-10-30 合并重名文件夹后重扫过，重复作品已移出索引） |
-| 星标 | `/api/meta.starred`（2026-10-31：**105**） |
-| sec_uid 覆盖 | `data.json` 里只有从 `Data/*.xlsx` 来的那部分，其余靠 `user_data.json` 叠加补（补齐顺序见第六章）。剩几个注销/封禁/私密的号补不到，属正常 |
+| 作者数 | `/api/meta.total_authors`（2026-11-01：**1752**）。比 `data.json` 的 1706 个账号多出来的那些是「合成账号」——只在 `user_data.json` 里有、本地没作品（当前 52 个，多是扩展「待下载 → 新建主页」建出来的）；黑名单里的账号会从列表和统计里剔掉（当前 18 条） |
+| 作品总数 | `data.json` 里各账号 `works` 之和（2026-11-01：**240,687** 个作品，其中视频 217,875 / 图文 22,934）。重复作品已在合并重名文件夹时移出索引 |
+| 星标 | `/api/meta.starred`（2026-11-01：**105**） |
+| sec_uid 覆盖 | 扫描时只有从 `Data/*.xlsx`（当前 663 份表）来的那部分，其余靠 `user_data.json` 叠加补（补齐顺序见第六章）。**当前 1753/1758**，剩 5 个注销/封禁/私密的号补不到，属正常 |
 | thumb_cache | ffmpeg 抽帧 400px 宽，上限 3072 MB，超了按 LRU 淘汰，可整个删 |
 | trans_cache | HEVC→H.264 转码产物，上限 300 MB，可随时整个删 |
 | cover_cache | 用户手动设的封面，**永不清理** |
@@ -107,7 +108,12 @@ user_data.json ─────────────────────�
         └──────────────────────── /api/save（全量覆盖写）◀────────────────────────┘
 ```
 
-> `CACHE` = `data.json` 解析进内存的结果 + `user_data.json` 标注叠加上去。两者任一变化都会触发重建/重叠加，磁盘上的 `data.json` 永远不会被标注污染。
+> `CACHE` = `data.json` 解析进内存的结果 + `user_data.json` 标注叠加上去。两者任一变化都会触发重建/重叠加。
+>
+> **`data.json` 曾经会被标注污染，2026-11-01 已修（别再把老结论当现状）：**
+> 根因是 `CACHE["accounts"]` 和 `CACHE["data"]["accounts"]` 是**同一批 dict**，`load_user_data()` 原地把标注写进去；于是五个写盘点（`_files_rename_folder`、`_works_delete_inner`、`_recycle_restore`、`_files_rename_batch`、`_files_dup_resolve_inner`）一旦整份 `json.dump(CACHE["data"])`，标注就跟着落盘。而增量扫描是「读旧 `data.json` 再合并」，写进去就洗不掉，还会变成过期残缺值（实测 `starred` 只剩 93，真值 105）。
+> 修法：写盘一律过 `_index_only()`，剥掉 `ANNOT_ONLY_KEYS` 那 10 个字段（`alias / alt_accounts / cover / level / main_uid / note / starred / status / tags / update_freq`）；历史残留用 `tools/clean_index.py` 一次清干净。**现在磁盘上的 data.json 是干净的**，上面那 10 个字段一个都不该出现。
+> 仍然要守的：**别拿 `data.json` 当标注的备份或恢复源**——`user_data.json`（和 `backup/`）才是唯一权威；`douyin_id / signature / nickname / sec_uid / history` 是扫描器 schema 里就有的字段，值可能被标注改过，属于刻意保留的灰色地带（剥了会丢 `history` 的合并记录）。
 
 | 模块 | 职责 | 关键产物 |
 |---|---|---|
@@ -119,16 +125,16 @@ user_data.json ─────────────────────�
 
 ```json
 {
-  "meta": { "total_authors": 1702, "scan_time": "...", "root": "E:/.../downnnnnnnn" },
+  "meta": { "total_authors": 1706, "scan_time": "...", "root": "E:/.../downnnnnnnn" },
   "accounts": {
     "<uid>": {
       "uid": "100301438759",
       "nickname": "...",
-      "sec_uid": "MS4wLjAB...",      // 来自 Data/*.xlsx（660 条）；其余靠 user_data 叠加补（当前合计 1703/1708）
+      "sec_uid": "MS4wLjAB...",      // 扫描时来自 Data/*.xlsx（663 份表）；其余靠 user_data 叠加补（当前合计 1753/1758）
       "douyin_id": "",               // 扫描恒为空，靠人工标注
       "signature": "",               // 扫描恒为空，靠人工标注
       "folder": "UID..._发布作品", "folder_rel": "...", "folders": ["...", "..."],  // folders 只在改过昵称时有多项
-      "history": [ { "field": "nickname", "from": "旧名", "to": "新名", "time": "..." } ],  // 仅 112 个合并账号有
+      "history": [ { "field": "nickname", "from": "旧名", "to": "新名", "time": "..." } ],  // 合并过文件夹的账号才有（当前 801 个）
       "works": [
         { "date": "2025-10-26", "desc": "...", "media_type": "video|image_single|image_multi",
           "files": [ { "rel": "UID..._发布作品/xxx.mp4" } ], "file_count": 1 }
@@ -200,7 +206,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | 接口 | 方法 | 参数 | 返回 |
 |---|---|---|---|
 | `/api/meta` | GET | — | `{total_authors, starred, tags:{标签:数量}, years:{年:作品数}}`（统计口径 = 叠加标注后的 CACHE） |
-| `/api/authors` | GET | `offset`(默认0) / `limit`(默认60) / `sort`(nickname\|uid\|work_count\|video_count\|image_count\|latest\|earliest\|level\|added) / `dir`(asc\|desc) / `q`(关键字) / `scope`(all\|nickname\|note\|signature\|works，缺省=all) / `tag` / `year` / `cat`(all\|starred) / `status`(单选，含 `__unset`=未设置、`正常`、`注销`、`禁言/封号`、`停更/偶尔更`、`卖号`、`不好看了`、`待修改`) / `level`(夯\|顶级\|1级（次）\|2级（拉）\|__unset) / `sec_uid`(has\|none) / `starred`(yes\|no) / `latest_after` / `latest_before`(YYYY-MM-DD) / `cover`(has\|none) / `match`(and\|or，不同属性之间的组合方式，缺省 and=交集；or=并集，只作用于等级/状态/更新频率/标签/最后时间这几类属性，搜索/星标/封面始终是交集) | `{total, offset, items[]}`，items 不含 works，另带 `alias/starred/status/level/tags`(最多3个)/`cover`/`added_at` |
+| `/api/authors` | GET | `offset`(默认0) / `limit`(默认60) / `sort`(nickname\|uid\|work_count\|video_count\|image_count\|latest\|earliest\|level\|added) / `dir`(asc\|desc) / `q`(关键字) / `scope`(all\|nickname\|note\|signature\|works，缺省=all) / `tag` / `year` / `cat`(all\|starred) / `status`(单选，含 `__unset`=未设置、`正常`、`注销`、`禁言/封号`、`停更/偶更`、`卖号`、`不好看了`、`待修改`；旧值 `停更/偶尔更`、`停更` 会自动映射成 `停更/偶更`) / `level`(夯\|顶级\|一般\|拉\|__unset，旧值 `1级（次）`→一般、`2级（拉）`→拉 会自动映射) / `sec_uid`(has\|none) / `starred`(yes\|no) / `latest_after` / `latest_before`(YYYY-MM-DD) / `cover`(has\|none) / `match`(and\|or，不同属性之间的组合方式，缺省 and=交集；or=并集，只作用于等级/状态/更新频率/标签/最后时间这几类属性，搜索/星标/封面始终是交集) | `{total, offset, items[]}`，items 不含 works，另带 `alias/starred/status/level/tags`(最多3个)/`cover`/`added_at` |
 | `/api/search_works` | GET | `q` / `offset` / `limit` | 按作品 desc 搜索，返回**扁平化的作品列表** `{ok,total,items[{uid,nickname,alias,work_index,date,desc,poster_rel,poster_is_image,starred}]}`（前端「作品」范围搜索用，点进去定位到该作者这个作品） |
 | `/api/author` | GET | `uid` | 单个作者完整数据（含 works，已叠加标注，另带 `alt_info`：组内成员的 nickname/alias/douyin_id/work_count） |
 | `/api/alt_groups` | GET | — | **按组聚合的大小号文件夹**：`{total_groups, total_accounts, groups:[{key,name,custom,size,members[{uid,nickname,alias,cover,work_count,starred,status,main_uid,scanned}]}], names}`。并查集求连通分量，只返回成员 ≥2 的组 |
@@ -221,15 +227,15 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | `/api/batch_status` | GET | — | `{ok, running, done, total, filled, conflicts, failed, skipped, options, started, finished, error, unread}`；`unread:true` = 有结果没被前端取走；`skipped` = 按状态跳过的数量（不是失败） |
 | `/api/batch_result` | GET | `consume=1` | `{ok, conflicts[], failed[], filled, total, finished}`；带 `consume=1` 时同时清 `unread` 并删结果文件 |
 | `/api/export_secuids` | POST | `{type, uids[]}` | 把指定 uid（**含所在大小号组的全部成员**）的 SEC_UID 导出成 `https://www.douyin.com/user/<sec>` 每行一条的 txt，写入 `export/` 目录，文件名 `<类型>_<时间戳>.txt`（同名自动加 `-2/-3` 后缀不覆盖）。按 sec_uid 去重。返回 `{ok, count, missing, file, path}` |
-| `/api/export_authors` | POST | `{uids?, format: csv\|txt\|json, json_mode: settings\|accounts, earliest_days?}` | 导出作者信息，三种格式：`csv`（昵称/别名/抖音号/UID/SEC_UID/等级/标签/状态/**最新作品**/**最早作品**/主页链接）、`txt`（一行一个主页链接）、`json`（DouK 账号数据；`settings` = 以现有配置为底整份导出，连 cookie 一起，覆盖 `Volume/settings.json` 就能跑；`accounts` = 只给 `accounts_urls` 数组）。`earliest_days=N` → 每位作者 `earliest` = 自己「已下载作品最新日期 − N 天」、`latest` 留空（只补最近这段，边界不漏）；不给则两个字段都空 = 全部抓取。没有 sec_uid 的账号在 txt/json 里剔除（csv 保留）。返回 `{ok, count, skipped, with_earliest, file, path, format, json_mode, has_cookie}` |
+| `/api/export_authors` | POST | `{uids?, sec_uids?, format: csv\|txt\|json, json_mode: settings\|accounts, earliest_days?, target?}` | 导出作者信息，三种格式：`csv`（昵称/别名/抖音号/UID/SEC_UID/等级/标签/状态/**最新作品**/**最早作品**/主页链接）、`txt`（一行一个主页链接）、`json`（DouK 账号数据；`settings` = 以现有配置为底整份导出，连 cookie 一起，覆盖 `Volume/settings.json` 就能跑；`accounts` = 只给 `accounts_urls` 数组）。**`sec_uids`（2026-11-01 加）**：待下载区那些还没 uid 的作者直接按 sec_uid 导出——能反查到期库就带上昵称/等级/标签，查不到也照样出链接；和 `uids` 一起给会去重。`earliest_days=N` 的规则只有两条（2026-11-01 用户定）：**① 本地一件作品都没有的作者 → `earliest` 留空**（不设最早时间，DouK 全量抓）；**② 本地有作品的作者 → `earliest` = 他自己「已下载最新作品日期 − N 天」**（`latest` 留空，只补最近这段，边界不漏）。`N` 不传 / 传空 = 所有人都不设，全部抓取。`target=douk` → 不落 `export/`，直接整份替换 DouK 的 `Volume/settings.json`（先备份、DouK 在跑则拒绝）。没有 sec_uid 的账号在 txt/json 里剔除（csv 保留）。返回 `{ok, count, skipped, with_earliest, no_works, file, path, format, json_mode, has_cookie}`（`no_works` = 按规则 1 没设日期的作者数） |
 | `/api/douk/config` | GET / POST | GET：—；POST：`{settings:{白名单字段…}, pyc:{delay, every, rest}}` | 读写 DouK 下载器参数。GET 返回 `{ok, running, settings, fields{类型/中文名/提示}, pyc{every, rest, delay, sigma}, accounts, paths}`。POST 只改 `SETTING_FIELDS` 白名单（max_pages/max_size/timeout/max_retry/music/download），其余字段（cookie/browser_info/root/name_format…）一律不动；root 与 name_format 只在 GET 的 `readonly` 里**只读展示**（name_format 自 2026-10-31 起末尾带作品 id 防同名覆盖，见第八章第 24 条；界面仍不开放修改）；`pyc` 里的请求间隔（`get_wait_time` 的 avg_delay）与「每 N 个号暂停 M 秒」（`suspend` 常量）走 `src/douk_config.py` 子进程改 pyc 常量。写前自动备份 `backup/douk_settings_<时间>.json`，首次改 pyc 备份官方原版到 `backup/douk_function_原版.pyc`。`running:true` 时返回 `warn`（重启才生效） |
 | `/api/create_author` | POST | `{sec_uid(可整条网址), link_uid(可选,当前账号uid)}` | 新建作者：`norm_sec_uid()` 抽纯 id → 走登录态 `im/user/info` 查权威 `uid`（3.12 子进程）→ 建到 user_data（sec_uid/昵称/抖音号）→ **全新账号再调一次 `fetch_profile_by_sec_uid()` 补简介**（老账号不覆盖，用户可能自己改过）→ 若给 link_uid 则自动并入当前大小号组。返回 `{ok, uid, sec_uid, nickname, douyin_id, signature, profile_note, linked[], existed}` |
 | `/trans_cache/xxx.mp4` | GET | — | 转码后的文件，支持 Range |
 | `/api/rescan` | POST | — | **立即**返回 `{ok}`，扫描在后台线程跑，扫完 `load_data(force=True)`；已在扫描时返回 409 `{ok:false, error}`（防重复起扫） |
 | `/api/rescan_status` | GET | — | `{ok, running, phase, done, total, started, finished, error}`，前端 1s 轮询，按钮显示 `🔄 done/total` |
 | `/api/files/overview` | GET | — | 文件管理页一次拉全：`{ok, rename:[{uid,nickname,alias,folder,current,works,target,conflict,problem}], dup:{root,items:[{name,uid,old,files,bytes}],total_files,total_bytes}, scan}`。`rename` = **文件夹名 ≠ 标注昵称**的作者（按作品数倒序，当前 348 位）；`problem` 非空 = 这个名字 Windows 存不了 |
-| `/api/files/rename` | POST | `{uid, nickname}` | 把该账号文件夹改成 `UID<uid>_<nickname>_发布作品`，并**同步改掉 data.json 里 `works[].files[].rel` 的前缀**（不重扫也能马上播）。校验：非空 / ≤60 字 / 不含 `\/:*?"<>|` / **不以点或空格结尾**（Win32 会把结尾的点吃掉）/ 目标不存在。返回 `{ok, folder, message}`；写索引失败时带 `need_rescan:true` |
-| `/api/files/rename_batch` | POST | `{all:true}` 或 `{uids:[...]}` | 批量改名：全部改完**只写一次** data.json、只 `load_data` 一次（逐个改每次整份写 70MB，300 个就是 300 次）。返回 `{ok, renamed, failed:[{uid,nickname,error}], message}` |
+| `/api/files/rename` | POST | `{uid, nickname}` | 把该账号文件夹改成 `UID<uid>_<nickname>_发布作品`，并**同步改掉 data.json 里 `works[].files[].rel` 的前缀**（不重扫也能马上播）。校验：非空 / ≤60 字 / 不含 `\/:*?"<>\|` / **不以点或空格结尾**（Win32 会把结尾的点吃掉）/ 目标不存在。返回 `{ok, folder, message}`；写索引失败时带 `need_rescan:true` |
+| `/api/files/rename_batch` | POST | `{all:true}` 或 `{uids:[...]}` | 批量改名：全部改完**只写一次** data.json、只 `load_data` 一次（逐个改每次整份写 72MB，300 个就是 300 次）。返回 `{ok, renamed, failed:[{uid,nickname,error}], message}` |
 | `/api/files/dup_group` | GET | `name`=组目录名 | 按「同一条作品」归并后返回 `{groups:[{key:[日期,描述,图序,扩展名], date, desc, versions:[{kind,file,rel,size,mtime,ext,is_image}], identical, has_current}], total_bytes}`。`versions` 里 `kind=current` 是**新文件夹里正在用的那份**（页面靠它做「保留这份」），`kind=quarantine` 是隔离区副本；`identical` = 两版字节大小相同。`rel` 给缩略图用（视频 `/thumb?path=`，图片当静态媒体）。安全：组名不含路径分隔符、`abspath` 必须在隔离区内 |
 | `/api/works/delete` | POST | `{uid, idxs:[作品下标...]}` | **删除作品（默认移入回收站）**：文件搬到 `recycle-bin/<批次ID>/<原rel>`（保留「作者文件夹/文件名」结构）+ 从 `data.json` 的 `works` 移除 + 减 `stats.*` + 往 `data/回收站.json` 记一批（**含被删作品的完整 JSON 与原下标**，恢复要用）+ 写 `data/删除记录.jsonl`。传 `permanent:true` 才是真删（删文件 + 清缩略图缓存，不写回收站记录）。**回收站模式不清缩略图缓存**——恢复后 rel 没变，缓存直接能用。安全：`idxs` 越界整体拒绝、每个 `rel` 走 `safe_media_path()`、从大到小 `del`、外层兜 `BaseException`、一次最多 5000 条。返回 `{ok, works, files, freed, videos, images, batch, mode, failed[]}` |
 | `/api/recycle/list` | POST | `{}` | 回收站概览：`{ok, batches:[{id,time,uid,nickname,works,files,size,exists}], total_size, dir}`。不含作品正文 |
@@ -237,7 +243,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | `/api/recycle/purge` | POST | `{id}` | **彻底删除一批**（`rmtree` 批次目录 + 去掉记录），不可恢复。`id` 只接受记录里存在的值，传 `../` 一律回「回收站里没有这一批」 |
 | `/api/files/dup_resolve` | POST | `{decisions:[{group, key:[4 段], keep}]}` | **按页面上的选择执行**：`keep="current"` → 保留新文件夹那份、删掉隔离区副本；`keep=<隔离区文件名>` → 把那份搬进新文件夹、删掉旧目标、删其余副本。**两种收尾都会把留下来那份重命名为「日期-<当前昵称>-描述[_序号].ext」**（昵称取文件夹名里那段，即改名后最新的名字），并**成批改掉 data.json 里的 `rel`**、顺手同步 `user_data` 里引用旧名的封面，最后 `load_data(force=True)`——所以不用重扫。缩略图缓存按 rel 的 md5 命名、不看 mtime，改名/覆盖后要删掉。文件名必须在扫描到的目录列表里且作品键匹配，**不拼客户端给的路径**。整个函数兜住 `BaseException`（外部删除保护会抛 `SystemExit`），永远返回 JSON。返回 `{ok, deleted, restored, renamed, freed, failed[], warnings[]}` |
 | `/api/files/dup_delete` | POST | `{names:[组]}` / `{all:true}` / `{group, files:[文件名]}` | 删隔离区 `downnnnnnnn/_改名合并_重复文件_20261030/` 下的东西：整组、全部、或组内指定几条。安全：名字带路径分隔符直接拒；`abspath` 必须落在隔离区内，越界中止。组删空后自动 rmdir。返回 `{ok, removed, freed, failed[]}` |
-| `/api/new_downloads` | GET | `since`(unix 秒，0=不限) / `limit`(默认 600) / `uid`(可选) | 「🆕 新下载」数据：按**文件写入时间**（≈ 下载完成时间）取最近落盘的文件，再按作者聚合 → `{total_files, shown_items, truncated, groups:[{uid,nickname,count,level,freq,status,tags,items:[{rel,rels,date,desc,is_video,files,size,mtime}]}]}`。同一作品的 `_1.._9.jpeg` 合成一条、`rels` 是完整文件序列（右侧播放区翻页用），有视频时优先拿视频当 `rel` |
+| `/api/new_downloads` | GET | `since`(unix 秒，0=不限) / `limit`(每页文件数，默认 2400，前端传 1200) / `cursor`(上一页的 `mtime|rel`，空=第一页) / `uid`(可选) | 「🆕 新下载」数据：按**文件写入时间**（≈ 下载完成时间）取最近落盘的文件，再按作者聚合 → `{total_files, shown_items, cursor, has_more, groups:[{uid,nickname,count,level,freq,status,tags,items:[{rel,rels,date,desc,is_video,files,size,mtime}]}]}`。**没有条数上限**：按 `(mtime, rel)` keyset 一页页往下翻（2026-11-02 取消「只显示最新 600 个作品」），`has_more=false` 才是这个范围到底了。同一作品的 `_1.._9.jpeg` 合成一条、`rels` 是完整文件序列（右侧播放区翻页用），有视频时优先拿视频当 `rel` |
 | `/api/annotations` | POST | `{items:[{tool,rect,region,selector,note}], page, viewport}` | 标注台「保存给我」：校验后落盘 `data/annotations/界面意见_YYYYMMDD-HHMMSS.md` + 同名 `.json` → `{ok, file, dir, count}` |
 | `/thumb` | GET | `path` | ffmpeg（`-ss 1`、`scale=400:-2`）生成/缓存的视频缩略图 jpg |
 | `/api/cache_info` | GET | — | `{ok, thumb:{files,bytes,max_mb}, trans:{files,bytes,max_mb}, total_bytes}` |
@@ -309,9 +315,9 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 
 ## 六、关键设计决策记录
 
-- **作者数 1709 而非 1826**：117 个 UID 重复（改昵称导致多文件夹），已合并，旧名记在 `history`
+- **作者数比文件夹数少**：改了昵称就会多出一个 `UID<uid>_<新昵称>_发布作品` 文件夹，同一个 uid 被扫成两个账号。扫描时按 uid 合并成一个、旧名记进 `history`（2026-10-30 那次一次性合并了 113 个旧名文件夹）
 - **标注与索引分离**：`user_data.json` 独立存标注，重扫只重建 `data.json`，标注不丢；服务端用 `load_user_data()` 把标注叠进内存 `CACHE`（2026-10-26 修复：此前星标/标签在列表和侧边栏完全失效）
-- **性能**：前端按需分页，绝不一次性加载 62MB data.json（后端内存缓存 + 分页 API）
+- **性能**：前端按需分页，绝不一次性加载 72MB data.json（后端内存缓存 + 分页 API）
 - **媒体 URL**：`mediaUrl()` 逐段编码，解决 `#话题`/空格导致的 404
 - **缩略图**：ffmpeg 从第 1 秒抽帧生成 400px 宽 jpg，缓存 `thumb_cache/`（md5(rel) 命名）。**作品自带封面图时优先直接用封面图**（`pickPosterFile`），比抽帧清晰
 - **作者详情页取代抽屉**：点卡片后内容区整体切换成详情页（`#authorView` ↔ `#detailView`）。布局是抖音页的镜像：**左栏方形卡片墙（作品列表）/ 右栏上方作者信息框 + 下方播放器**；`refreshTop()` 只重绘信息框，避免改标注时打断正在播的视频
@@ -321,7 +327,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 - **视频与图文统一在右栏媒体区**：作品量大（几十万级）时，浏览器解码器覆盖不全，所以检测到 HEVC 会自动转码（PotPlayer 方案已弃用）；图文不进浮层，直接用同一块区域显示大图，多图在帖子内翻页——一处代码管两种媒体
 - **大小号存「组」而不是「边」**：每个账号的 `alt_accounts` 存的是**同组其他所有人**，所以任意一个人的数据里就带着完整组信息，读取零跨查。代价是冗余（N 个人各存一份）和「写必须整组重写」，换来的是：老数据能靠并查集自愈、服务端能无脑归一化、前端读一个字段就能画全组。**绝对不要再写「只给两端各加一条」那种补丁式代码**——那就是第 15 条坑的来源
 - **关联入口用搜索而不是让用户填 ID**：`/api/authors?q=` 早就同时匹配昵称/抖音号/UID/sec_uid，选择器直接复用。做新功能前先查服务端已有的搜索/筛选能力，别让用户手抄一串 19 位数字
-- **作者等级 `level` + 更新频率 `update_freq` 是两个独立字段**：等级（夯/顶级/1级（次）/2级（拉））做成胶囊、设等级时自动带一个建议频率（`LEVEL_DEFAULT_FREQ`：夯→day、顶级→3天、1级→周、2级→月），但用户可以单独改频率；**设等级/改频率都整组同步**（`groupUidsWithSelf` + `setAccountFieldRaw`），点已选中的胶囊 = 取消（`value===cur ? '' : value`）
+- **作者等级 `level` + 更新频率 `update_freq` 是两个独立字段**：等级（夯/顶级/一般/拉）做成胶囊，**两者完全不联动**（用户明确要求，`LEVEL_DEFAULT_FREQ` 已删除——以前设「夯」会自动填 `day`，改等级顺手改掉频率很别扭）；**设等级/改频率都整组同步**（`groupUidsWithSelf` + `setAccountFieldRaw`），点已选中的胶囊 = 取消（`value===cur ? '' : value`）
 - **搜索分范围 + 作品直达**：`scope`（all/nickname/note/signature/works）区分搜索范围；搜「作品」时走专门的 `/api/search_works`（扁平化作品列表），前端渲染作品卡片、点进去 `openAuthor(uid, workIndex)` 定位到该作品（`setRailFilter('all')+playWork(workIndex)`）
 - **「添加顺序」排序 = 作者文件夹 ctime**：`_load_data_locked` 逐个 `os.path.getctime` 存 `added_at`（合成账号/读不到 = 0），排序键 `(added_at, uid)`
 - **已移除**（用户要求）：直播记录、收藏夹关系、话题标签自动提取、编辑简介/抖音号按钮
@@ -378,14 +384,26 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
   - **图片原位放大**（c94）：点大图 → `.ndp-stage.zoomed`，`object-fit: none` 按原始尺寸显示、stage 内滚动；再点一下复原。**播放区框尺寸不变、不开遮罩、不进全屏**（用户明确要求「不是全屏放大」）
   - 换图/换作品时自动退出放大态（`ndPlay.zoom = false` + 移除 `.zoomed`），否则下一张会莫名其妙是放大的
   - 翻页 `←` `→`，或直接点左边另一张卡；正在播的卡有粉色边框
+- **不再有条数上限**（2026-11-02，用户要求）：以前一次只给最新 600 个作品、底部写「想全看完就缩小时间范围」。现在按「文件」分页（一页 1200 个文件 ≈ 几百个作品），**左列表滚到底自动取下一页**（`ndArmMore` / `ndMaybeLoadMore`，阈值 500px），底栏那行变成「已显示 X 个作品 · 继续往下滚」也可以点；全部取完才显示「已全部显示」
+  - 分页用 keyset（`cursor = mtime|rel`）而不是 `OFFSET`：翻页途中又有新文件落盘时 `OFFSET` 会整体错位，`(mtime, rel)` 是稳定坐标
+  - 一页按**文件**切，所以同一作品/同作者的记录可能横跨两页 → 前端 `ndMergePage` / `ndMergeItem` 按 `uid` + `日期\u0000描述` 并回一条（视频优先当门面、`rels` 去重后按文件名数字排序）
+  - 续页重绘走 `renderNewDownloads({keepScroll:true})`：不 `ndPlayReset()`、按锚点还原 `scrollTop`、按 `uid + 日期/描述` 重新点亮正在播的那张卡
 - 切走视图 / 进详情页时必须 `ndPlayReset()`（清空 stage 的 DOM），否则 `<video>` 会在后台继续出声
 
 ### 4. 导出作者信息（`#exportView`）
 
-- 左栏：筛选（等级 / 标签 / 状态 / 更新频率 / 已下载最后时间）+「预览选中的作者」
+- **左栏①：待下载区**（2026-11-01 从页面顶部整块挪进左栏，宽度跟着栏走，不再是横贯全屏的一条）
+  - 数据来自 8790 的 `/queue`（插件在抖音页面点「＋ 待下载」推过来的作者）
+  - 每位一行：昵称 + 标签 + 状态徽章（已新建主页 / 库里已有 / 未建档）+ 推送时间，行尾 `×` 可移除
+  - 底栏只有 `预览` / `刷新` / `清空`（可撤销）—— **这一区不再有自己的导出按钮**
+  - ⚠️ **「没点过预览就不算」**：点「预览」除了展开抖音号/粉丝/sec_uid，还会把这一区**挂成 ③ 的导出对象**（`exportState.source='queue'`，`uids` 和 `secUids` 都收着，因为这一区不少人还没 uid）。不点它，③ 只会用 ① 筛出来的人
+- **左栏②：筛选**（等级 / 标签 / 状态 / 更新频率 / 已下载最后时间）+「预览选中的作者」
   - 预览列表：名字 / 标签 / 等级 / 状态 / 本地保存最新 / **行尾 ✕**（这次先不导出这个作者，底部可恢复）
-- 右栏：DouK 下载参数（请求间隔、每 N 个号暂停 M 秒、翻页数、文件上限…）+ 三种导出格式 + `⚡ 一键写入 DouK`
+  - 点它 = 把导出对象切回 `source='filter'`（并清掉待下载区挂过来的 `secUids`）
+- 右栏：DouK 下载参数（请求间隔、每 N 个号暂停 M 秒、翻页数、文件上限…）+ 三种导出格式 + `导出` / `⚡ 一键写入 DouK`
+- **写 DouK 只有一个入口**（2026-11-01 合并）：右下 ③ 的 `⚡ 一键写入 DouK`，写的是「当前预览对象」，来源由 `exportState.source` 决定 —— `queue`（待下载区挂过来的）或 `filter`（① 筛出来的）。以前左栏还有一个「导出到 DouK」，两个按钮语义重复，已删
 - ⚡ 一键写入：**整份替换** DouK `Volume/settings.json` 的 `accounts_urls`，写前自动备份到 `backup/`，**DouK 正在运行会直接拒绝**
+- `markExportDirty()` 在 `source==='queue'` 时**直接 return**：挂的是待下载区名单，改 ① 的筛选本来就不该把它作废
 - 日期一律 `YYYY/MM/DD`：DouK 的 `check_date` 只 `strptime('%Y/%m/%d')`，横杠会被判「发布日期无效」并丢弃限制 → 该作者变成全量重抓
 
 ### 5. 标注台（`/annotate.html`）
@@ -451,10 +469,17 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 27. `earliest` 日期一律 `YYYY/MM/DD`：`check_date` 只 `strptime('%Y/%m/%d')`，横杠格式会被判无效并**丢弃限制 → 该作者全量重抓**。
 28. 改 `Volume/settings.json` 前**必须先确认 DouK 进程退出**（`tasklist | grep -i douk`）：它退出时会拿内存配置整份回写，改了等于白改。
 29. `download_data` 表只记 aweme_id、没有作者字段，所以「某作者下漏了」没法按作者清记录重下 —— 只能复制作品链接单独下。
+30. **「下载完了、`data.json` 里有 255 个作品，主页却一直显示 0 个」= 合成账号没退场**（2026-11-01 踩过）。
+    根因：`_load_user_data_locked()` 里「先把上一轮的合成账号摘掉」那句**无条件** `accounts.pop(uid)`。
+    作者从「新建作者」变成「被扫描进 data.json」之后，每次刷新标注都会把刚读进来的真账号 pop 掉，
+    再按 `user_data.json` 重建一个空壳 → 作品数永远 0，只有重启进程（`synthetic_uids` 清空）才好。
+    修法：`load_data` 记下 `CACHE["data_uids"]`（这一版 data.json 里真实存在的 uid），
+    只摘「不在这份名单里」的旧合成账号。自查口诀：`/api/author` 返回的键里**没有 `works`/`stats`**、
+    只有 `work_count` 这类列表字段 → 就是被当成合成账号了。
 
 ### 其它
-30. `.bat` 必须**纯 ASCII**（中文会因编码乱码直接报错）；启动脚本输出要 flush，否则双击像「没反应」。
-31. 挪走 / 删掉磁盘上的作品文件后，索引里还在 → 点开全黑；删文件必须同步改索引或重扫。
+31. `.bat` 必须**纯 ASCII**（中文会因编码乱码直接报错）；启动脚本输出要 flush，否则双击像「没反应」。
+32. 挪走 / 删掉磁盘上的作品文件后，索引里还在 → 点开全黑；删文件必须同步改索引或重扫。
 
 ---
 
@@ -510,6 +535,7 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-02 c107** 取消「新下载只显示最新 600 个作品」的上限：改成按文件分页 + 滚到底自动续页，`/api/new_downloads` 由 `limit`(作品数)/`truncated` 换成 `limit`(文件数)/`cursor`/`has_more`
 - **2026-10-31 DouK 修** 文件名撞车导致作品被静默覆盖：`name_format` 加作品 `id`（`create_time nickname desc id`），`parse_work_filename()` 剥掉末尾那串 ID。实测那轮 3608 个文件名对应 3660 个作品 → 丢了 52 个；日志里反反复复的 `PermissionError(13)` 就是这个病的症状，不是杀软
 - **2026-10-31 c93** 新下载缩略图改「连续铺开 + 换作者标记」；右侧播放区尺寸固定（420px / 信息区 84px）；导出预览去掉 720px 上限、列宽按比例、每行加 `✕ 这次不导出`
 - **2026-10-31 c87** 播放区信息区压成两行（作者+徽章+序号 / 日期+描述+原文件），去掉左右翻页按钮和头像，画面放大 11%

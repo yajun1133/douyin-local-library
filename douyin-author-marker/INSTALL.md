@@ -53,7 +53,9 @@
 1. 地址栏输入 `chrome://extensions/` 回车
 2. 右上角打开「开发者模式」
 3. 点「加载已解压的扩展程序」
-4. 选中文件夹：`D:\ai_Project\douyin-local-library\douyin-author-marker\扩展`
+4. 选中文件夹：`D:\ai_Project\douyin-local-library\douyin-author-marker\extension`
+   - ⚠️ **要选到 `extension` 这一层**（它里面直接就能看到 `manifest.json`、`content.js`、`icons\`）。
+   - 选上一级 `douyin-author-marker` 会报「**清单文件丢失或不可读取**」——那一层只有 `extension\`、`local-service\` 和 `INSTALL.md`，没有 `manifest.json`。
 5. 列表里出现「抖音作者本地库标记」即成功（建议点一下图钉，固定到工具栏）
 
 **Edge：** 同上，地址换成 `edge://extensions/`，左下角「开发人员模式」。
@@ -76,7 +78,7 @@ D:\ai_Project\douyin-local-library\
 ├─ stop-all.bat               ← 一键停两个服务，并关掉残留窗口
 ├─ browser\start-browser.bat         本地管理后台（原有启动文件，未改动）
 └─ douyin-author-marker\
-   ├─ 扩展\                  ← 在浏览器里「加载已解压的扩展程序」时选这个文件夹
+   ├─ extension\            ← 在浏览器里「加载已解压的扩展程序」时选这个文件夹
    │  ├─ manifest.json       扩展清单（MV3）
    │  ├─ background.js       后台：所有本地请求 + 60 秒内存缓存
    │  ├─ content.js          核心：识别作者、画卡片/横栏、加角标、拖动

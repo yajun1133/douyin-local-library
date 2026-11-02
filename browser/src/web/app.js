@@ -5527,6 +5527,11 @@ const exportState = {
     match: 'and',            // 不同属性之间：and=交集（默认）/ or=并集
     uids: null, previewed: false,
     stale: false,            // 预览之后又改了筛选 → 旧名单作废，但提示要留着
+    // 2026-11-01：导出对象有两个来源 ——
+    //   'filter' = ① 里点「预览选中的作者」筛出来的（默认）
+    //   'queue'  = 待下载区点「预览」挂过来的（见 stageQueueForExport）
+    // 待下载区里没有 uid 的作者靠 secUids 带出去，服务端两边都会收。
+    source: 'filter', secUids: [],
 };
 let exportPreviewHtml = '';   // 上次预览的 DOM 快照，切走再回来直接塞回去（不用重算）
 let exportPreviewScroll = 0; // 预览列表内部的滚动位置，切回来也还原
@@ -5738,6 +5743,46 @@ async function queueDelConfirm() {
 function queueTogglePreview() {
     queueState.preview = !queueState.preview;
     renderQueue();
+    // 2026-11-01（用户要求）：待下载区「没点过预览就不算」——
+    // 点开预览才把这一区挂成 ③ 的导出对象；不点，③ 只用 ① 筛出来的人。
+    if (queueState.preview) stageQueueForExport();
+}
+
+// 把待下载区整块挂成「③ 导出」的对象。
+// 这一区不少人还没有 uid（只有 8790 队列里的 sec_uid），所以 uids / secUids 两样都收着，
+// 一起交给 /api/export_authors —— 服务端会按 sec_uid 反查，查不到也照样能写链接。
+function stageQueueForExport() {
+    const items = queueState.items || [];
+    const uids = [];
+    const secs = [];
+    items.forEach((it) => {
+        const u = String(it.uid || '').trim();
+        const s = String(it.sec_uid || '').trim();
+        if (u && uids.indexOf(u) < 0) uids.push(u);
+        if (s && secs.indexOf(s) < 0) secs.push(s);
+    });
+    if (!uids.length && !secs.length) {
+        showToast('待下载区里没有可导出的作者');
+        return;
+    }
+    exportState.source = 'queue';
+    exportState.uids = uids;
+    exportState.secUids = secs;
+    exportState.previewed = true;
+    exportState.stale = false;
+    exportPreviewHtml = '';
+    exportPreviewItems = [];
+    const n = Math.max(uids.length, secs.length);
+    const sub = document.getElementById('exportCountSub');
+    if (sub) sub.textContent = `已选 ${n} 个（待下载区）`;
+    const box = document.getElementById('exportPreview');
+    if (box) {
+        box.classList.remove('hidden');
+        box.innerHTML = `<div class="export-preview-note">本次导出对象：<b>待下载区 ${n} 位</b>`
+            + `（就是上面那个列表，可以继续用行尾 × 移出）。<br>`
+            + `想改回按条件筛人，去 ① 点「预览选中的作者」。</div>`;
+    }
+    showToast(`已把待下载区 ${n} 位设为导出对象`);
 }
 
 async function queueClear() {
@@ -5846,12 +5891,22 @@ function bindPreviewListScroll(box) {
 function restoreExportUI() {
     const box = document.getElementById('exportPreview');
     const sub = document.getElementById('exportCountSub');
-    const n = exportState.uids ? exportState.uids.length : 0;
-    if (sub) sub.textContent = (exportState.previewed && n) ? `已选 ${n} 个` : '';
+    const n = (exportState.uids ? exportState.uids.length : 0)
+        || (exportState.secUids ? exportState.secUids.length : 0);
+    if (sub) {
+        sub.textContent = (exportState.previewed && n)
+            ? `已选 ${n} 个${exportState.source === 'queue' ? '（待下载区）' : ''}` : '';
+    }
     const range = document.getElementById('exportLatestRange');
     if (range) range.classList.toggle('hidden', exportState.latest !== 'custom');
     if (!box) return;
-    if (exportState.previewed && exportPreviewHtml) {
+    if (exportState.previewed && exportState.source === 'queue') {
+        // 名单来自待下载区：那份列表就在上方面板里，这里只还原一句说明
+        box.classList.remove('hidden');
+        box.innerHTML = `<div class="export-preview-note">本次导出对象：<b>待下载区 ${n} 位</b>`
+            + `（就是上面那个列表，可以继续用行尾 × 移出）。<br>`
+            + `想改回按条件筛人，去 ① 点「预览选中的作者」。</div>`;
+    } else if (exportState.previewed && exportPreviewHtml) {
         box.innerHTML = exportPreviewHtml;
         box.classList.remove('hidden');
         bindPreviewListScroll(box);
@@ -5872,6 +5927,7 @@ function clearExportAll() {
     exportState.latest = ''; exportState.latestFrom = ''; exportState.latestTo = '';
     exportState.match = 'and';
     exportState.uids = null; exportState.previewed = false; exportState.stale = false;
+    exportState.source = 'filter'; exportState.secUids = [];
     exportPreviewHtml = '';
     exportPreviewItems = [];
     exportPreviewLimit = 50;
@@ -5957,6 +6013,8 @@ function exportFilterParams() {
 // 不这样做的话：先「预览」拿到 1000 个 uid，再改筛选（比如勾 day），
 // 直接点「导出」还是会导出上一批 —— 看着像"筛 day 却导出了注销的号"。
 function markExportDirty() {
+    // 导出对象是待下载区挂过来的，改 ① 的筛选本来就不该把它作废
+    if (exportState.source === 'queue') return;
     if (!exportState.previewed && !exportState.uids) return;   // 本来就没预览过，不用打扰
     exportState.previewed = false;
     exportState.uids = null;
@@ -5977,6 +6035,8 @@ async function previewExport() {
         const d = await fetch('/api/authors?' + params.toString()).then((r) => r.json());
         const items = d.items || [];
         exportState.uids = items.map((a) => a.uid);
+        exportState.source = 'filter';   // ① 的预览 = 把来源切回筛选结果
+        exportState.secUids = [];
         exportState.previewed = true;
         exportState.stale = false;
         exportPreviewItems = items;      // 全量存着，后面「显示更多」直接切片
@@ -6090,23 +6150,37 @@ function onExportFormatChange() {
     document.getElementById('exportEarliestTip').classList.toggle('hidden', fmt !== 'json');
 }
 
+// 「往前提 N 天」导出结果的一句小结（2026-11-01 用户定的规则）：
+//   有本地作品 → earliest = 本地最新作品日期 − N 天；没本地作品 → 不设 earliest（DouK 全量抓）。
+function earliestSummary(d) {
+    const parts = [];
+    if (d.with_earliest) parts.push(`${d.with_earliest} 个带时间起点`);
+    if (d.no_works) parts.push(`${d.no_works} 个本地没作品、不设起点`);
+    return parts.length ? `（${parts.join('，')}）` : '';
+}
+
 async function confirmExport() {
-    if (!exportState.previewed) { showToast('先点「预览选中的作者」确认范围'); return; }
-    if (!exportState.uids || !exportState.uids.length) { showToast('没有可导出的作者'); return; }
+    if (!exportState.previewed) { showToast('先点「预览选中的作者」，或待下载区的「预览」'); return; }
+    const nUid = (exportState.uids || []).length;
+    const nSec = (exportState.secUids || []).length;
+    if (!nUid && !nSec) { showToast('没有可导出的作者'); return; }
     const fmt = (document.querySelector('input[name="expFormat"]:checked') || {}).value || 'csv';
     const jsonMode = (document.querySelector('input[name="expJsonMode"]:checked') || {}).value || 'settings';
     const days = earliestDaysValue();
-    showToast('正在导出 ' + exportState.uids.length + ' 个作者…');
+    showToast('正在导出 ' + Math.max(nUid, nSec) + ' 个作者…');
     try {
         const r = await fetch('/api/export_authors', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ uids: exportState.uids, format: fmt, json_mode: jsonMode, earliest_days: days }),
+            body: JSON.stringify({
+                uids: exportState.uids || [], sec_uids: exportState.secUids || [],
+                format: fmt, json_mode: jsonMode, earliest_days: days,
+            }),
         });
         const d = await r.json();
         if (!d.ok) { showToast('导出失败：' + (d.error || '未知错误')); return; }
         let msg;
         if (fmt === 'txt') msg = `已导出 ${d.count} 条链接 → export/${d.file}`;
-        else if (fmt === 'json') msg = `已导出 ${d.count} 个账号${d.with_earliest ? `（${d.with_earliest} 个带时间起点）` : ''} → export/${d.file}`;
+        else if (fmt === 'json') msg = `已导出 ${d.count} 个账号${earliestSummary(d)} → export/${d.file}`;
         else msg = `已导出 ${d.count} 个作者 → export/${d.file}`;
         showToast(msg);
     } catch (e) {
@@ -6114,19 +6188,26 @@ async function confirmExport() {
     }
 }
 
-// 一键写进 DouK（2026-10-31）：不落「export/」目录，直接把当前预览的账号队列
+// 一键写进 DouK（2026-10-31）：不落「export/」目录，直接把当前**预览出来的**账号队列
 // 整份替换进 DouK 的 Volume\settings.json —— 点完就能开 DouK 下载。
+// 2026-11-01 起这是唯一的「写 DouK」入口：对象要么是 ① 筛出来的，要么是待下载区
+// 点过「预览」挂过来的（exportState.source 记着是哪个），两个来源都走这里。
 // 服务端会先把旧配置备份到 backup\，cookie / 下载目录 / 命名格式等一律不动；
 // DouK 在跑的话它直接拒绝（它退出时会用内存配置覆盖 settings.json）。
 async function confirmExportToDouk() {
-    if (!exportState.previewed) { showToast('先点「预览选中的作者」确认范围'); return; }
-    if (!exportState.uids || !exportState.uids.length) { showToast('没有可导出的作者'); return; }
-    const n = exportState.uids.length;
+    if (!exportState.previewed) { showToast('先点「预览选中的作者」，或待下载区的「预览」'); return; }
+    const nUid = (exportState.uids || []).length;
+    const nSec = (exportState.secUids || []).length;
+    if (!nUid && !nSec) { showToast('没有可导出的作者'); return; }
+    const n = Math.max(nUid, nSec);
+    const from = exportState.source === 'queue' ? '待下载区' : '① 预览的筛选结果';
     const days = earliestDaysValue();
-    const tip = `把选中的 ${n} 个作者直接写进 DouK 的 settings.json？\n\n` +
+    const tip = `把${from}的 ${n} 个作者直接写进 DouK 的 settings.json？\n\n` +
         `· 原来那份账号队列会被整份替换（旧文件先备份到 backup\\ 里）\n` +
         `· cookie、下载目录、命名格式等其它设置一个字不动\n` +
-        (days ? `· 每位作者带「已下载最新作品日期往前 ${days} 天」的起点\n` : '') +
+        (days ? `· 有本地作品的作者：本地最新作品日期往前 ${days} 天当起点\n` +
+                `· 本地一件作品都没有的：不设最早时间，DouK 全量抓\n`
+              : `· 没填「往前提」天数：不设最早时间，DouK 全量抓\n`) +
         `\nDouK 正在运行的话请先关掉，否则它退出时会把配置覆盖回去。`;
     if (!window.confirm(tip)) return;
     showToast('正在写入 DouK 配置…');
@@ -6134,13 +6215,14 @@ async function confirmExportToDouk() {
         const r = await fetch('/api/export_authors', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                uids: exportState.uids, format: 'json', json_mode: 'settings',
+                uids: exportState.uids || [], sec_uids: exportState.secUids || [],
+                format: 'json', json_mode: 'settings',
                 earliest_days: days, target: 'douk',
             }),
         });
         const d = await r.json();
         if (!d.ok) { showToast('写入失败：' + (d.error || '未知错误')); return; }
-        showToast(`已写入 DouK：${d.count} 个账号${d.with_earliest ? `（${d.with_earliest} 个带时间起点）` : ''}` +
+        showToast(`已写入 DouK：${d.count} 个账号${earliestSummary(d)}` +
             `${d.skipped ? `，跳过 ${d.skipped} 个没有 SEC_UID 的` : ''}；旧配置已备份`);
         // 右上角「N 个账号队列」跟着变，别让人以为没写进去
         if (typeof loadDoukConfig === 'function') loadDoukConfig();
@@ -6424,7 +6506,11 @@ async function openSettingsView() {
 // 为什么单独一页：DouK 一跑就是几百上千个文件，散在各位作者的作品墙里根本看不出
 // 「这一次到底新增了什么」。数据不是靠扫目录猜的——服务端读 data/download_log.db
 // 的 file 表，mtime 就是文件落盘时间（≈ 下载完成时间），所以「今天」就是真·今天下载的。
-const newDlState = { range: 'today', data: null, loading: false };
+const newDlState = { range: 'today', data: null, loading: false, loadingMore: false };
+
+// 一页取多少个文件（≈ 几百个作品）。2026-11-02 用户要求取消「只显示最新 600 个作品」
+// 的硬上限：这里只当翻页的节奏，滚到底自动接着取，直到这个范围全部出来。
+const ND_PAGE_FILES = 1200;
 
 // 范围 → 起始时间戳（秒）。「今天」= 本地 0 点，不是「24 小时前」，跟人嘴里的今天对齐
 function ndSince(range) {
@@ -6470,11 +6556,13 @@ async function refreshNewDownloads(showLoading) {
     const body = document.getElementById('newBody');
     if (!body || newDlState.loading) return;
     newDlState.loading = true;
+    newDlState.loadingMore = false;
+    newDlState.data = null;
     if (showLoading) body.innerHTML = '<div class="loading">读取中…</div>';
     try {
-        const d = await fetch('/api/new_downloads?since=' + ndSince(newDlState.range) + '&limit=600')
-            .then((r) => r.json());
+        const d = await ndFetchPage('');
         if (d.error) throw new Error(d.error);
+        d.groups = d.groups || [];
         newDlState.data = d;
         renderNewDownloads();
     } catch (e) {
@@ -6482,6 +6570,150 @@ async function refreshNewDownloads(showLoading) {
     } finally {
         newDlState.loading = false;
     }
+}
+
+// 取一页：cursor 为空 = 第一页，否则接着上一页往下（服务端按 mtime 倒序 keyset 分页）
+function ndFetchPage(cursor) {
+    let url = '/api/new_downloads?since=' + ndSince(newDlState.range) + '&limit=' + ND_PAGE_FILES;
+    if (cursor) url += '&cursor=' + encodeURIComponent(cursor);
+    return fetch(url).then((r) => r.json());
+}
+
+// ---------- 继续加载（取消 600 上限的核心）----------
+// 滚到底就自动取下一页，接到已有数据里；不打断正在播的视频，也不跳滚动位置。
+async function ndLoadMore() {
+    const st = newDlState;
+    if (!st.data || st.loading || st.loadingMore) return;
+    if (!st.data.has_more || !st.data.cursor) return;
+    st.loadingMore = true;
+    ndFooterSay('正在加载更多…');
+    try {
+        const d = await ndFetchPage(st.data.cursor);
+        if (d.error) throw new Error(d.error);
+        ndMergePage(d);
+        st.loadingMore = false;
+        renderNewDownloads({ keepScroll: true });
+    } catch (e) {
+        st.loadingMore = false;
+        ndFooterSay('加载更多失败：' + (e.message || '网络错误') + '（往下滚可以再试）');
+    }
+}
+
+// 把新一页并进已有数据：同一个作者的并成一个块，同一个作品的并成一条。
+// 为什么要在前端合并：一页是按「文件」切的，同一个作品的几张图、
+// 甚至同一个作者的作品，完全可能被切在两页里。
+function ndMergePage(d) {
+    const base = newDlState.data;
+    if (!base) return;
+    const byUid = new Map();
+    base.groups.forEach((g) => byUid.set(g.uid, g));
+    (d.groups || []).forEach((g) => {
+        let t = byUid.get(g.uid);
+        if (!t) {
+            t = { uid: g.uid, nickname: g.nickname, level: g.level || '', freq: g.freq || '',
+                  status: g.status || '', tags: g.tags || [], items: [], count: 0 };
+            base.groups.push(t);
+            byUid.set(g.uid, t);
+        } else {
+            // 标注以先到的为准，缺的用新页补上（同一作者两页里理论上一样）
+            ['nickname', 'level', 'freq', 'status'].forEach((k) => {
+                if (!t[k] && g[k]) t[k] = g[k];
+            });
+            if ((!t.tags || !t.tags.length) && g.tags && g.tags.length) t.tags = g.tags;
+        }
+        (g.items || []).forEach((it) => ndMergeItem(t, it));
+        t.count = t.items.length;
+    });
+    base.total_files = d.total_files || base.total_files;
+    base.cursor = d.cursor || null;
+    base.has_more = !!d.has_more;
+}
+
+// 文件名里的数字按数值排（_2 排在 _10 前面）
+function ndNatKey(s) {
+    return String(s || '').replace(/(\d+)/g, (m) => m.padStart(12, '0'));
+}
+
+function ndMergeItem(g, it) {
+    const key = (it.date || '') + '\u0000' + (it.desc || '');
+    if (!g._map) {
+        g._map = new Map();
+        g.items.forEach((x) => g._map.set((x.date || '') + '\u0000' + (x.desc || ''), x));
+    }
+    if (!it.rels || !it.rels.length) it.rels = [it.rel];
+    const hit = g._map.get(key);
+    if (!hit) {
+        g._map.set(key, it);
+        g.items.push(it);
+        return;
+    }
+    hit.files = (hit.files || 1) + (it.files || 1);
+    hit.size = (hit.size || 0) + (it.size || 0);
+    hit.mtime = Math.max(hit.mtime || 0, it.mtime || 0);
+    if (it.is_video && !hit.is_video) {
+        // 上一页只看到封面图，这一页才看到视频 → 换成视频当门面（跟服务端同一套规则）
+        hit.is_video = true;
+        hit.rel = it.rel;
+        hit.rels = it.rels.slice();
+    } else if (!it.is_video && !hit.is_video) {
+        hit.rels = hit.rels.concat(it.rels);
+    }
+    if (hit.rels.length > 1) {
+        hit.rels = Array.from(new Set(hit.rels)).sort((a, b) => {
+            const ka = ndNatKey(a), kb = ndNatKey(b);
+            return ka < kb ? -1 : ka > kb ? 1 : 0;
+        });
+    }
+}
+
+// 底栏文案：还在加载 / 还有更多（可点）/ 已经全部显示
+function ndFooterHtml() {
+    const d = newDlState.data || {};
+    const shown = (newDlState.rendered || []).reduce((n, g) => n + g.items.length, 0);
+    const files = d.total_files || 0;
+    if (newDlState.loadingMore) return '<div class="nd-more">正在加载更多…</div>';
+    if (d.has_more) {
+        return `<div class="nd-more nd-more-btn" onclick="ndLoadMore()" title="往下滚会自动加载；也可以点这里">`
+            + `已显示 ${shown} 个作品（这个范围共 ${files} 个文件）· 继续往下滚，剩下的会自动加载</div>`;
+    }
+    return `<div class="nd-more">已全部显示：${shown} 个作品 / ${files} 个文件</div>`;
+}
+
+// 只改底栏文字，不重建整个列表（加载中 / 出错时用）
+function ndFooterSay(txt) {
+    const body = document.getElementById('newBody');
+    if (!body) return;
+    let el = body.querySelector('.nd-more');
+    if (!el) {
+        el = document.createElement('div');
+        el.className = 'nd-more';
+        body.appendChild(el);
+    }
+    el.classList.remove('nd-more-btn');
+    el.textContent = txt;
+}
+
+// 滚到底自动续页：绑一次就够，之后每次渲染只补一次「要不要立刻续」的判定
+let ndScrollBound = false;
+function ndArmMore() {
+    const body = document.getElementById('newBody');
+    if (!body) return;
+    if (!ndScrollBound) {
+        body.addEventListener('scroll', ndMaybeLoadMore, { passive: true });
+        ndScrollBound = true;
+    }
+    // 首屏内容不满一屏（滚不动）时也要能接着取，等布局落定再判一次
+    setTimeout(ndMaybeLoadMore, 60);
+}
+
+function ndMaybeLoadMore() {
+    const body = document.getElementById('newBody');
+    const d = newDlState.data;
+    if (!body || !d || !d.has_more || !d.cursor) return;
+    if (newDlState.loading || newDlState.loadingMore) return;
+    if (state.view !== 'new') return;
+    if (body.scrollHeight - body.scrollTop - body.clientHeight > 500) return;
+    ndLoadMore();
 }
 
 // ---------- 气泡列数：按当前可用宽度动态算 ----------
@@ -6897,9 +7129,7 @@ function ndRelayout() {
             </div>`;
         })
         .join('')
-        + (newDlState.data && newDlState.data.truncated
-            ? `<div class="nd-more">只显示了最新的 ${newDlState.data.shown_items} 个作品（这个范围共 ${newDlState.data.total_files} 个文件）。想全看完就缩小时间范围。</div>`
-            : '');
+        + ndFooterHtml();
     if (actGi >= 0) {
         const back = body.querySelector(`.nd-card[data-gi="${actGi}"][data-ii="${actIi}"]`);
         if (back) back.classList.add('active');
@@ -6914,16 +7144,37 @@ function ndRelayout() {
     }
     observeThumbs(body);
     ndTrimChips(body);
+    ndArmMore();          // 重排后列表可能变得不满一屏，顺手判一次要不要续页
 }
 
-function renderNewDownloads() {
-    // 数据换了（切时间范围 / 点刷新）→ 旧的播放状态作废：列表都重排了，索引对不上
-    if (ndPlay.active) ndPlayReset();
+function renderNewDownloads(opts) {
+    // keepScroll：继续加载下一页时用 —— 不重置右栏播放（正在播的视频不该被停掉），
+    // 也不把左列表的滚动位置弹回顶部
+    const keepScroll = !!(opts && opts.keepScroll);
     const body = document.getElementById('newBody');
     const sub = document.getElementById('newViewSub');
     const badge = document.getElementById('newDlBadge');
     if (!body) return;
-    const d = newDlState.data || { groups: [], total_files: 0, shown_items: 0 };
+    const d = newDlState.data || { groups: [], total_files: 0, has_more: false };
+
+    // 续页重绘前先记下「滚到哪儿」和「正在播的那张卡」（作者 uid + 日期/描述）：
+    // 新一页并进来后作品条数变多，同一作者块里的序号（ii）可能整体后移，
+    // 旧的 gi/ii 不能直接拿来点亮
+    const scrollTop = keepScroll ? body.scrollTop : 0;
+    let actUid = '', actKey = '';
+    if (keepScroll) {
+        const c0 = body.querySelector('.nd-card.active');
+        if (c0) {
+            const g0 = (newDlState.rendered || [])[Number(c0.dataset.gi)];
+            const it0 = g0 && g0.items[Number(c0.dataset.ii)];
+            if (g0 && it0) {
+                actUid = g0.uid;
+                actKey = (it0.date || '') + '\u0000' + (it0.desc || '');
+            }
+        }
+    }
+    // 数据换了（切时间范围 / 点刷新）→ 旧的播放状态作废：列表都重排了，索引对不上
+    if (!keepScroll && ndPlay.active) ndPlayReset();
 
     // 组内按作品发布时间从新到旧（「一个作者有多份就按顺序排好」）；
     // 同一天的用下载时间兜底，保证顺序稳定不会每次刷新乱跳
@@ -6939,7 +7190,8 @@ function renderNewDownloads() {
 
     if (sub) {
         sub.textContent = total
-            ? total + ' 个作品 · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者'
+            ? total + ' 个作品' + (d.has_more ? '（往下滚继续加载）' : '')
+                + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者'
             : '这个范围内没有新下载';
     }
     if (badge) {
@@ -6973,14 +7225,27 @@ function renderNewDownloads() {
             </div>`;
         })
         .join('')
-        + (d.truncated
-            ? `<div class="nd-more">只显示了最新的 ${d.shown_items} 个作品（这个范围共 ${d.total_files} 个文件）。想全看完就缩小时间范围。</div>`
-            : '');
+        + ndFooterHtml();
 
     observeThumbs(body);
     // 表头徽章「放不下就收成 ＋N」要在 DOM 落地、且容器有宽度之后才量得准
     ndTrimChips(body);
     ndWatchWidth();
+    if (keepScroll) {
+        body.scrollTop = scrollTop;
+        if (actUid) {
+            const gi = groups.findIndex((g) => g.uid === actUid);
+            if (gi >= 0) {
+                const ii = groups[gi].items.findIndex(
+                    (it) => (it.date || '') + '\u0000' + (it.desc || '') === actKey);
+                const card = ii >= 0
+                    ? body.querySelector(`.nd-card[data-gi="${gi}"][data-ii="${ii}"]`) : null;
+                if (card) card.classList.add('active');
+            }
+        }
+    }
+    // 首屏/续页落地后都判一次：内容没铺满一屏时要能自己接着往下取
+    ndArmMore();
 }
 
 // ---------- 宽度变化时自动重排（收起侧边栏 / 拖窗口 / 缩放）----------

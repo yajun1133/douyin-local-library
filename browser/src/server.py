@@ -512,7 +512,7 @@ def _files_rename_folder(uid, new_nick):
             _patch_data_after_rename(data, uid, old_folder, new_folder)
             tmp = DATA_JSON + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fp:
-                json.dump(data, fp, ensure_ascii=False)
+                json.dump(_index_only(data), fp, ensure_ascii=False)
             os.replace(tmp, DATA_JSON)
         load_data(force=True)
     except Exception as e:
@@ -738,7 +738,7 @@ def _works_delete_inner(uid, idxs, permanent=False):
         try:
             tmp = DATA_JSON + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fp:
-                json.dump(data, fp, ensure_ascii=False)
+                json.dump(_index_only(data), fp, ensure_ascii=False)
             os.replace(tmp, DATA_JSON)
         except OSError as e:
             return {"ok": False, "deleted": len(removed), "files": len(moved) + len(removed_rels),
@@ -900,7 +900,7 @@ def _recycle_restore(batch_id):
         try:
             tmp = DATA_JSON + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fp:
-                json.dump(data, fp, ensure_ascii=False)
+                json.dump(_index_only(data), fp, ensure_ascii=False)
             os.replace(tmp, DATA_JSON)
         except OSError as e:
             return {"ok": False, "error": "文件已搬回，但索引写盘失败（%s）。请点「⟳ 重新扫描」" % e}
@@ -981,7 +981,7 @@ def _files_rename_batch(uids=None, do_all=False):
             try:
                 tmp = DATA_JSON + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as fp:
-                    json.dump(data, fp, ensure_ascii=False)
+                    json.dump(_index_only(data), fp, ensure_ascii=False)
                 os.replace(tmp, DATA_JSON)
             except Exception as e:
                 return {"ok": True, "renamed": len(done), "failed": failed, "need_rescan": True,
@@ -1371,7 +1371,7 @@ def _files_dup_resolve_inner(decisions):
             if hit:
                 tmp = DATA_JSON + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as fp:
-                    json.dump(data, fp, ensure_ascii=False)
+                    json.dump(_index_only(data), fp, ensure_ascii=False)
                 os.replace(tmp, DATA_JSON)
                 load_data(force=True)
         except Exception as e:
@@ -1553,6 +1553,46 @@ HELPER_QUERY_UID = paths.HELPER_QUERY_UID
 HELPER_PROFILE = paths.HELPER_PROFILE   # 常驻：登录态查资料（3.12）
 PROBE_CACHE = {}   # rel -> codec（内存缓存，避免重复 ffprobe）
 BROWSER_OK_CODECS = {"h264", "vp8", "vp9", "av1", "mpeg4"}
+
+# ============ data.json 写盘前的过滤（2026-11-01 修） ============
+# 背景：data.json 只该有「扫描器产出的字段」。但 load_user_data() 是**原地 update**
+# 进 CACHE["accounts"] 的，而 CACHE["accounts"] 的 value 就是 CACHE["data"]["accounts"]
+# 的同一批 dict —— 于是内存里那份 CACHE["data"] 一直带着标注。
+# 以前五个写盘点（改名单个 / 删作品 / 恢复回收站 / 批量改名 / 重复去重）都直接
+# json.dump(CACHE["data"])，标注就跟着落了盘；而增量扫描是「读旧 data.json 再合并」，
+# 写进去就再也洗不掉，还会变成过期残缺值（实测 starred 只剩 93，真值 105）。
+#
+# 修法：写盘一律过 _index_only()，把这些**扫描器永远不会写**的标注字段剥掉。
+# 注意 douyin_id / signature / nickname / sec_uid / history 是扫描器 schema 里就有的字段，
+# 值的来源可能被标注改过 —— 那是历史遗留的灰色地带，这里不动，免得丢 history。
+ANNOT_ONLY_KEYS = frozenset((
+    "alias", "alt_accounts", "cover", "level", "main_uid",
+    "note", "starred", "status", "tags", "update_freq",
+))
+
+
+def _index_only(data):
+    """返回只含扫描器字段的索引副本，供 data.json 写盘用。
+
+    只浅拷贝「账号 -> 字段」这层字典：works / stats / history 里的内容仍是原对象引用，
+    不复制几十 MB 的作品列表，所以开销可以忽略。
+    内存里的 CACHE 不受影响（调用方读到的还是原来那份，标注照常生效）。
+    """
+    if not isinstance(data, dict):
+        return data
+    accounts = data.get("accounts")
+    if not isinstance(accounts, dict):
+        return data
+    clean = {}
+    for uid, acc in accounts.items():
+        if isinstance(acc, dict):
+            clean[uid] = {k: v for k, v in acc.items() if k not in ANNOT_ONLY_KEYS}
+        else:
+            clean[uid] = acc
+    out = dict(data)
+    out["accounts"] = clean
+    return out
+
 
 # 全量扫描的真实进度（原来前端固定等 1.5 秒就刷新，扫几分钟时会让人以为没生效）
 SCAN_STATE = {
@@ -1825,6 +1865,8 @@ CACHE = {
     "data_size": -1,   # data.json 字节数：和 mtime 一起校验（同一秒内多次替换 mtime 可能相同）
     "user_mtime": -1,  # user_data.json 修改时间，用于检测标注变化
     "synthetic_uids": [],  # 只在 user_data 里的合成账号（新建作者），重建列表时要先摘掉
+    "data_uids": set(),    # 这一版 data.json 里真实存在的 uid。合成账号只在「不在这里面」时才重建，
+                           # 否则作者下载完被扫描进来之后，会被当成合成账号重新建一遍 → 永远 0 作品
     "load_error": "",  # data.json 读坏了：接口要能告诉前端，而不是静默空列表
 }
 
@@ -1913,6 +1955,9 @@ def _load_data_locked(force=False):
         return False
     CACHE["load_error"] = ""
     accounts = data.get("accounts", {})
+    # 记下「这一版索引里到底有哪些 uid」（黑名单剔除前）。load_user_data 靠它区分
+    # 「还是合成账号」和「已经被扫描进来了」—— 见 _load_user_data_locked 里那段说明。
+    CACHE["data_uids"] = set(accounts.keys())
     # 黑名单过滤：命中「不下载名单」的作者直接从内存索引里剔除，
     # 主页列表、搜索、侧边栏统计都不会再出现（磁盘文件原样保留，重扫也不会放回来）。
     # 用 uid / sec_uid / 昵称三路匹配，改名也能兜底。
@@ -2038,13 +2083,21 @@ def _load_user_data_locked(force=False):
     list_index = dict(CACHE.get("list_index") or {})
 
     # 上一轮的「合成账号」（只在 user_data 里、data.json 没有的，比如新建作者）先摘掉，
-    # 下面按当前标注重建——否则改名/删除后列表里残留旧值
+    # 下面按当前标注重建——否则改名/删除后列表里残留旧值。
+    #
+    # ⚠️ 2026-11-01 的坑：这里原来**无条件** pop，不检查这一版 data.json 里是不是已经有他了。
+    # 于是作者从「新建作者」变成「下载完了、被扫描进 data.json」之后，每次刷新标注都会把
+    # 刚读进来的真账号 pop 掉、再按 user_data 重新建一个空壳 → 作品数永远 0、主页永远
+    # 「该分类下暂无作品」，只有重启进程（synthetic_uids 被清空）才好。
+    # 现在只摘「这一版 data.json 里确实没有」的那些。
     old_synthetic = set(CACHE.get("synthetic_uids") or [])
-    for uid in old_synthetic:
+    data_uids = CACHE.get("data_uids") or set()
+    stale_synthetic = {u for u in old_synthetic if u not in data_uids}
+    for uid in stale_synthetic:
         accounts.pop(uid, None)
         list_index.pop(uid, None)
-    if old_synthetic:
-        lst = [it for it in lst if it.get("uid") not in old_synthetic]
+    if stale_synthetic:
+        lst = [it for it in lst if it.get("uid") not in stale_synthetic]
     synthetic = []
     # 用户删掉某个标注字段时，要把它从内存里撤掉，否则旧值会一直残留
     for uid, old in (CACHE.get("user_applied") or {}).items():
@@ -3132,9 +3185,13 @@ class Handler(BaseHTTPRequestHandler):
 
         since = _int("since", 0)
         uid_only = ((q.get("uid") or [""])[0] or "").strip()
-        # 上限按「作品条数」算：一个作品最多占 9 个文件，多取几倍再剪
-        want = max(1, min(_int("limit", 400), 2000))
-        total_files, rows = download_db.recent(since, want * 8, uid_only or None)
+        # 一页取多少个「文件」（不是一个作品：一个图文作品可能占 9 个文件）。
+        # 2026-11-02 用户要求取消「只显示最新的 600 个作品」这个上限：
+        # 页大小只是一个翻页节奏，滚到底自动接着取下一页，直到这个范围全部出来。
+        page_files = max(1, min(_int("limit", 2400), 20000))
+        cursor = ((q.get("cursor") or [""])[0] or "").strip()
+        total_files, rows, next_cursor, has_more = download_db.recent(
+            since, page_files, uid_only or None, cursor or None)
 
         load_data()
         # 等级 / 更新频率 / 标签都存在 user_data.json 里，叠加进 CACHE 才拿得到
@@ -3202,22 +3259,17 @@ class Handler(BaseHTTPRequestHandler):
                 if len(it["rels"]) > 1:
                     it["rels"].sort(key=_natkey)
 
-        shown, kept = 0, []
+        # 这一页的行全部给出去（不再按作品条数砍）：砍了的话被砍掉的文件
+        # 在下一页里也不会再出现（cursor 已经越过它们的 mtime），就直接丢了
         for g in out:
-            if shown >= want:
-                break
-            items = g["items"][:want - shown]
-            shown += len(items)
             g["count"] = len(g["items"])
-            g["items"] = items
-            kept.append(g)
 
-        kept_files = sum(i["files"] for g in kept for i in g["items"])
         self._send_json({
             "since": since, "until": int(time.time()),
-            "total_files": total_files, "shown_items": shown,
-            "truncated": total_files > kept_files,
-            "groups": kept,
+            "total_files": total_files,
+            "shown_items": sum(len(g["items"]) for g in out),
+            "cursor": next_cursor, "has_more": bool(has_more),
+            "groups": out,
         })
 
     def _handle_api_get(self, path):
@@ -4299,7 +4351,15 @@ class Handler(BaseHTTPRequestHandler):
             days = None
 
         uids = [str(u) for u in (data.get("uids") or []) if str(u).strip()]
-        use_all = not uids
+        # 待下载区推过来的作者常常还没有 uid（uid 只在 8790 的队列里、或者还没建档），
+        # 所以除了 uids 也接受 sec_uids：能反查到期库里就带上昵称/等级/标签，
+        # 查不到也照样能导出链接（DouK 的 accounts_urls 只认 url）。
+        sec_only = []
+        for s in (data.get("sec_uids") or []):
+            s = norm_sec_uid(s)
+            if s and s not in sec_only:
+                sec_only.append(s)
+        use_all = not uids and not sec_only
         if use_all:
             uids = list(acc.keys())
 
@@ -4321,8 +4381,40 @@ class Handler(BaseHTTPRequestHandler):
                 "status": a.get("status") or "",
                 "latest": (it.get("latest") or "")[:10],
                 "earliest": (it.get("earliest") or "")[:10],
+                # 本地库里有没有作品 —— 决定要不要写 DouK 的 earliest（见 _earliest_of）
+                "has_works": bool(it.get("work_count") or it.get("latest")),
                 "url": ("https://www.douyin.com/user/" + sec) if sec else "",
             })
+        # sec_uid 来源：按 sec_uid 反查账号，查得到就把标注一并带上
+        if sec_only:
+            by_sec = {}
+            for u, a in acc.items():
+                s = (a.get("sec_uid") or "").strip()
+                if s and s not in by_sec:
+                    by_sec[s] = u
+            have = {r["sec_uid"] for r in rows if r["sec_uid"]}
+            for s in sec_only:
+                if s in have:
+                    continue
+                have.add(s)
+                u = by_sec.get(s) or ""
+                a = acc.get(u) or {}
+                it = index.get(u) or {}
+                rows.append({
+                    "uid": u,
+                    "nickname": a.get("nickname") or it.get("nickname") or "",
+                    "alias": a.get("alias") or it.get("alias") or "",
+                    "douyin_id": a.get("douyin_id") or it.get("douyin_id") or "",
+                    "sec_uid": s,
+                    "level": a.get("level") or "",
+                    "tags": a.get("tags") or [],
+                    "status": a.get("status") or "",
+                    "latest": (it.get("latest") or "")[:10],
+                    "earliest": (it.get("earliest") or "")[:10],
+                    "has_works": bool(it.get("work_count") or it.get("latest")),
+                    "url": "https://www.douyin.com/user/" + s,
+                })
+
         if not rows:
             return {"ok": False, "error": "没有可导出的作者"}
 
@@ -4367,17 +4459,25 @@ class Handler(BaseHTTPRequestHandler):
                     "file": os.path.basename(fp), "path": fp, "format": "txt"}
 
         # ---------- JSON：DouK 账号数据 ----------
+        # 用户定的规则（2026-11-01，写死在这里，改动先问）：
+        #   1. 本地库里**一件作品都没有** → 不设置最早时间（earliest 留空 = DouK 全量抓）；
+        #   2. 本地库**有作品** → 拿「本地最新作品日期」当基准，设置里「往前提 N 天」
+        #      就往前推 N 天（填 3 = 3 天前、填 7 = 一周前）。往前推是为了不漏边界。
+        # 「往前提」那一栏留空 = 不设置（导出前的提示里已经写明），此时两条规则都不写日期。
         def _earliest_of(r):
-            if not days or not r["latest"]:
+            if not days or not r["has_works"]:
                 return ""
-            try:
-                d = datetime.strptime(r["latest"], "%Y-%m-%d") - timedelta(days=days)
+            base = r["latest"] or r["earliest"]      # 兜底：latest 万一缺了退回最早那一天
+            for pat in ("%Y-%m-%d", "%Y/%m/%d"):
+                try:
+                    d = datetime.strptime(base, pat) - timedelta(days=days)
+                except ValueError:
+                    continue
                 # 必须输出斜杠格式 2026/10/21：DouK 的 check_date 只认 strptime(value, '%Y/%m/%d')
                 # （lib/src/interface/account.pyc）。写成横杠 2026-10-21 会报「作品最早发布日期无效」
                 # 并把这个限制丢掉 → 那个作者变成全量重抓，白跑一遍。
                 return d.strftime("%Y/%m/%d")
-            except ValueError:
-                return ""
+            return ""
 
         entries = [{
             "mark": r["nickname"] or r["alias"] or r["sec_uid"],
@@ -4388,13 +4488,16 @@ class Handler(BaseHTTPRequestHandler):
             "enable": True,
         } for r in usable]
         with_e = sum(1 for e in entries if e["earliest"])
+        # 没有本地作品的作者：按规则 1 一律不写日期（前端提示里会说清有几个）
+        no_works = sum(1 for r in usable if not r["has_works"])
 
         if json_mode == "accounts":
             fp = _pick("DouK账号", ".json")
             with open(fp, "w", encoding="utf-8", newline="\n") as w:
                 json.dump(entries, w, ensure_ascii=False, indent=4)
             return {"ok": True, "count": len(entries), "skipped": len(rows) - len(usable),
-                    "with_earliest": with_e, "file": os.path.basename(fp), "path": fp,
+                    "with_earliest": with_e, "no_works": no_works,
+                    "file": os.path.basename(fp), "path": fp,
                     "format": "json", "json_mode": "accounts"}
 
         # 完整 settings.json：以现有配置为底（保留 cookie / browser_info 等），只换账号列表
@@ -4408,13 +4511,15 @@ class Handler(BaseHTTPRequestHandler):
 
         # 一键写进 DouK：替换 Volume/settings.json 的账号队列（先备份旧文件）
         if target == "douk":
-            return self._write_douk_settings(base, entries, with_e, len(rows) - len(usable))
+            return self._write_douk_settings(base, entries, with_e,
+                                             len(rows) - len(usable), no_works)
 
         fp = _pick("DouK配置", ".json")
         with open(fp, "w", encoding="utf-8-sig", newline="\r\n") as w:
             json.dump(base, w, ensure_ascii=False, indent=4)
         return {"ok": True, "count": len(entries), "skipped": len(rows) - len(usable),
-                "with_earliest": with_e, "file": os.path.basename(fp), "path": fp,
+                "with_earliest": with_e, "no_works": no_works,
+                "file": os.path.basename(fp), "path": fp,
                 "format": "json", "json_mode": "settings", "has_cookie": bool(base.get("cookie"))}
 
     def _douk_running(self):
@@ -4432,7 +4537,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return False
 
-    def _write_douk_settings(self, base, entries, with_e, skipped):
+    def _write_douk_settings(self, base, entries, with_e, skipped, no_works=0):
         """把导出的账号队列**直接写进** DouK 的 settings.json（整份替换 accounts_urls）。
 
         跟「导出到 export/ 目录」的区别：用户点完这里就能直接开 DouK 下载，不用自己搬文件。
@@ -4475,7 +4580,7 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "写 DouK 配置失败：%s" % e}
 
         return {"ok": True, "target": "douk", "count": len(entries), "skipped": skipped,
-                "with_earliest": with_e, "path": src,
+                "with_earliest": with_e, "no_works": no_works, "path": src,
                 "backup": os.path.basename(backup), "has_cookie": bool(base.get("cookie"))}
 
     def do_POST(self):

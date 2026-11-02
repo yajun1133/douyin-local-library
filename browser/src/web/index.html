@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261031c102">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261031c102">
-    <link rel="stylesheet" href="style.css?v=20261031c102">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261031c106">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261031c106">
+    <link rel="stylesheet" href="style.css?v=20261102c107">
 </head>
 <body>
     <button class="sidebar-expand" id="sidebarExpand" title="展开侧边栏">»</button>
@@ -298,25 +298,27 @@
                     <h2>导出作者信息 <span class="view-sub" id="exportViewSub"></span></h2>
                 </div>
 
-                <!-- ===== 待下载区：由浏览器插件推送过来 ===== -->
-                <div class="export-panel queue-panel" id="queuePanel">
-                    <h3>📥 待下载区 <span class="export-panel-sub" id="queueSub">读取中…</span>
-                        <button class="btn btn-mini" onclick="queueTogglePreview()" id="queuePreviewBtn"
-                                title="展开看详情（抖音号 / 粉丝 / 备注）">预览</button>
-                        <button class="btn btn-mini" onclick="queueClear()" id="queueClearBtn"
-                                title="清空待下载区（清空后可以撤销）">清空</button>
-                        <button class="btn btn-mini hidden" onclick="queueUndo()" id="queueUndoBtn"
-                                title="把刚清空的内容放回来">取消清空</button>
-                        <button class="btn btn-mini" onclick="queueRefreshClick()" id="queueRefreshBtn"
-                                title="重新读取待下载区（插件刚推过来时可以点一下）">刷新</button>
-                    </h3>
-                    <div class="queue-body" id="queueBody"></div>
-                </div>
-
                 <div class="export-layout">
 
-                    <!-- ===== 左：选作者（同属性并集、跨属性交集） ===== -->
+                    <!-- ===== 左：待下载区 + 选作者（同属性并集、跨属性交集） ===== -->
                     <div class="export-col">
+
+                        <!-- 待下载区：由浏览器插件推送过来（2026-11-01 从顶部整块挪进左栏，宽度跟着栏走） -->
+                        <div class="export-panel queue-panel" id="queuePanel">
+                            <h3>📥 待下载区 <span class="export-panel-sub" id="queueSub">读取中…</span></h3>
+                            <div class="queue-body" id="queueBody"></div>
+                            <div class="export-foot-row queue-foot">
+                                <button class="btn btn-mini" onclick="queueTogglePreview()" id="queuePreviewBtn"
+                                        title="展开看详情，同时把这一区挂成「③ 导出」的对象；不点它，这一区不参与导出">预览</button>
+                                <button class="btn btn-mini" onclick="queueRefreshClick()" id="queueRefreshBtn"
+                                        title="重新读取待下载区（插件刚推过来时可以点一下）">刷新</button>
+                                <button class="btn btn-mini" onclick="queueClear()" id="queueClearBtn"
+                                        title="清空待下载区（清空后可以撤销）">清空</button>
+                                <button class="btn btn-mini hidden" onclick="queueUndo()" id="queueUndoBtn"
+                                        title="把刚清空的内容放回来">取消清空</button>
+                            </div>
+                        </div>
+
                         <div class="export-panel">
                             <h3>① 选作者 <span class="export-panel-sub" id="exportCountSub"></span>
                                 <button type="button" class="btn btn-mini export-reset-btn" onclick="resetExportFilters()"
@@ -405,9 +407,12 @@
                                 </div>
                             </div>
                             <div class="export-tip hidden" id="exportEarliestTip">
-                                这一项写进 JSON 的 <code>earliest</code>：每位作者的<b>已下载最新作品日期往前推 N 天</b>，
-                                推几天就填几天（填 3 = 3 天前、填 7 = 一周前）。<b>留空 = 不设置</b>，DouK 会把作品整个抓一遍。<br>
-                                往前推是为了不漏边界 —— DouK 翻到早于这个日期的页就停（<code>early_stop</code>），
+                                这一项写进 JSON 的 <code>earliest</code>，按每位作者的本地情况分两种：<br>
+                                · <b>本地有作品</b> → 该作者的<b>本地最新作品日期往前推 N 天</b>（填 3 = 3 天前、填 7 = 一周前），
+                                往前推是为了不漏边界；<br>
+                                · <b>本地一件作品都没有</b> → <b>不设最早时间</b>，让 DouK 把作品整个抓一遍。<br>
+                                上面这栏<b>留空 = 全都不设置</b>（有作品的也不设）。<br>
+                                DouK 翻到早于这个日期的页就停（<code>early_stop</code>），
                                 所以设了它之后「每个号最多翻几页」建议留 0，别让页数先把它截断。
                             </div>
                             <div class="export-foot-row">
@@ -676,6 +681,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261031c102"></script>
+    <script src="app.js?v=20261102c107"></script>
 </body>
 </html>

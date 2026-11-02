@@ -157,33 +157,53 @@ def totals():
     return {"authors": a or 0, "files": f or 0, "bytes": b or 0}
 
 
-def recent(since=0, limit=600, uid=None):
+def recent(since=0, limit=600, uid=None, cursor=None):
     """最近下载的文件（按 mtime 倒序），给「新下载」页用。
 
     mtime 是文件落盘时间 ≈ 下载完成时间，所以「今天下载的」= mtime >= 今天 0 点。
-    返回 (符合条件的总文件数, [{"rel","uid","name","size","mtime"}, ...])。
-    只读，不改库；limit 只截返回行数，总数照实算。
+    返回 (符合条件的总文件数, 本页行, 下一页 cursor, 还有没有下一页)。
+
+    2026-11-02：不再有「只看最新 N 个」的硬上限，改成一页一页往下翻。
+    分页用 keyset（cursor = "mtime|rel"，rel 是主键保证唯一），不用 OFFSET：
+    翻页途中又有新文件落盘时，OFFSET 会整体错位（重复或漏掉），
+    而 (mtime, rel) 是排好序的稳定坐标，多取一条还能判断「还有没有下一页」。
+    只读，不改库。
     """
     try:
         c = _connect()
     except sqlite3.Error:
-        return 0, []
+        return 0, [], None, False
+    limit = max(1, int(limit))
     try:
-        where = "mtime >= ?"
-        args = [int(since or 0)]
+        base_where = "mtime >= ?"
+        base_args = [int(since or 0)]
         if uid:
-            where += " AND uid = ?"
-            args.append(uid)
-        total = c.execute("SELECT COUNT(*) FROM file WHERE " + where, args).fetchone()[0]
+            base_where += " AND uid = ?"
+            base_args.append(uid)
+        total = c.execute("SELECT COUNT(*) FROM file WHERE " + base_where, base_args).fetchone()[0]
+
+        where, args = base_where, list(base_args)
+        if cursor:
+            try:
+                cm, crel = str(cursor).split("|", 1)
+                cm = int(cm)
+            except (TypeError, ValueError):
+                cm, crel = None, None
+            if cm is not None:
+                where += " AND (mtime < ? OR (mtime = ? AND rel < ?))"
+                args += [cm, cm, crel]
         rows = c.execute(
             "SELECT rel, uid, name, size, mtime FROM file WHERE " + where +
-            " ORDER BY mtime DESC LIMIT ?", args + [max(1, int(limit))]).fetchall()
+            " ORDER BY mtime DESC, rel DESC LIMIT ?", args + [limit + 1]).fetchall()
     except sqlite3.Error:
-        return 0, []
+        return 0, [], None, False
     finally:
         c.close()
+    more = len(rows) > limit
+    rows = rows[:limit]
+    nxt = ("%d|%s" % (rows[-1][4] or 0, rows[-1][0])) if rows else None
     return total or 0, [{"rel": r[0], "uid": r[1], "name": r[2] or "",
-                         "size": r[3] or 0, "mtime": r[4] or 0} for r in rows]
+                         "size": r[3] or 0, "mtime": r[4] or 0} for r in rows], nxt, more
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
 >
 > 本文只回答「**怎么接手**」。技术细节（每个接口的参数、每个坑的根因）在 `docs/PROJECT.md`；面向用户的操作说明在 `GUIDE.md`。
 >
-> 最后更新：2026-10-31 19:40 · 前端 `?v=20261031c93`（本文档已精简，历史细节已移出仓库，本地保留在 `_archive/`）
+> 最后更新：2026-11-01 19:50 · 前端 `?v=20261031c102`（本文档已精简，历史细节已移出仓库，本地保留在 `_archive/`）
 
 ---
 
@@ -17,14 +17,16 @@
 | 技术栈 | Python `ThreadingHTTPServer` + 原生 HTML/CSS/JS。**无框架、无构建、无数据库、无 AI 依赖** |
 | 端口 | `http://127.0.0.1:8723` |
 | 启动 | 双击 `start-browser.bat`，或 `python src\server.py`。**已在运行时双击不会再起第二个进程**（脚本先 curl `/api/meta` 探测，活着就只开浏览器并退出） |
-| 数据量 | 现查 `/api/meta`（2026-10-31：1716 位作者 / 236,252 个作品 / 索引约 70MB） |
+| 数据量 | 现查 `/api/meta`（2026-11-01：1752 位作者 / 240,687 个作品 / 索引约 72MB） |
 | 不可再生的数据 | **只有 `data\user_data.json`（用户的标注）**，其余全可重建 |
 
 **最容易踩的六条**（详见第 4 节）：
 1. 改了 html/js/css **必须升** `index.html` 里的 `?v=` 版本号，否则浏览器用旧缓存，看起来「改了没反应」。
 2. 写 `user_data.json` **只能走 `merge_save_user_data()`**，直接 `open("w")` 会整库覆盖（真出过事故，见第 5 节）。
-3. 前端**永远不要** fetch `data.json`（约 75MB）。
-4. 标注字段（星标/标签/封面/大小号…）**只存在于 `user_data.json`**，靠服务端 `load_user_data()` 叠加，`data.json` 里没有。
+3. 前端**永远不要** fetch `data.json`（约 72MB）。
+4. 标注字段（星标/标签/封面/大小号…）的**权威只有 `user_data.json`**，靠服务端 `load_user_data()` 叠加进内存。
+   - 历史坑（2026-11-01 已修）：`CACHE["accounts"]` 和 `data.json` 的账号是同一批 dict，五个写盘口会把标注一起 dump 回 `data.json`。现在写盘统一过 `_index_only()`，剥掉 10 个标注字段；老残留用 `python tools\clean_index.py` 清（`--dry` 先看）。
+   - 仍要守：**别拿 `data.json` 当标注备份或恢复源**，详见 `PROJECT.md` 第二章。
 5. 加设置项：**只在 `DEFAULT_SETTINGS` 里加一行就够**，`load_settings()` 按类型通用合并。别再去读盘那段逐个 `if` 手写——`fav_latest_mode` 就是这么丢的（写了读不回来，2026-10-30 修）。
 6. 本机 ffmpeg 是 **LGPL 构建，没有 libx264**，转码只能用 `libopenh264` / `h264_mf`。**但 2026-10-28 起本机装了 Windows「HEVC 视频扩展」，Chrome 已能直接硬解 HEVC——正常情况根本不会触发转码**，只有换机器没装扩展、或个别文件原生解不动时才走到这条路。
 
@@ -39,7 +41,7 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 ```
 
 - 作者数 / 星标 / 标签云 都在这个接口；口径说明见 `PROJECT.md` 第一章
-- 2026-10-31 核对：作者 **1716** · 星标 **105** · 前端 **c93** · `node --check` 与 `py_compile` 均通过
+- 2026-11-01 核对：作者 **1752** · 星标 **105** · 前端 **c102** · `node --check`（node v26.13.0，已在 PATH）与 `py_compile` 均通过
 - **没有阻塞性缺陷**，剩下的都是体验优化
 - 缺 sec_uid、转码 job 丢失、死代码等已知项见 `PROJECT.md` 第五章末尾
 
@@ -126,7 +128,7 @@ curl -s --noproxy 127.0.0.1 -G "http://127.0.0.1:8723/api/authors" --data-urlenc
 ### C. 服务端
 
 11. **`data.json` 里没有 starred / tags / cover / alt_accounts / history / status / level**，全靠 `load_user_data()` 叠加。新增标注字段要同步两处：`server.py` 的 `load_user_data()` 和前端 `state.filtered`。
-12. **`alt_accounts` 只能整组重写**（唯一入口 `writeAltGroup(members)`），它的语义是「同组其他所有人」，绕过去写成二元边，3 个以上立刻散架。改完跑 `python tools\历史脚本\fix_alt_groups.py --dry` 确认违规 0。
+12. **`alt_accounts` 只能整组重写**（唯一入口 `writeAltGroup(members)`），它的语义是「同组其他所有人」，绕过去写成二元边，3 个以上立刻散架。改完跑 `python tools\legacy\fix_alt_groups.py --dry` 确认违规 0。
 13. **长耗时操作一律「起任务 + 轮询」**，禁止在 HTTP 请求里同步等：重扫（`/api/rescan` + `/api/rescan_status`）、转码（`/api/transcode` + `/api/transcode_status`）、批量获取资料（`/api/batch_profile` + `/api/batch_status`）。
 14. **批量删/改文件的循环，异常兜底必须 `except BaseException`** 且返回 `failed` 计数。用 `except Exception` 时一个文件被占用就会让整个请求变空响应，看着像服务挂了。
 15. **`scanner.py` 的进度协议是 stdout 两行标记**：`PROGRESS <done>/<total>`、`PHASE <阶段>`（都要 `flush=True`），`server.py` 逐行解析进 `SCAN_STATE`。改格式要同步改解析。
@@ -241,7 +243,7 @@ curl -X POST http://127.0.0.1:8723/api/save -H "Content-Type: application/json" 
 
 ## 9. 给新对话的开场话术（直接复制）
 
-> 项目在 `D:\ai_Project\douyin-local-library\browser\`，是一个本地抖音下载内容浏览器（Python `ThreadingHTTPServer` + 原生前端，端口 8723，版本 `?v=20261031c93`）。
+> 项目在 `D:\ai_Project\douyin-local-library\browser\`，是一个本地抖音下载内容浏览器（Python `ThreadingHTTPServer` + 原生前端，端口 8723，版本 `?v=20261031c102`）。
 > 请先读 `docs\HANDOVER.md`（怎么接手）和 `docs\PROJECT.md`（技术细节与踩坑），再动手。
 > 必须守住的：改前端要升 `?v=` 版本号；写 `user_data.json` 只能走 `merge_save_user_data()`；不要 fetch `data.json`；加设置项只改 `DEFAULT_SETTINGS`；本机 ffmpeg 无 libx264。
 > 我的需求是：……

@@ -4148,7 +4148,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261031c102';
+    content: 'v20261031c106';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -5404,6 +5404,10 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     background: #fff7f9; border: 1px solid #ffe0e7;
     border-radius: 8px; font-size: 12px; color: #b0596b;
 }
+/* 2026-11-02：取消「只显示最新 600 个」上限后，底栏变成「还能继续加载」的入口：
+   往下滚会自动接下一页，点一下也能立刻加载（给不想滚到底的人留个手） */
+.nd-more-btn { cursor: pointer; user-select: none; }
+.nd-more-btn:hover { background: #ffeef2; border-color: #ffcdd8; }
 
 /* ============================================================================
    2026-10-31 (c85)：新下载改成「左列表 + 右常驻播放」
@@ -5775,7 +5779,18 @@ body.side-collapsed .nd-body { grid-template-columns: minmax(0, 1fr) 500px !impo
 .export-preview-headrow .ep-h-name { font-size: 12.5px; }
 
 /* ===== 待下载区（浏览器插件推送） ===== */
-.queue-panel { margin: 0 0 14px; }
+.queue-panel { margin: 0; }
+/* 待下载区底栏：一排小按钮靠左（2026-11-01 起这里没有导出按钮了，
+   写 DouK 统一收到 ③ 导出那一个入口；点「预览」才把这一区挂成导出对象）。
+   选择器要带上 .export-foot-row，否则被上面 .export-panel .export-foot-row 的
+   justify-content: flex-end 压过去，一排按钮全挤到右边。 */
+.export-panel .export-foot-row.queue-foot { justify-content: flex-start; flex-wrap: wrap; row-gap: 8px; }
+/* 导出对象来自待下载区时的说明块（占 .export-preview 的位置，但不是列表） */
+.export-preview-note {
+    padding: 10px 12px; font-size: 12px; line-height: 1.7; color: #475569;
+    background: #f7f9fc; border: 1px solid var(--border); border-radius: 10px;
+}
+.export-preview-note b { color: #1d4ed8; }
 .queue-body { display: flex; flex-direction: column; gap: 6px; max-height: 230px; overflow-y: auto; }
 .queue-item {
     padding: 6px 10px; border: 1px solid #e6e8ee; border-radius: 8px;

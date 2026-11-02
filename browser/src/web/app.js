@@ -6712,6 +6712,9 @@ function ndMaybeLoadMore() {
     if (!body || !d || !d.has_more || !d.cursor) return;
     if (newDlState.loading || newDlState.loadingMore) return;
     if (state.view !== 'new') return;
+    // 视图藏着的时候（进作者详情页看作品）不能续页：这时高度是 0，
+    // 会被判成「已经滚到底」，结果在后台一路把所有页都拉下来
+    if (!body.clientWidth || !body.clientHeight) return;
     if (body.scrollHeight - body.scrollTop - body.clientHeight > 500) return;
     ndLoadMore();
 }
@@ -6725,10 +6728,20 @@ const ND_PAD = 24;         // 气泡左右内边距合计（12 + 12）
 const ND_GAP = 10;         // 卡距
 
 // 当前一行最多能放几张、每张多宽
+let ndGoodW = 0;      // 上一次「视图可见」时量到的列表可用宽（隐藏时的兜底值）
 function ndLayout() {
     const list = document.getElementById('newBody');
-    const W = list ? list.clientWidth - 1 : 0;    // -1：防浮点误差把最后一列挤下去
-    if (W <= ND_PAD) return { maxCols: 1, cardW: ND_CARD_MIN };
+    let W = list ? list.clientWidth - 1 : 0;    // -1：防浮点误差把最后一列挤下去
+    if (W > ND_PAD) {
+        ndGoodW = W;
+    } else {
+        // 视图被藏起来（进作者详情 / 切到别的页）时 clientWidth = 0。
+        // 这时绝不能拿 0 去算：maxCols 会退化成 1，每个气泡都被撑成整行宽、
+        // 一张卡占满整个列表 —— 返回「新下载」的第一眼就是一张巨图闪一下
+        // （用户 2026-11-02 反馈的「卡一帧图片」就是这个）。
+        // 先沿用上次可见时量到的宽度；从没量到过才按窗口宽估一个。
+        W = ndGoodW || Math.max(480, (window.innerWidth - 320) - ND_PAD);
+    }
     const maxCols = Math.max(1, Math.floor((W - ND_PAD + ND_GAP) / (ND_CARD_MIN + ND_GAP)));
     // 卡片均分整行：放满 maxCols 张时正好铺满，不留缝
     const cardW = (W - ND_PAD - (maxCols - 1) * ND_GAP) / maxCols;
@@ -7098,6 +7111,9 @@ function ndRelayout() {
     const body = document.getElementById('newBody');
     const groups = newDlState.rendered;
     if (!body || !groups || !groups.length) return;
+    // 视图藏着（clientWidth = 0）就别重排：这时量出来的宽度是假的，
+    // 排出来会是「一卡一整行」，返回时正好被用户看见（见 ndLayout 里的说明）
+    if (!body.clientWidth) return;
     const lay = ndLayout();
     const scrollTop = body.scrollTop;          // 先记住滚到哪儿
     // 正在播的那张卡的 (gi, ii)，重建后重新点亮
@@ -7264,8 +7280,13 @@ function ndWatchWidth() {
     if (ndResizeObs) ndResizeObs.disconnect();
     let lastW = list.clientWidth;
     ndResizeObs = new ResizeObserver(() => {
-        // 宽度没实质变化就跳过，否则滚动条出现/消失也会触发一轮重排，白白闪一下
         const w = list.clientWidth;
+        // 0 = 视图被藏起来了（进作者详情/切页），不是真的变窄。
+        // 这时候**不能**记进 lastW、也不能排重排：否则会按 0 宽算出一列布局，
+        // 返回时先看到「一张卡占满整行」的巨图（2026-11-02 用户反馈卡帧）。
+        // 真显示出来时 w 会和 lastW 不一样，那次再重排就行。
+        if (w <= 0) return;
+        // 宽度没实质变化就跳过，否则滚动条出现/消失也会触发一轮重排，白白闪一下
         if (Math.abs(w - lastW) < 8) return;
         lastW = w;
         // 重排要重建 DOM，防抖 120ms，避免拖窗口时一路狂重建

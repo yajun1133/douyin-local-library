@@ -388,6 +388,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
   - 分页用 keyset（`cursor = mtime|rel`）而不是 `OFFSET`：翻页途中又有新文件落盘时 `OFFSET` 会整体错位，`(mtime, rel)` 是稳定坐标
   - 一页按**文件**切，所以同一作品/同作者的记录可能横跨两页 → 前端 `ndMergePage` / `ndMergeItem` 按 `uid` + `日期\u0000描述` 并回一条（视频优先当门面、`rels` 去重后按文件名数字排序）
   - 续页重绘走 `renderNewDownloads({keepScroll:true})`：不 `ndPlayReset()`、按锚点还原 `scrollTop`、按 `uid + 日期/描述` 重新点亮正在播的那张卡
+- **视图隐藏时不能量宽度重排**（2026-11-02 修「从作者页退出来卡一帧图片」）：进作者详情会 `newView.classList.add('hidden')`，此时 `#newBody.clientWidth = 0`。旧版 `ResizeObserver` 看到 0 就当成「变窄了」排了一次重排，`ndLayout()` 用 0 算出 `maxCols=1`、每个气泡 `full`（整行宽）→ 返回新下载页第一眼就是「一张卡占满整列」的巨图，120ms 后才被第二次重排纠正。现在三道闸：① 观察器遇到 `w<=0` 直接返回、不写 `lastW`；② `ndLayout()` 在隐藏时沿用上次可见宽度 `ndGoodW`（从没量到过才按窗口宽估）；③ `ndRelayout()` / `ndMaybeLoadMore()` 在容器宽高为 0 时直接返回（顺带防止在详情页后台把所有页都续下来）
 - 切走视图 / 进详情页时必须 `ndPlayReset()`（清空 stage 的 DOM），否则 `<video>` 会在后台继续出声
 
 ### 4. 导出作者信息（`#exportView`）
@@ -535,6 +536,7 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-02 c108** 修「从作者页返回新下载页卡一帧巨图」：视图隐藏时 `clientWidth=0` 被 `ResizeObserver` 当成变窄，重排退化成「一卡一整行」；改为隐藏时不重排、`ndLayout` 沿用上次可见宽、`ndRelayout`/`ndMaybeLoadMore` 加零宽高闸
 - **2026-11-02 c107** 取消「新下载只显示最新 600 个作品」的上限：改成按文件分页 + 滚到底自动续页，`/api/new_downloads` 由 `limit`(作品数)/`truncated` 换成 `limit`(文件数)/`cursor`/`has_more`
 - **2026-10-31 DouK 修** 文件名撞车导致作品被静默覆盖：`name_format` 加作品 `id`（`create_time nickname desc id`），`parse_work_filename()` 剥掉末尾那串 ID。实测那轮 3608 个文件名对应 3660 个作品 → 丢了 52 个；日志里反反复复的 `PermissionError(13)` 就是这个病的症状，不是杀软
 - **2026-10-31 c93** 新下载缩略图改「连续铺开 + 换作者标记」；右侧播放区尺寸固定（420px / 信息区 84px）；导出预览去掉 720px 上限、列宽按比例、每行加 `✕ 这次不导出`

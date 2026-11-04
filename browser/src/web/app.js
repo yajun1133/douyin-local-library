@@ -129,9 +129,17 @@ const state = {
     fillMode: (function () { try { return localStorage.getItem('mediaFill') === '1'; } catch (e) { return false; } })(),
     // 封面显示方式：cover=填充(裁切铺满) / stretch=拉伸变形 / contain=原比例(留白)
     coverMode: (function () { try { return localStorage.getItem('coverMode') || 'cover'; } catch (e) { return 'cover'; } })(),
+    // 作者列表显示方式：grid = 网格卡片（默认）/ rows = 每作者一行，右边跟一行作品缩略图
+    authorLayout: (function () {
+        try { return localStorage.getItem('authorLayout') === 'rows' ? 'rows' : 'grid'; }
+        catch (e) { return 'grid'; }
+    })(),
     // 不能设置更新频率的账号状态（来自设置：注销/禁言/封号/卖号等）
     updateFreqDisabledStatus: [],
 };
+
+// 「每作者一行」一行里铺几个作品缩略图（后端 works 参数上限 40）
+const ROW_WORKS = 12;
 
 function markDirty(uid) {
     if (!uid) return;
@@ -197,6 +205,7 @@ async function init() {
         refreshBlacklistCount();
         updateExportBtn();
         bindFilterPanelEvents();
+        syncLayoutBtn();        // 恢复上次选的显示方式（网格 / 每作者一行）
         await loadAuthors(true);
 
         // 注意：不要在这里再覆盖 #statInfo，renderStats() 已写入「共 N 作者 · M 星标」
@@ -242,10 +251,14 @@ async function loadAuthors(reset) {
 
     const params = new URLSearchParams({
         offset: state.offset,
-        limit: state.pageSize,
+        // 行模式一屏只有 5~6 行、但每行带 12 张缩略图，一页拉 60 个作者会一次性
+        // 铺 700 多张图（懒加载也顶不住）。所以行模式每页 20 个作者，滚到底再续。
+        limit: state.authorLayout === 'rows' ? 20 : state.pageSize,
         sort: state.sortBy,
         cat: state.currentCategory,
     });
+    // 每作者一行：顺带要该作者最近 N 个作品（缩略图）。网格卡片不需要，省一次拼装
+    if (state.authorLayout === 'rows') params.set('works', String(ROW_WORKS));
     if (state.searchQuery) params.set('q', state.searchQuery);
     if (state.searchScope) params.set('scope', state.searchScope);
     if (state.currentTag) params.set('tag', state.currentTag);
@@ -350,6 +363,17 @@ async function loadWorkHits(reset) {
 
 function renderWorkHits() {
     const grid = document.getElementById('authorGrid');
+    // 作品搜索结果永远是卡片网格：撤掉「每作者一行」的两栏布局和右侧播放区，
+    // 否则作品卡片会被纵向 flex 拉成一条一条、右边还留一块空播放器
+    const wrap = document.getElementById('rowsWrap');
+    if (wrap) wrap.classList.remove('rows-mode');
+    const player = document.getElementById('rowsPlayer');
+    if (player) player.classList.add('hidden');
+    rowStopPlay();
+    grid.classList.remove('rows-mode');
+    // 这时「显示方式」按钮没意义（结果是作品不是作者），藏起来免得点了没反应
+    const lb = document.getElementById('layoutBtn');
+    if (lb) lb.classList.add('hidden');
     if (state.workHits.length === 0) {
         grid.innerHTML = '<div class="loading">没有匹配的作品</div>';
         document.getElementById('loadMore').classList.add('hidden');
@@ -393,12 +417,32 @@ function openWorkHit(uid, workIndex) {
 
 function renderAuthorGrid() {
     const grid = document.getElementById('authorGrid');
+    const wrap = document.getElementById('rowsWrap');
+    const player = document.getElementById('rowsPlayer');
+    const rowsMode = state.authorLayout === 'rows';
+    // 回到作者列表时，把「显示方式」按钮恢复出来（搜作品时被藏过）
+    const lb = document.getElementById('layoutBtn');
+    if (lb) lb.classList.remove('hidden');
+    // 行模式：外层 rows-wrap 变成「左列表 + 右播放区」两栏，网格模式恢复普通块级
+    if (wrap) wrap.classList.toggle('rows-mode', rowsMode);
+    if (player) player.classList.toggle('hidden', !rowsMode);
+    grid.classList.remove('rows-mode');
     if (state.filtered.length === 0) {
         grid.innerHTML = '<div class="loading">没有匹配的作者</div>';
         document.getElementById('loadMore').classList.add('hidden');
         return;
     }
-    grid.innerHTML = state.filtered.map(authorCardHtml).join('');
+    grid.innerHTML = state.filtered
+        .map(rowsMode ? authorRowHtml : authorCardHtml)
+        .join('');
+    // 行模式的作品缩略图是 data-src 懒加载（一屏几十张，不懒加载会把硬盘读爆）
+    if (rowsMode) {
+        rowFitStrip(grid);      // 先按宽度定每行放几个（必须在插进 DOM 之后量）
+        observeThumbs(grid);
+        rowKeepActive();
+    } else {
+        rowStopPlay();          // 切回网格 / 换筛选：把播放器停掉，别在后台出声
+    }
 
     const loadMore = document.getElementById('loadMore');
     if (!state.done) {
@@ -408,6 +452,270 @@ function renderAuthorGrid() {
         loadMore.classList.add('hidden');
     }
 }
+
+// ===== 显示方式切换：网格卡片 ⇄ 每作者一行 =====
+function syncLayoutBtn() {
+    const b = document.getElementById('layoutBtn');
+    if (!b) return;
+    const rows = state.authorLayout === 'rows';
+    b.textContent = rows ? '▦ 网格卡片' : '▤ 每作者一行';
+    b.classList.toggle('active', rows);
+    b.title = rows
+        ? '切回网格卡片（一张张作者卡片）'
+        : '切换成「每作者一行」：一位作者一条表头，下面铺一行作品，点作品右边直接播';
+}
+
+function toggleAuthorLayout() {
+    state.authorLayout = state.authorLayout === 'rows' ? 'grid' : 'rows';
+    try { localStorage.setItem('authorLayout', state.authorLayout); } catch (e) { /* 隐私模式忽略 */ }
+    syncLayoutBtn();
+    // 行模式要带作品数据，网格不需要 → 直接重拉第一页（筛选/排序/搜索条件都保留）
+    loadAuthors(true);
+    const c = document.querySelector('.content');
+    if (c) c.scrollTop = 0;
+    showToast(state.authorLayout === 'rows' ? '已切换：每作者一行' : '已切换：网格卡片');
+}
+
+// 一个作者 = 一条表头 + 下面一行作品卡片（跟「新下载」栏目同一个长相）
+function authorRowHtml(a) {
+    const chips = [
+        levelTagHtml(a.level),
+        freqTagHtml(a.update_freq, a.status),
+        statusTagHtml(a.status),
+        ...sortTags(a.tags || []).map(t => `<span class="mini-tag">${escapeHtml(t)}</span>`),
+    ].join('');
+    const recent = a.recent || [];
+    const n = recent.length;
+    // 只渲染前 ROW_WORKS 张；实际显示几张由 rowFitStrip() 按容器宽度决定（不滚动）
+    const cards = recent.map((w, ri) => {
+        const src = w.is_image ? mediaUrl(w.rel) : '/thumb?path=' + encodeURIComponent(w.rel);
+        const files = w.files || 1;
+        const tip = [a.nickname || '', w.desc || '（无描述）', w.date || ''].filter(Boolean).join('\n')
+            + (files > 1 ? `\n这个作品共 ${files} 个文件` : '')
+            + '\n点一下在右边播放';
+        return `<div class="ar-card" data-uid="${escapeHtml(a.uid)}" data-ri="${ri}" data-i="${ri}"
+                     onclick="rowPlayCard(this)" title="${escapeHtml(tip)}">
+            <div class="ar-thumb">
+                <img data-src="${src}" alt="" onerror="thumbError(this)">
+                ${w.is_image ? '<span class="ar-kind">图文</span>' : ''}
+                ${files > 1 ? `<span class="ar-multi">${files}</span>` : ''}
+            </div>
+            <div class="ar-time">${escapeHtml(String(w.date || '').slice(5) || '—')}</div>
+        </div>`;
+    }).join('');
+
+    // 最后下载 / 多久没下载（用户 11-03 标注：表头要有这两个信息）
+    const dlTs = Number(a.last_download) || 0;
+    const dlDays = dlTs ? Math.floor((Date.now() / 1000 - dlTs) / 86400) : -1;
+    const dlHtml = dlTs
+        ? `<span class="ar-dl${dlDays > 30 ? ' old' : ''}"
+                 title="最后一次下载：${tsText(dlTs, true)}（本地最新文件的写入时间）">⬇ ${daysAgoText(dlTs)}</span>`
+        : '<span class="ar-dl none" title="下载记录里还没有这个作者的记录">⬇ 没下载过</span>';
+
+    return `
+    <div class="author-row" data-uid="${escapeHtml(a.uid)}">
+        <div class="ar-head" onclick="openAuthor('${onClickArg(a.uid)}')" title="点击进入作者详情页">
+            <span class="ar-dot"></span>
+            <span class="ar-name">${a.starred ? '⭐' : ''}${nameHtml(a)}</span>
+            <span class="ar-chips">${chips}</span>
+            <span class="ar-side">${dlHtml}<span class="ar-cnt">${a.work_count} 个作品</span></span>
+        </div>
+        <div class="ar-strip" data-n="${n}" data-extra="${a.recent_more || 0}"
+             data-uid="${escapeHtml(a.uid)}">${cards}
+            ${n ? '' : '<div class="ar-empty">本地还没有作品</div>'}
+        </div>
+    </div>`;
+}
+
+// 更新频率徽章：day / 3天 / 周 / 月（没设置就不显示，和状态徽章一个规矩）
+function freqTagHtml(freq, status) {
+    const v = String(freq || '').trim();
+    if (!v) return '';
+    // 注销 / 禁言封号 / 卖号 这类「不可能再更新」的账号，历史残留的频率值不显示，
+    // 否则卡片上会出现「注销 · 日更」这种自相矛盾的组合（详情页也是同一口径）
+    const st = String(status || '').trim();
+    if (st && (state.updateFreqDisabledStatus || []).indexOf(st) >= 0) return '';
+    // 原样显示 day / 3天 / 周 / 月（用户 2026-11-03：「day 就是 day，不要写成日更」）
+    return `<span class="mini-tag freq-tag" title="更新频率：${escapeHtml(v)}">${escapeHtml(v)}</span>`;
+}
+
+// ===== 行模式右侧播放区（点左边作品就地播放，不跳作者页） =====
+const rowPlay = { uid: '', ri: null, nick: '', rel: '', isImage: false, images: [], cur: 0,
+                  date: '', desc: '', files: 1, token: 0 };
+
+function rowStageEl() { return document.getElementById('rowStage'); }
+function rowFootEl() { return document.getElementById('rowFoot'); }
+
+function rowSetEmpty(html) {
+    const st = rowStageEl();
+    if (!st) return;
+    st.innerHTML = html;
+    const f = rowFootEl();
+    if (f) f.innerHTML = '';
+}
+
+function rowStopPlay() {
+    rowPlay.token = (rowPlay.token || 0) + 1;
+    rowPlay.uid = '';
+    rowPlay.ri = null;
+    rowPlay.rel = '';
+    rowPlay.images = [];
+    rowPlay.cur = 0;
+    const st = rowStageEl();
+    if (st && st.querySelector('video')) {
+        try { st.querySelector('video').pause(); } catch (e) { /* 忽略 */ }
+    }
+    if (st) st.innerHTML = '<div class="rp-empty">点左边的作品直接播放</div>';
+    const f = rowFootEl();
+    if (f) f.innerHTML = '';
+    rowClearActive();
+}
+
+function rowClearActive() {
+    document.querySelectorAll('#authorGrid .ar-card.active')
+        .forEach((c) => c.classList.remove('active'));
+}
+
+// 重绘列表后把正在播的那张卡重新点亮（按 uid + recent 下标定位，
+// 别用 img 的 data-src —— 懒加载成功后那个属性会被删掉，匹配不上）
+function rowKeepActive() {
+    if (!rowPlay.uid || rowPlay.ri == null) return;
+    const card = document.querySelector(
+        `#authorGrid .ar-card[data-uid="${CSS.escape(String(rowPlay.uid))}"][data-ri="${rowPlay.ri}"]`);
+    if (card) card.classList.add('active');
+}
+
+function rowPlayCard(el) {
+    const card = el.closest ? el.closest('.ar-card') : el;
+    if (!card) return;
+    const uid = card.dataset.uid || '';
+    const ri = Number(card.dataset.ri);
+    const a = (state.filtered || []).find((x) => String(x.uid) === String(uid));
+    const w = a && (a.recent || [])[ri];
+    if (!w) return;
+    rowClearActive();
+    card.classList.add('active');
+    rowPlay.token = (rowPlay.token || 0) + 1;
+    const tk = rowPlay.token;
+    Object.assign(rowPlay, {
+        uid, ri, nick: (a.alias || a.nickname || ''), rel: w.rel, isImage: !!w.is_image,
+        images: (w.images && w.images.length) ? w.images : (w.is_image ? [w.rel] : []),
+        cur: 0, date: w.date || '', desc: w.desc || '', files: w.files || 1,
+    });
+    rowRenderFoot(a, w);
+    if (w.is_image) rowRenderImage(tk);
+    else rowPlayVideo(w.rel, tk);
+}
+
+async function rowPlayVideo(rel, tk) {
+    const st = rowStageEl();
+    if (!st) return;
+    st.innerHTML = '<div class="rp-empty">加载中…</div>';
+    const probe = await probeVideo(rel);
+    if (tk !== rowPlay.token) return;
+    let src = mediaUrl(rel);
+    if (probe && probe.playable === false) {
+        // 浏览器放不了（多为 HEVC）→ 走服务端转码，和详情页同一条路
+        st.innerHTML = '<div class="rp-empty">这个视频浏览器放不了，正在转码…<br><span id="rpPct">0%</span></div>';
+        const r = await transcodeVideo(rel, (pct) => {
+            const el = document.getElementById('rpPct');
+            if (el) el.textContent = pct >= 0 ? pct + '%' : '处理中…';
+        }, () => tk !== rowPlay.token);
+        if (tk !== rowPlay.token) return;
+        if (!r.ok) {
+            st.innerHTML = `<div class="rp-empty">转码失败：${escapeHtml(r.error || '未知原因')}<br>
+                <span style="font-size:12px">可以直接打开作者页用原文件播放</span></div>`;
+            return;
+        }
+        src = r.url;
+    }
+    if (tk !== rowPlay.token) return;
+    st.innerHTML = `<video src="${src}" controls autoplay playsinline preload="metadata"></video>`;
+    // autoplay 在部分策略下会被忽略（没有用户手势记录时），显式再 play 一次；
+    // 失败就静默留着控制条，别弹错误打断浏览
+    const v = st.querySelector('video');
+    if (v) {
+        v.play().catch(() => {});
+        // 播放中把上一张的高亮保持住；换作品时由 rowPlayCard 重置
+    }
+}
+
+function rowRenderImage(tk) {
+    const st = rowStageEl();
+    if (!st) return;
+    const list = rowPlay.images || [];
+    const i = Math.max(0, Math.min(rowPlay.cur || 0, list.length - 1));
+    const rel = list[i];
+    st.innerHTML = `
+        <img class="rp-img" src="${mediaUrl(rel)}" alt="">
+        ${list.length > 1 ? `<div class="rp-img-nav">
+            <button class="btn btn-nav" onclick="rowStepImage(-1)" ${i <= 0 ? 'disabled' : ''}>‹</button>
+            <span class="rp-pos">${i + 1}/${list.length}</span>
+            <button class="btn btn-nav" onclick="rowStepImage(1)" ${i >= list.length - 1 ? 'disabled' : ''}>›</button>
+        </div>` : ''}`;
+}
+
+function rowStepImage(dir) {
+    const list = rowPlay.images || [];
+    if (list.length < 2) return;
+    const next = Math.max(0, Math.min((rowPlay.cur || 0) + dir, list.length - 1));
+    if (next === rowPlay.cur) return;
+    rowPlay.cur = next;
+    rowRenderImage(rowPlay.token);
+}
+
+function rowRenderFoot(a, w) {
+    const f = rowFootEl();
+    if (!f) return;
+    const n = w.files || 1;
+    f.innerHTML = `
+        <div class="rp-title" title="${escapeHtml(w.desc || '')}">${escapeHtml(w.desc || '（无描述）')}</div>
+        <div class="rp-meta">
+            <span>${escapeHtml(w.date || '')}</span>
+            ${n > 1 ? `<span>· ${n} 个文件</span>` : ''}
+            <span>· ${escapeHtml(a.nickname || '')}</span>
+        </div>
+        <button class="btn btn-mini rp-open" onclick="rowOpenAuthor()">打开作者页 →</button>`;
+}
+
+function rowOpenAuthor() {
+    if (rowPlay.uid) openAuthor(rowPlay.uid);
+}
+
+// 一行固定放几张：按可用宽度算，**绝不左右滑动**（用户 2026-11-03 标注：
+// 「这里不要可以左右滑动的，固定一定数量的作品，不够就是空白」）。
+// 作品少于列数时就空着——grid 的固定列数天生留白，不用额外补占位元素。
+const ROW_CARD_MIN = 112;   // 卡片最窄宽度（再窄封面看不清）
+const ROW_GAP = 8;
+function rowStripCols(width) {
+    if (!width || width < 120) return 8;
+    return Math.max(3, Math.min(12, Math.floor((width + ROW_GAP) / (ROW_CARD_MIN + ROW_GAP))));
+}
+function rowFitStrip(grid) {
+    const strips = grid.querySelectorAll('.ar-strip');
+    if (!strips.length) return;
+    // 每行等宽，量第一行就够（量不到说明视图藏着，用 grid 宽度兜底）
+    const W = strips[0].clientWidth || grid.clientWidth || 0;
+    const cols = rowStripCols(W);
+    grid.style.setProperty('--ar-cols', cols);
+    strips.forEach((strip) => {
+        strip.querySelectorAll('.ar-card').forEach((c) => {
+            const i = Number(c.dataset.i) || 0;
+            c.classList.toggle('hidden', i >= cols);
+        });
+    });
+}
+
+// 窗口变宽变窄（含收起侧边栏）要重算列数，否则会留一大片空白或者挤成一团
+let rowFitTimer = 0;
+window.addEventListener('resize', () => {
+    if (state.authorLayout !== 'rows') return;
+    clearTimeout(rowFitTimer);
+    rowFitTimer = setTimeout(() => {
+        const g = document.getElementById('authorGrid');
+        if (g) rowFitStrip(g);
+    }, 180);
+});
 
 // ===== 显示名：别名优先，原名跟在后面 =====
 // user_data.accounts[uid].alias 是用户自己起的名字；没起就还显示昵称。
@@ -478,8 +786,13 @@ function levelTagHtml(level) {
 }
 
 function authorCardHtml(a) {
-    const tags = sortTags(a.tags).map(t => `<span class="mini-tag">${escapeHtml(t)}</span>`).join('');
+    // 标签全量显示（后端 2026-11-02 起不再只给 3 个）
+    const tags = sortTags(a.tags || []).map(t => `<span class="mini-tag">${escapeHtml(t)}</span>`).join('');
     const statusBadge = statusTagHtml(a.status);
+    // 等级 / 更新频率：以前只有详情页和收藏列表有，主页卡片看不到，
+    // 扫一遍列表判断不出这个号多久更一次，2026-11-02 加到卡片上
+    const levelBadge = levelTagHtml(a.level);
+    const freqBadge = freqTagHtml(a.update_freq, a.status);
     const star = a.starred ? '⭐' : '';
     // 「多久没下载过」：30 天以上标提醒色，扫一眼就知道哪些该重新抓了
     const dlTs = Number(a.last_download) || 0;
@@ -497,7 +810,7 @@ function authorCardHtml(a) {
         <div class="author-info">
             <div class="author-name">${star}${nameHtml(a)}</div>
             <div class="author-meta"${a.latest ? ` title="已下载作品：${a.work_count || 0} 个，最新一条发布于 ${escapeHtml(String(a.latest).slice(0, 10))}"` : ''}>${a.work_count} 作品${a.latest ? ` · 最新 ${escapeHtml(String(a.latest).slice(0, 10))}` : ''}${dlHtml}</div>
-            <div class="author-tags">${statusBadge}${tags}</div>
+            <div class="author-tags">${statusBadge}${levelBadge}${freqBadge}${tags}</div>
         </div>
     </div>`;
 }
@@ -666,6 +979,7 @@ const detailState = {
     list: [],          // 当前筛选下，works 里的索引数组
     index: -1,         // 当前选中的 work 索引
     imgIndex: 0,       // 当前图文作品里看到第几张
+    vidIndex: 0,       // 当前纯视频作品里看到第几段（一个作品下成 _1.mp4 _2.mp4 时能翻段）
     secEdit: false,    // SEC_UID 是否处于展开编辑状态
     histOpen: false,   // 历史记录面板是否展开
     aliasEdit: false,  // 别名是否处于编辑状态
@@ -739,6 +1053,12 @@ async function openAuthor(uid, workIndex, transition = 'forward') {
         detailState.uid = uid;
         detailState.author = a;
         detailState.index = -1;
+        // 换作者：上一位的多选状态和日期区间不能带过来（日期范围差得远，容易误删）
+        if (detailState.selectMode) exitWorkSelect();
+        const _dpFrom = document.getElementById('dpFrom');
+        const _dpTo = document.getElementById('dpTo');
+        if (_dpFrom) _dpFrom.value = '';
+        if (_dpTo) _dpTo.value = '';
         // 上一个作者展开的下拉/编辑态不要带过来
         detailState.histOpen = false;
         detailState.tagOpen = false;
@@ -1207,6 +1527,7 @@ function renderDetailTop() {
                            title="点击打开抖音主页\n${escapeHtml(secUrl(a.sec_uid))}">${escapeHtml(secShortText(a.sec_uid))}</a>
                         <button class="btn btn-mini" onclick="startSecEdit()">更改</button>
                         <button class="btn btn-mini" onclick="fetchProfile()" title="按 SEC_UID 从抖音拉昵称/抖音号/简介">获取资料</button>
+                        <button class="btn btn-mini" onclick="pushToQueue()" title="把这位作者推进「待下载区」，导出作者信息时可直接勾选，不用回抖音再找一遍">推送到待下载</button>
                     ` : `
                         <button class="btn btn-mini btn-dashed" onclick="startSecEdit()">＋ 填写</button>
                     `)}
@@ -1462,6 +1783,9 @@ function setRailFilter(type, autoplay) {
     document.querySelectorAll('.work-filter-btn').forEach(b =>
         b.classList.toggle('active', b.dataset.type === type));
     renderRail();
+    // 多选 + 时间段条开着的时候切分类：区间内的作品数会变，提示跟着刷新
+    const db = document.getElementById('dateBar');
+    if (db && !db.classList.contains('hidden')) updateDateHint();
 
     if (autoplay) {
         if (detailState.list.length > 0) playWork(detailState.list[0]);
@@ -1526,13 +1850,20 @@ function checkThumbRatio(img) {
     }
 }
 
-// 多图 / 多动图作品的张数/段数徽标（右上角，柔和精致）
+// 多图 / 多动图 / 多段视频的徽标（右上角，柔和精致）
+// 纯视频作品（一张图都没有）只有 2 段以上才标，且用播放三角而不是动图圆点 ——
+// 否则一个「2 个 mp4」的作品会被看成「多动图 2 段」，但分类里它其实算视频（2026-11-02 用户困惑点）。
 function wallBadgeHtml(w) {
     const items = mediaItemsOf(w);
     const imgs = items.filter((it) => it.kind === 'image').length;
-    const motions = items.length - imgs;
-    if (motions >= 2) {
-        return `<div class="wall-badge live-badge" title="多动图 · 共 ${motions} 段"><svg class="badge-ico" viewBox="0 0 16 16" width="10" height="10" fill="none"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg><span>${motions}</span></div>`;
+    const vids = items.length - imgs;
+    if (!imgs) {
+        return vids > 1
+            ? `<div class="wall-badge vid-badge" title="多段视频 · 共 ${vids} 段（点开后在播放器里翻段）"><svg class="badge-ico" viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M5.4 3.3h1.9v9.4H5.4zM8.7 3.3h1.9v9.4H8.7z"/></svg><span>${vids}</span></div>`
+            : '';
+    }
+    if (vids >= 2) {
+        return `<div class="wall-badge live-badge" title="多动图 · 共 ${vids} 段"><svg class="badge-ico" viewBox="0 0 16 16" width="10" height="10" fill="none"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2.5" fill="currentColor"/></svg><span>${vids}</span></div>`;
     }
     if (imgs > 1) {
         return `<div class="wall-badge img-badge" title="多图 · 共 ${imgs} 张"><svg class="badge-ico" viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="4.5" y="4.5" width="8.5" height="8.5" rx="1.5"/><path d="M3 11.5V3.5C3 3 3.5 2.5 4 2.5H12"/></svg><span>${imgs}</span></div>`;
@@ -1541,6 +1872,96 @@ function wallBadgeHtml(w) {
 }
 
 // ===== 作品多选删除（详情页返回栏那个 🗑） =====
+// 2026-11-02：加「按时间段选」——作者作品上千条时，一个个点勾选不现实，
+// 给个日期区间一次圈一批。作用范围是**当前分类筛选下的作品**（视频/图文…），
+// 选完仍然走原来的「移入回收站」，回收站里能整体恢复。
+function dateRangeOfList() {
+    const works = (detailState.author && detailState.author.works) || [];
+    let min = '', max = '';
+    (detailState.list || []).forEach((i) => {
+        const d = (works[i] || {}).date || '';
+        if (!d) return;
+        if (!min || d < min) min = d;
+        if (!max || d > max) max = d;
+    });
+    return { min: min, max: max };
+}
+
+function dateInputs() {
+    const f = document.getElementById('dpFrom');
+    const t = document.getElementById('dpTo');
+    return { from: (f && f.value) || '', to: (t && t.value) || '', fEl: f, tEl: t };
+}
+
+function toggleDateBar() {
+    const bar = document.getElementById('dateBar');
+    if (!bar) return;
+    if (!bar.classList.contains('hidden')) { bar.classList.add('hidden'); return; }
+    const { fEl, tEl } = dateInputs();
+    const r = dateRangeOfList();
+    if (fEl && !fEl.value) fEl.value = r.min;   // 首次展开：默认铺满该作者的日期范围
+    if (tEl && !tEl.value) tEl.value = r.max;
+    bar.classList.remove('hidden');
+    updateDateHint();
+}
+
+// 当前筛选列表里，日期落在区间内的作品下标
+function dateHits() {
+    const works = (detailState.author && detailState.author.works) || [];
+    const { from, to } = dateInputs();
+    const out = [];
+    (detailState.list || []).forEach((i) => {
+        const d = (works[i] || {}).date || '';
+        if (!d) return;                     // 没日期的作品不参与区间选择，免得不小心漏网
+        if (from && d < from) return;
+        if (to && d > to) return;
+        out.push(i);
+    });
+    return out;
+}
+
+function updateDateHint() {
+    const el = document.getElementById('dpHint');
+    if (!el) return;
+    const { from, to } = dateInputs();
+    if (from && to && from > to) {
+        el.textContent = '起始日期比结束日期还晚';
+        el.classList.add('bad');
+        return;
+    }
+    el.classList.remove('bad');
+    const hits = dateHits();
+    const total = (detailState.list || []).length;
+    el.textContent = '这个区间有 ' + hits.length + ' 个作品'
+        + (total && hits.length === total ? '（＝当前分类全部）' : '');
+}
+
+function applyDateSelect(replace) {
+    const { from, to } = dateInputs();
+    if (from && to && from > to) { showToast('起始日期不能晚于结束日期'); return; }
+    if (!from && !to) { showToast('先填个起止日期'); return; }
+    const hits = dateHits();
+    if (!hits.length) {
+        showToast('这个区间没有作品——检查一下上方的分类筛选（当前是「' + railFilterName() + '」）');
+        return;
+    }
+    if (replace) detailState.selected = new Set();
+    hits.forEach((i) => detailState.selected.add(i));
+    // 只改卡片 class，不重渲染：重渲染会丢滚动位置、缩略图也要重新加载
+    document.querySelectorAll('#workRail .wall-card').forEach((el) => {
+        const i = parseInt(el.dataset.idx, 10);
+        el.classList.toggle('selected', !!(detailState.selected && detailState.selected.has(i)));
+    });
+    updateSelCount();
+    showToast((replace ? '已改选 ' : '已加选 ') + hits.length + ' 个作品，共选中 '
+        + (detailState.selected ? detailState.selected.size : 0) + ' 个');
+}
+
+function railFilterName() {
+    const m = { all: '全部', video: '视频', image: '图文', image_single: '单图', image_multi: '多图' };
+    return m[detailState.filter] || detailState.filter;
+}
+
 function enterWorkSelect() {
     if (!detailState.author) return;
     detailState.selectMode = true;
@@ -1569,6 +1990,8 @@ function exitWorkSelect() {
     if (dv) dv.classList.remove('selecting');
     const sa = document.getElementById('selActions');
     if (sa) sa.classList.add('hidden');
+    const db = document.getElementById('dateBar');
+    if (db) db.classList.add('hidden');       // 退出多选就收起时间段条，免得占着位置
     const btn = document.getElementById('workSelBtn');
     if (btn) btn.classList.remove('hidden');
     document.querySelectorAll('#workRail .wall-card').forEach((el) => {
@@ -1688,6 +2111,7 @@ function playWork(idx) {
     if (!w) return;
     detailState.index = idx;
     detailState.imgIndex = 0;
+    detailState.vidIndex = 0;                          // 换作品永远从第 1 段开始
     detailState.token = (detailState.token || 0) + 1;   // 防止转码回来时覆盖了后点的作品
     markRailActive();
     // 帖子里有图 → 按序号逐张看（静图是图、动图直接当视频播）；纯视频作品才走编码检测/转码那条路
@@ -1783,12 +2207,47 @@ function showStagePlaceholder() {
         <span style="font-size:12px">共 ${(a.stats || {}).work_count || 0} 个作品</span></div>`;
 }
 
+// 纯视频作品里的视频文件（按序号排）。多数作品只有 1 段；个别作品（抖音的动图/合集会下成
+// _1.mp4 + _2.mp4）有 2 段以上 —— 那些段在播放器里要能翻，否则第二段永远看不到。
+function videoFilesOf(w) {
+    return mediaItemsOf(w).filter((it) => it.kind === 'video').map((it) => it.rel);
+}
+
+function vidNavHtml(w) {
+    const rels = videoFilesOf(w);
+    if (rels.length < 2) return '';
+    const n = rels.length;
+    const i = Math.max(0, Math.min(detailState.vidIndex || 0, n - 1));
+    return `<span class="vid-nav" title="这个作品有 ${n} 段视频">`
+        + `<button class="btn btn-nav" title="上一段" ${i <= 0 ? 'disabled' : ''} onclick="stepVideo(-1)">‹</button>`
+        + `<span class="player-pos">${i + 1}/${n} 段</span>`
+        + `<button class="btn btn-nav" title="下一段" ${i >= n - 1 ? 'disabled' : ''} onclick="stepVideo(1)">›</button>`
+        + '</span>';
+}
+
+// 作品内翻段：只重画播放器，不动作品索引和列表位置
+function stepVideo(dir) {
+    const a = detailState.author;
+    const w = a && (a.works || [])[detailState.index];
+    if (!w) return;
+    const n = videoFilesOf(w).length;
+    if (n < 2) return;
+    const next = Math.max(0, Math.min((detailState.vidIndex || 0) + dir, n - 1));
+    if (next === detailState.vidIndex) return;
+    detailState.vidIndex = next;
+    detailState.token = (detailState.token || 0) + 1;   // 作废上一段的探测/转码回调
+    renderVideoStage(w, detailState.token);
+}
+
 async function renderVideoStage(w, token) {
-    const rel = pickVideoFile(w).rel || '';
+    const vids = videoFilesOf(w);
+    if (!(detailState.vidIndex >= 0 && detailState.vidIndex < vids.length)) detailState.vidIndex = 0;
+    const rel = vids[detailState.vidIndex] || '';
+    const segNav = vidNavHtml(w);
     const stage = document.getElementById('playerStage');
     stage.innerHTML = `
         <div class="player-box"><div class="player-empty">正在检测视频编码…</div></div>
-        ${stageFootHtml(w, rel)}`;
+        ${stageFootHtml(w, rel, segNav)}`;
 
     const info = await probeVideo(rel);
     if (token !== detailState.token) return;   // 用户已点了别的作品
@@ -1831,7 +2290,7 @@ async function renderVideoStage(w, token) {
                    poster="${posterUrl(w, rel)}"
                    src="${src}" onerror="onPlayerError()"></video>
         </div>
-        ${stageFootHtml(w, rel, info.codec ? `<span class="tag-hint">${escapeHtml(info.codec.toUpperCase())}</span>` : '')}`;
+        ${stageFootHtml(w, rel, (info.codec ? `<span class="tag-hint">${escapeHtml(info.codec.toUpperCase())}</span>` : '') + segNav)}`;
     applyFillMode();
 
     if (playedNative) {
@@ -1858,6 +2317,7 @@ async function retryWithTranscode(w, rel, token, codec) {
     if (!stage || token !== detailState.token) return;
     const codecTag = codec
         ? `<span class="tag-hint">${escapeHtml(String(codec).toUpperCase())}</span>` : '';
+    const segNav = vidNavHtml(w);       // 多段视频的段导航不能因为转码就消失
     stage.innerHTML = `<div class="player-box"><div class="player-empty">这个视频浏览器解不出来，正在转成 H.264…</div></div>`;
     const t = await transcodeVideo(rel, (pct) => {
         if (token !== detailState.token) return;
@@ -1871,13 +2331,13 @@ async function retryWithTranscode(w, rel, token, codec) {
                 <video id="playerVideo" controls autoplay playsinline
                        src="${t.url}" onerror="onPlayerError()"></video>
             </div>
-            ${stageFootHtml(w, rel, codecTag)}`;
+            ${stageFootHtml(w, rel, codecTag + segNav)}`;
         applyFillMode();
     } else {
         stage.innerHTML = `
             <div class="player-box"><div class="player-empty">转码失败${t && t.error ? '：' + escapeHtml(t.error) : ''}<br>
                 <span style="font-size:12px">可以点「📂 打开文件夹」到本地目录看原片</span></div></div>
-            ${stageFootHtml(w, rel)}`;
+            ${stageFootHtml(w, rel, segNav)}`;
     }
 }
 
@@ -2601,6 +3061,41 @@ async function fetchProfile() {
         refreshWorkCount(a.uid, true);
     } catch (e) {
         showToast('获取失败：' + e.message);
+    }
+}
+
+// 详情页「推送到待下载」：把当前作者推进待下载区（本地查询服务 8790），
+// 之后在「导出作者信息 → ① 选作者 → 待下载区」里就能直接勾到他，不用再回抖音找。
+// 队列里判重用 uid / sec_uid，重复推只会提示「已经在里面了」，不会建两条。
+async function pushToQueue() {
+    const a = state.currentAuthor;
+    if (!a) return;
+    if (!a.uid && !a.sec_uid) { showToast('没有 UID / SEC_UID，推不了'); return; }
+    showToast('正在推送…');
+    try {
+        const r = await fetch(QUEUE_BASE + '/queue/add', {
+            method: 'POST', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                uid: a.uid || '',
+                sec_uid: a.sec_uid || '',
+                nickname: a.nickname || '',
+                douyin_id: a.douyin_id || '',
+                level: a.level || '',
+                status: a.status || '',
+                tags: a.tags || [],
+                signature: a.signature || '',
+            }),
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const d = await r.json();
+        if (!d.ok) { showToast('推送失败：' + (d.error || '未知错误')); return; }
+        // 队列面板开着的话同步一份，切过去就是最新的
+        try { if (document.getElementById('queueBody')) await refreshQueue(); } catch (e) { }
+        showToast(d.duplicated ? 'TA 已经在待下载区里了' : '已推送到待下载区（导出作者信息 → ① 选作者 → 待下载区）');
+    } catch (e) {
+        // 8790 没起是最常见的原因：这是另一个服务，不是 8723 本体的接口
+        showToast('推送失败：' + ((e && e.message) || e) + '（本地查询服务 8790 没启动？）');
     }
 }
 
@@ -5527,7 +6022,9 @@ async function addFavoriteToBlacklist(btn) {
 const exportState = {
     level: [], tag: [], status: [], freq: [],
     latest: '', latestFrom: '', latestTo: '',
-    match: 'and',            // 不同属性之间：and=交集（默认）/ or=并集
+    // 每行右侧的 ＋ / －：or = 并集（命中任一，默认）/ and = 交集（必须同时满足）。
+    // 2026-11-02 用户要求取消「属性之间」那个全局单选，改成每个属性各带一个开关。
+    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' },
     uids: null, previewed: false,
     stale: false,            // 预览之后又改了筛选 → 旧名单作废，但提示要留着
     // 2026-11-01：导出对象有两个来源 ——
@@ -5861,8 +6358,8 @@ async function openExportView() {
     document.getElementById('exportLatestRadios').innerHTML =
         EXPORT_LATEST_LIST.map(([v, label]) =>
             `<label><input type="radio" name="expLatest" value="${v}" ${v === (exportState.latest || '') ? 'checked' : ''} onchange="onExportLatestChange(this.value)"> ${label}</label>`).join('');
-    // 交集 / 并集单选：回填上次选的那个
-    document.querySelectorAll('input[name="expMatch"]').forEach((i) => { i.checked = (i.value === (exportState.match || 'and')); });
+    // 交集 / 并集：每个属性行右侧的 ＋ / － 按 exportState.matchMap 回填
+    renderExportMatch();
     document.getElementById('exportLatestRange').classList.add('hidden');
     // 任何筛选控件变动 → 让上一次预览的名单作废，防止「改了条件却导出旧名单」
     const evBox = document.getElementById('exportView');
@@ -5872,7 +6369,7 @@ async function openExportView() {
             const t = e.target;
             if (!t) return;
             const n = t.name || '';
-            if (/^exp(Level|Tag|Status|Freq|Latest|Match)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
+            if (/^exp(Level|Tag|Status|Freq|Latest)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
                 markExportDirty();
             }
         });
@@ -5928,7 +6425,8 @@ function restoreExportUI() {
 function clearExportAll() {
     exportState.level = []; exportState.tag = []; exportState.status = []; exportState.freq = [];
     exportState.latest = ''; exportState.latestFrom = ''; exportState.latestTo = '';
-    exportState.match = 'and';
+    // 每行的 ＋/－ 回到默认：全 ＋（并集）
+    exportState.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' };
     exportState.uids = null; exportState.previewed = false; exportState.stale = false;
     exportState.source = 'filter'; exportState.secUids = [];
     exportPreviewHtml = '';
@@ -5937,8 +6435,7 @@ function clearExportAll() {
     exportPreviewScroll = 0;
     // 控件回到初始态
     document.querySelectorAll('#exportView input[type="checkbox"][name^="exp"]').forEach((i) => { i.checked = false; });
-    const that = document.querySelector('input[name="expMatch"][value="and"]');
-    if (that) that.checked = true;
+    renderExportMatch();
     const noneLatest = document.querySelector('input[name="expLatest"][value=""]');
     if (noneLatest) noneLatest.checked = true;
     const f = document.getElementById('exportLatestFrom');
@@ -5958,6 +6455,30 @@ function clearExportAll() {
 // 只是放在最上面更顺手（用户嫌清空在底部、要滚下去）。
 function resetExportFilters() {
     clearExportAll();
+}
+
+// 每行左边一个圆钮：＋ = 并集（命中任一，默认），－ = 交集（必须同时满足）。点一下切换。
+// 语义（后端同款）：所有 － 行必须全满足；所有 ＋ 行至少命中一个（只有 ＋ 行时就是并集）。
+function renderExportMatch() {
+    if (!exportState.matchMap) exportState.matchMap = {};
+    document.querySelectorAll('#exportView .export-match').forEach((box) => {
+        const key = box.dataset.key;
+        const mode = exportState.matchMap[key] === 'and' ? 'and' : 'or';
+        const isAnd = mode === 'and';
+        const tip = isAnd
+            ? '交集：这一项必须和其它 － 项同时满足（点一下改回并集）'
+            : '并集：这一项和其它 ＋ 项命中任一即可（点一下改成交集）';
+        box.innerHTML = `<button type="button" class="em-btn ${mode}" data-mode="${mode}" title="${tip}"`
+            + ` aria-label="${isAnd ? '交集' : '并集'}" onclick="toggleExportMatch('${key}')">`
+            + (isAnd ? '－' : '＋') + '</button>';
+    });
+}
+
+function toggleExportMatch(key) {
+    if (!exportState.matchMap) exportState.matchMap = {};
+    exportState.matchMap[key] = (exportState.matchMap[key] === 'and') ? 'or' : 'and';
+    renderExportMatch();
+    markExportDirty();
 }
 
 // 收集某一组勾选框当前选中的值（导出界面的多选用）
@@ -5999,7 +6520,10 @@ function exportFilterParams() {
     if (exportState.tag.length) params.set('tag', exportState.tag.join(','));
     if (exportState.status.length) params.set('status', exportState.status.join(','));
     if (exportState.freq.length) params.set('freq', exportState.freq.join(','));
-    if (exportState.match === 'or') params.set('match', 'or');
+    // 每个属性各自的组合方式：match_level=and 之类；没传 = 并集（默认）
+    Object.keys(exportState.matchMap || {}).forEach((k) => {
+        if (exportState.matchMap[k] === 'and') params.set('match_' + k, 'and');
+    });
     if (exportState.latest === 'custom') {
         const f = document.getElementById('exportLatestFrom').value;
         const t = document.getElementById('exportLatestTo').value;
@@ -6032,7 +6556,6 @@ function markExportDirty() {
 }
 
 async function previewExport() {
-    exportState.match = (document.querySelector('input[name="expMatch"]:checked') || {}).value || 'and';
     const params = exportFilterParams();
     try {
         const d = await fetch('/api/authors?' + params.toString()).then((r) => r.json());
@@ -6511,6 +7034,116 @@ async function openSettingsView() {
 // 的 file 表，mtime 就是文件落盘时间（≈ 下载完成时间），所以「今天」就是真·今天下载的。
 const newDlState = { range: 'today', data: null, loading: false, loadingMore: false };
 
+// 「按作者筛选」——和「📤 导出作者信息」那一栏完全同一套口径：
+// 作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间，每行自带一个 ＋/－ 组合开关。
+// 筛选放在服务端做（/api/new_downloads 复用 /api/authors 的判定函数 _build_attr_tests），
+// 所以翻页取到的也都是「筛完之后」的结果，不会翻着翻着冒出没勾的作者。
+const ndFilter = {
+    level: [], tag: [], status: [], freq: [], latest: '',
+    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' },
+};
+
+function ndFilterActive() {
+    const f = ndFilter;
+    return !!(f.level.length || f.tag.length || f.status.length || f.freq.length || f.latest);
+}
+
+function updateNdFilterDot() {
+    const dot = document.getElementById('ndFilterDot');
+    if (dot) dot.classList.toggle('hidden', !ndFilterActive());
+}
+
+function toggleNdFilter() {
+    const p = document.getElementById('ndFilterPanel');
+    if (!p) return;
+    if (p.classList.contains('hidden')) {
+        renderNdFilter();
+        p.classList.remove('hidden');
+    } else {
+        p.classList.add('hidden');
+    }
+}
+
+// 面板内容：选项 + 已勾状态 + 每行的 ＋/－
+function renderNdFilter() {
+    const tags = Object.keys((state.meta && state.meta.tags) || {}).sort();
+    const box = (id, html) => { const e = document.getElementById(id); if (e) e.innerHTML = html; };
+    const ck = (name, v, arr, label) => '<label><input type="checkbox" name="' + name + '" value="' +
+        escapeHtml(v) + '" ' + (arr.indexOf(v) >= 0 ? 'checked' : '') +
+        ' onchange="ndFilterChange()"> ' + escapeHtml(label) + '</label>';
+
+    box('ndLevelOpts', ['夯', '顶级', '一般', '拉', '__unset']
+        .map((v) => ck('ndLevel', v, ndFilter.level, v === '__unset' ? '未设置' : v)).join(''));
+    box('ndTagOpts', tags.map((t) => ck('ndTag', t, ndFilter.tag, t)).join('')
+        || '<span class="tag-hint">还没有标签</span>');
+    box('ndStatusOpts', EXPORT_STATUS_LIST.map((s) => ck('ndStatus', s, ndFilter.status, s)).join(''));
+    box('ndFreqOpts', ['day', '3天', '周', '月', '__unset']
+        .map((v) => ck('ndFreq', v, ndFilter.freq, v === '__unset' ? '未设置' : v)).join(''));
+    box('ndLatestOpts', EXPORT_LATEST_LIST.filter(([v]) => v !== 'custom')
+        .map(([v, label]) => '<label><input type="radio" name="ndLatest" value="' + v + '" ' +
+            (v === (ndFilter.latest || '') ? 'checked' : '') + ' onchange="ndFilterChange()"> ' +
+            label + '</label>').join(''));
+
+    document.querySelectorAll('#ndFilterPanel .ndf-match').forEach((el) => {
+        const key = el.dataset.key;
+        const mode = ndFilter.matchMap[key] === 'and' ? 'and' : 'or';
+        const tip = mode === 'and'
+            ? '交集：这一项必须和其它 － 项同时满足（点一下改回并集）'
+            : '并集：这一项和其它 ＋ 项命中任一即可（点一下改成交集）';
+        el.innerHTML = '<button type="button" class="em-btn ' + mode + '" title="' + tip + '"' +
+            ' onclick="ndToggleMatch(\'' + key + '\')">' + (mode === 'and' ? '－' : '＋') + '</button>';
+    });
+    const sub = document.getElementById('ndfSub');
+    if (sub) sub.textContent = ndFilterActive() ? '筛完再列作品' : '不筛 = 全部作者';
+    updateNdFilterDot();
+}
+
+// 勾选变化：把控件读回 ndFilter，立刻重取第一页（面板不关，方便连着勾）
+function ndFilterChange() {
+    const pick = (name) => Array.from(
+        document.querySelectorAll('#ndFilterPanel input[name="' + name + '"]:checked')).map((i) => i.value);
+    ndFilter.level = pick('ndLevel');
+    ndFilter.tag = pick('ndTag');
+    ndFilter.status = pick('ndStatus');
+    ndFilter.freq = pick('ndFreq');
+    const ll = document.querySelector('#ndFilterPanel input[name="ndLatest"]:checked');
+    ndFilter.latest = ll ? ll.value : '';
+    updateNdFilterDot();
+    refreshNewDownloads(true);
+}
+
+function ndToggleMatch(key) {
+    ndFilter.matchMap[key] = ndFilter.matchMap[key] === 'and' ? 'or' : 'and';
+    renderNdFilter();
+    if (ndFilterActive()) refreshNewDownloads(true);
+}
+
+function ndResetFilter() {
+    ndFilter.level = []; ndFilter.tag = []; ndFilter.status = []; ndFilter.freq = [];
+    ndFilter.latest = '';
+    ndFilter.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' };
+    renderNdFilter();
+    refreshNewDownloads(true);
+}
+
+// 拼成 /api/new_downloads 的参数（参数名和 /api/authors 完全一致，服务端一套逻辑）
+function ndFilterParams() {
+    const p = new URLSearchParams();
+    if (ndFilter.level.length) p.set('level', ndFilter.level.join(','));
+    if (ndFilter.tag.length) p.set('tag', ndFilter.tag.join(','));
+    if (ndFilter.status.length) p.set('status', ndFilter.status.join(','));
+    if (ndFilter.freq.length) p.set('freq', ndFilter.freq.join(','));
+    Object.keys(ndFilter.matchMap || {}).forEach((k) => {
+        if (ndFilter.matchMap[k] === 'and') p.set('match_' + k, 'and');
+    });
+    // 「最后下载」只留预设档：这一页本来就按下载时间切范围，再给自选日期纯属添乱
+    if (ndFilter.latest && ndFilter.latest !== 'custom') {
+        const days = parseInt(ndFilter.latest, 10);
+        if (!isNaN(days)) p.set('latest_after', exportIsoDaysAgo(days));
+    }
+    return p;
+}
+
 // 一页取多少个文件（≈ 几百个作品）。2026-11-02 用户要求取消「只显示最新 600 个作品」
 // 的硬上限：这里只当翻页的节奏，滚到底自动接着取，直到这个范围全部出来。
 const ND_PAGE_FILES = 1200;
@@ -6546,6 +7179,7 @@ async function openNewDownloadsView() {
     const eb = document.getElementById('exportBtn');
     if (eb) eb.classList.add('hidden');
     restoreViewScroll('new');
+    renderNdFilter();          // 筛选面板的选项（标签来自 meta）+ 上次的勾选状态
     await refreshNewDownloads(true);
 }
 
@@ -6577,9 +7211,13 @@ async function refreshNewDownloads(showLoading) {
 
 // 取一页：cursor 为空 = 第一页，否则接着上一页往下（服务端按 mtime 倒序 keyset 分页）
 function ndFetchPage(cursor) {
-    let url = '/api/new_downloads?since=' + ndSince(newDlState.range) + '&limit=' + ND_PAGE_FILES;
-    if (cursor) url += '&cursor=' + encodeURIComponent(cursor);
-    return fetch(url).then((r) => r.json());
+    const p = new URLSearchParams({
+        since: String(ndSince(newDlState.range)),
+        limit: String(ND_PAGE_FILES),
+    });
+    if (cursor) p.set('cursor', cursor);
+    ndFilterParams().forEach((v, k) => p.set(k, v));   // 作者属性筛选（和导出页同一套参数名）
+    return fetch('/api/new_downloads?' + p.toString()).then((r) => r.json());
 }
 
 // ---------- 继续加载（取消 600 上限的核心）----------
@@ -6861,7 +7499,7 @@ function ndCard(it, nick, gi, ii) {
             ${it.is_video ? '' : '<span class="nd-kind">图文</span>'}
             ${n > 1 ? `<span class="nd-multi">${n}</span>` : ''}
         </div>
-        <div class="nd-time">${escapeHtml(it.date || '日期未知')}</div>
+        <div class="nd-time"><i class="nd-time-k">发布</i>${escapeHtml(it.date || '日期未知')}</div>
     </div>`;
 }
 
@@ -7208,10 +7846,15 @@ function renderNewDownloads(opts) {
     newDlState.rendered = groups;
 
     if (sub) {
+        // 卡片上那个日期是**作品发布时间**，而这一页是按**下载时间**切的，
+        // 所以「今天」里出现 2025 年的作品是正常的 —— 说明文字写清楚，别让人以为筛错了。
+        const filtered = ndFilterActive() ? ' · 已按作者筛选' : '';
         sub.textContent = total
             ? total + ' 个作品' + (d.has_more ? '（往下滚继续加载）' : '')
-                + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者'
-            : '这个范围内没有新下载';
+                + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者' + filtered
+            : (ndFilterActive()
+                ? '筛选后这个范围里没有作品，把条件放宽试试'
+                : '这个范围内没有新下载');
     }
     if (badge) {
         badge.textContent = total || 0;
@@ -7443,31 +8086,97 @@ function renderFilesView() {
 }
 
 // ===== 回收站：删掉的作品都在这儿，可以整批恢复或彻底删 =====
+// 2026-11-02：每批可点开看明细（删的到底是哪几条作品），展开状态和已拉到的明细
+// 都放在 filesState.openBatch 里，重绘后还在，不用重复请求。
 function recycleSectionHtml() {
     const list = filesState.recycle || [];
     const total = filesState.recycleSize || 0;
-    const rows = list.length ? list.map((b) => `
-        <div class="fm-row" data-batch="${escapeHtml(b.id)}">
-            <div class="fm-main">
-                <div class="fm-name">${escapeHtml(b.nickname || b.uid)}${b.exists ? '' : ' <span class="fm-note">文件已不在磁盘上</span>'}</div>
+    filesState.openBatch = filesState.openBatch || {};
+    const rows = list.length ? list.map((b) => {
+        const st = filesState.openBatch[b.id] || {};
+        const open = !!st.open;
+        return `
+        <div class="fm-row rb-row" data-batch="${escapeHtml(b.id)}">
+            <div class="fm-main" onclick="toggleRecycleBatch('${escapeHtml(b.id)}')" title="点开看看这一批里有哪些作品">
+                <div class="fm-name">
+                    <span class="rb-chev${open ? ' open' : ''}">›</span>
+                    ${escapeHtml(b.nickname || b.uid)}${b.exists ? '' : ' <span class="fm-note">文件已不在磁盘上</span>'}
+                </div>
                 <div class="fm-cur">${escapeHtml(b.time)} · ${b.works} 个作品 / ${b.files} 个文件 · ${fmtBytes(b.size)}</div>
             </div>
             <button class="btn btn-mini" onclick="restoreRecycleBatch('${escapeHtml(b.id)}')" ${b.exists ? '' : 'disabled'}
                     title="把这一批文件搬回原来的位置，网页里也会重新出现">恢复</button>
             <button class="btn btn-mini fm-del" onclick="purgeRecycleBatch('${escapeHtml(b.id)}', ${b.files}, ${b.size})"
                     title="真删掉，不能恢复">彻底删除</button>
-        </div>`).join('')
+            <div class="rb-sub${open ? '' : ' hidden'}" id="rb-${escapeHtml(b.id)}">${st.open ? recycleSubHtml(b.id) : ''}</div>
+        </div>`;
+    }).join('')
         : '<div class="fm-empty">✓ 回收站是空的。</div>';
 
     return `
         <div class="settings-section">
-            <div class="settings-title">回收站
-                <span class="fm-count">${list.length} 批 / ${fmtBytes(total)}</span></div>
+            <div class="settings-title rb-title">回收站
+                <span class="fm-count">${list.length} 批 / ${fmtBytes(total)}</span>
+                ${list.length ? `<button class="btn btn-mini fm-del rb-clear-all" onclick="purgeAllRecycle(${list.length}, ${total})"
+                        title="把回收站里所有批次一起彻底删除，腾出空间（不可恢复）">一键清空</button>` : ''}
+            </div>
             <div class="settings-desc">网页里删掉的作品不会真的消失：文件整份搬到 <b>browser\\recycle-bin\\</b>，
-                作品从列表里摘掉。<b>想反悔点「恢复」</b>就搬回原位，和没删过一样；
-                确实不要了再点「彻底删除」腾空间。</div>
+                作品从列表里摘掉。<b>点作者名那一行可以展开看具体删了哪些作品</b>；
+                想反悔点「恢复」就搬回原位，和没删过一样；确实不要了再点「彻底删除」腾空间。</div>
             <div class="fm-list">${rows}</div>
         </div>`;
+}
+
+// 展开后那一块：作品清单（日期 / 描述 / 文件数 / 体积）
+function recycleSubHtml(id) {
+    const st = (filesState.openBatch || {})[id] || {};
+    if (st.loading) return '<div class="rb-loading">读取中…</div>';
+    if (st.error) return '<div class="rb-loading">读取失败：' + escapeHtml(st.error) + '</div>';
+    const d = st.detail;
+    if (!d) return '<div class="rb-loading">读取中…</div>';
+    const works = d.works || [];
+    if (!works.length) return '<div class="rb-loading">这一批没有作品记录。</div>';
+    const rows = works.map((w) => `
+        <div class="rb-work">
+            <span class="rb-wdate">${escapeHtml(w.date || '—')}</span>
+            <span class="rb-wdesc" title="${escapeHtml(w.desc || '')}">${escapeHtml(w.desc || '(无描述)')}</span>
+            <span class="rb-wmeta">${w.file_count} 个文件${w.size ? ' · ' + fmtBytes(w.size) : ''}</span>
+        </div>`).join('');
+    return `<div class="rb-sub-head">这一批共 ${works.length} 个作品${d.size ? ' / ' + fmtBytes(d.size) : ''}</div>${rows}`;
+}
+
+async function toggleRecycleBatch(id) {
+    filesState.openBatch = filesState.openBatch || {};
+    const st = filesState.openBatch[id] || (filesState.openBatch[id] = {});
+    const box = document.getElementById('rb-' + id);
+    if (st.open) {                       // 收起
+        st.open = false;
+        if (box) box.classList.add('hidden');
+        const ch = document.querySelector('.rb-row[data-batch="' + cssName(id) + '"] .rb-chev');
+        if (ch) ch.classList.remove('open');
+        return;
+    }
+    st.open = true;
+    const ch = document.querySelector('.rb-row[data-batch="' + cssName(id) + '"] .rb-chev');
+    if (ch) ch.classList.add('open');
+    if (box) box.classList.remove('hidden');
+    if (st.detail) { if (box) box.innerHTML = recycleSubHtml(id); return; }
+
+    st.loading = true;
+    if (box) box.innerHTML = recycleSubHtml(id);
+    try {
+        const r = await fetch('/api/recycle/detail', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id }),
+        }).then((x) => x.json());
+        st.loading = false;
+        if (!r.ok) { st.error = r.error || '读取失败'; }
+        else { st.detail = r; }
+    } catch (e) {
+        st.loading = false;
+        st.error = e.message;
+    }
+    if (box) box.innerHTML = recycleSubHtml(id);
 }
 
 async function restoreRecycleBatch(id) {
@@ -7498,6 +8207,37 @@ async function purgeRecycleBatch(id, files, size) {
         await refreshFilesView();
     } catch (e) {
         showToast('删除失败：' + e.message);
+    }
+}
+
+// 一键清空：所有批次一起真删。真要删的量大（可能几十 GB），
+// 先把批次数和体积报清楚，二次确认后才动手；删的过程中按钮置灰防连点。
+async function purgeAllRecycle(batches, size) {
+    const ok = window.confirm(
+        '一键清空回收站？\n\n'
+        + '· ' + batches + ' 批全部彻底删除（' + fmtBytes(size) + '）\n'
+        + '· 文件从硬盘上真删掉，不能恢复\n'
+        + '· 只想留几批的话，先点「恢复」，再清空\n\n确定清空吗？'
+    );
+    if (!ok) return;
+    const btn = document.querySelector('.rb-clear-all');
+    if (btn) { btn.disabled = true; btn.textContent = '正在删除…'; }
+    showToast('正在彻底删除 ' + batches + ' 批，文件多的话要等一会儿…');
+    try {
+        const r = await fetch('/api/recycle/purge_all', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+        }).then((x) => x.json());
+        if (!r.ok) { showToast(r.error || '清空失败'); return; }
+        showToast('已清空 ' + r.batches + ' 批、' + r.works + ' 个作品，释放 ' + fmtBytes(r.freed || 0));
+        if (r.failed && r.failed.length) {
+            setTimeout(() => showToast(r.failed.length + ' 批没删掉（文件被占用？），已留在列表里'), 2400);
+        }
+        await refreshFilesView();
+    } catch (e) {
+        showToast('清空失败：' + e.message);
+    } finally {
+        const b2 = document.querySelector('.rb-clear-all');
+        if (b2) { b2.disabled = false; b2.textContent = '一键清空'; }
     }
 }
 

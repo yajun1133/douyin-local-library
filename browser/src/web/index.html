@@ -8,7 +8,7 @@
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261031c106">
     <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261031c106">
-    <link rel="stylesheet" href="style.css?v=20261102c109">
+    <link rel="stylesheet" href="style.css?v=20261103c125">
 </head>
 <body>
     <button class="sidebar-expand" id="sidebarExpand" title="展开侧边栏">»</button>
@@ -205,10 +205,10 @@
                                 <div class="filter-group">
                                     <div class="filter-label">更新频率</div>
                                     <div class="filter-opts" data-key="freq">
-                                        <label><input type="checkbox" name="fFreq" value="day"> 日更</label>
+                                        <label><input type="checkbox" name="fFreq" value="day"> day</label>
                                         <label><input type="checkbox" name="fFreq" value="3天"> 3天</label>
-                                        <label><input type="checkbox" name="fFreq" value="周"> 周更</label>
-                                        <label><input type="checkbox" name="fFreq" value="月"> 月更</label>
+                                        <label><input type="checkbox" name="fFreq" value="周"> 周</label>
+                                        <label><input type="checkbox" name="fFreq" value="月"> 月</label>
                                         <label><input type="checkbox" name="fFreq" value="__unset"> 未设置</label>
                                     </div>
                                 </div>
@@ -219,6 +219,8 @@
                             </div>
                         </div>
                         <button class="btn" id="refreshBtn" onclick="refreshAuthorList()" title="重新拉取当前列表（保留筛选 / 搜索 / 排序，回到顶部）">⟳ 刷新</button>
+                        <button class="btn" id="layoutBtn" onclick="toggleAuthorLayout()"
+                                title="切换显示方式：网格（一张张卡片）/ 每作者一行（左边作者信息 + 右边一行作品缩略图）">▤ 每作者一行</button>
                         <span>排序:</span>
                         <select id="sortSelect" title="排序方式">
                             <option value="nickname">昵称</option>
@@ -236,8 +238,18 @@
                         <button class="btn hidden" id="exportBtn" onclick="exportSecUids()" title="把当前界面的作者（含所在大小号组）的 SEC_UID 导出成完整主页链接 txt">📤 导出 SECID</button>
                     </div>
                 </div>
-                <div class="author-grid" id="authorGrid">
-                    <div class="loading">加载中...</div>
+                <div class="rows-wrap" id="rowsWrap">
+                    <div class="author-grid" id="authorGrid">
+                        <div class="loading">加载中...</div>
+                    </div>
+                    <!-- 「每作者一行」模式的右侧常驻播放区：点左边的作品就在这儿播，
+                         不跳作者详情页（跟「新下载」栏目一个手感） -->
+                    <aside class="rows-player hidden" id="rowsPlayer">
+                        <div class="rp-stage" id="rowStage">
+                            <div class="rp-empty">点左边的作品直接播放</div>
+                        </div>
+                        <div class="rp-foot" id="rowFoot"></div>
+                    </aside>
                 </div>
                 <div id="loadMore" class="load-more hidden">向下滚动加载更多</div>
             </section>
@@ -325,29 +337,27 @@
                                         title="把下面所有筛选条件恢复默认，并清掉上次的预览">↺ 重置</button>
                             </h3>
                             <div class="export-opt-row">
-                                <span class="fav-label">属性之间<span class="hint-wrap"><button type="button" class="hint-q" aria-label="怎么组合" onmouseenter="showHintPop(this)" onmouseleave="hideHintPop(this)" onclick="toggleHintPop(event, this)">?</button><span class="hint-pop"><b>同一个属性里勾多个 = 并集</b>（命中任一即可，例如等级同时勾「夯」和「顶级」，两拨人都要）。<br><b>不同属性之间</b>默认 <b>交集</b>（必须同时满足，例如等级「夯」+ 状态「正常」= 既是夯又正常）；想「等级是夯 <b>或者</b> 状态是正常」，把这里切成 <b>并集</b>。</span></span></span>
-                                <div class="export-radios" id="exportMatchRadios">
-                                    <label><input type="radio" name="expMatch" value="and" checked> 交集（都要满足）</label>
-                                    <label><input type="radio" name="expMatch" value="or"> 并集（命中任一）</label>
-                                </div>
-                            </div>
-                            <div class="export-opt-row">
+                                <div class="export-match" data-key="level"></div>
                                 <span class="fav-label">作者等级</span>
                                 <div class="export-radios" id="exportLevelRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="tag"></div>
                                 <span class="fav-label">标签</span>
                                 <div class="export-radios" id="exportTagRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="status"></div>
                                 <span class="fav-label">账号状态</span>
                                 <div class="export-radios" id="exportStatusRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="freq"></div>
                                 <span class="fav-label">更新频率</span>
                                 <div class="export-radios" id="exportFreqRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="latest"></div>
                                 <span class="fav-label">已下载作品<br>最后时间</span>
                                 <div class="export-radios" id="exportLatestRadios"></div>
                                 <div class="export-range hidden" id="exportLatestRange">
@@ -355,6 +365,10 @@
                                     <span>至</span>
                                     <input type="date" id="exportLatestTo" title="结束日期（含当天，可空）">
                                 </div>
+                            </div>
+                            <div class="export-match-hint">
+                                每行左边的圆钮：<b class="em-plus">＋</b> = 这一项和其它 ＋ 项取<b>并集</b>（命中任一即可，<b>默认</b>），
+                                点一下变成 <b class="em-minus">－</b> = 取<b>交集</b>（必须同时满足）。同一行里勾多个值，始终是「命中任一」。
                             </div>
                             <div class="export-foot-row">
                                 <button class="btn" onclick="clearExportAll()" title="清空上面的筛选条件、已选名单和下面的预览（切到别的界面不会自动清）">清空</button>
@@ -445,6 +459,49 @@
                         <button class="btn" data-range="7d" onclick="ndPickRange('7d')" title="最近 7 天">近 7 天</button>
                         <button class="btn" data-range="30d" onclick="ndPickRange('30d')" title="最近 30 天">近 30 天</button>
                         <button class="btn" onclick="refreshNewDownloads(true)" title="重新读一遍下载记录库">🔄 刷新</button>
+                        <!-- 按作者筛选：和「📤 导出作者信息」那一栏完全同一套口径
+                             （等级 / 标签 / 状态 / 更新频率 / 最后下载时间，每行自带 ＋/－ 组合开关），
+                             筛选在服务端做，翻页取到的也都是筛完的结果 -->
+                        <div class="filter-wrap">
+                            <button class="btn" id="ndFilterBtn" onclick="toggleNdFilter()"
+                                    title="按作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间筛选（和「导出作者信息」同一套）">筛选<span class="filter-dot hidden" id="ndFilterDot"></span></button>
+                            <div class="nd-filter-panel hidden" id="ndFilterPanel">
+                                <div class="ndf-head"><b>按作者筛选</b><span class="ndf-sub" id="ndfSub"></span></div>
+                                <div class="ndf-row" data-key="level">
+                                    <span class="ndf-match" data-key="level"></span>
+                                    <span class="ndf-label">作者等级</span>
+                                    <div class="ndf-opts" id="ndLevelOpts"></div>
+                                </div>
+                                <div class="ndf-row" data-key="tag">
+                                    <span class="ndf-match" data-key="tag"></span>
+                                    <span class="ndf-label">标签</span>
+                                    <div class="ndf-opts" id="ndTagOpts"></div>
+                                </div>
+                                <div class="ndf-row" data-key="status">
+                                    <span class="ndf-match" data-key="status"></span>
+                                    <span class="ndf-label">账号状态</span>
+                                    <div class="ndf-opts" id="ndStatusOpts"></div>
+                                </div>
+                                <div class="ndf-row" data-key="freq">
+                                    <span class="ndf-match" data-key="freq"></span>
+                                    <span class="ndf-label">更新频率</span>
+                                    <div class="ndf-opts" id="ndFreqOpts"></div>
+                                </div>
+                                <div class="ndf-row" data-key="latest">
+                                    <span class="ndf-match" data-key="latest"></span>
+                                    <span class="ndf-label">最后下载</span>
+                                    <div class="ndf-opts" id="ndLatestOpts"></div>
+                                </div>
+                                <div class="ndf-hint">
+                                    每行左边：<b class="em-plus">＋</b> 并集（命中任一即可，默认）·
+                                    <b class="em-minus">－</b> 交集（必须同时满足）。同一行勾多个值永远是「命中任一」。
+                                </div>
+                                <div class="ndf-foot">
+                                    <button class="btn btn-mini" onclick="ndResetFilter()" title="全部恢复默认（不限）">↺ 重置</button>
+                                    <button class="btn btn-mini" onclick="toggleNdFilter()">收起</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="nd-body">
@@ -588,12 +645,26 @@
                             <span class="detail-bar-title" id="detailBarTitle"></span>
                             <div class="sel-actions hidden" id="selActions">
                                 <span class="sel-count" id="selCount">已选 0 个</span>
+                                <button class="btn sel-date" onclick="toggleDateBar()" title="按发布日期区间批量选作品（比一个个点快）">📅 时间段</button>
                                 <button class="btn sel-del" onclick="deleteSelectedWorks()" title="把选中的作品移入回收站（文件搬到 browser\recycle-bin，随时可以恢复）">移入回收站</button>
                                 <button class="btn" onclick="exitWorkSelect()">取消</button>
                             </div>
                             <button class="btn sel-btn" id="workSelBtn" onclick="enterWorkSelect()"
                                     title="点一下进入多选，勾选不想要的作品后可以移入回收站">🗑</button>
                             <button class="btn bar-top-btn" onclick="scrollToTop()" title="回到顶部">↑ 顶部</button>
+                        </div>
+                        <!-- ② 按时间段选作品：多选模式下点「📅 时间段」才展开，
+                             放在 detail-bar 的兄弟位置（比浮层稳，work-wall 是 overflow:hidden，
+                             绝对定位的浮层会被裁掉） -->
+                        <div class="date-bar hidden" id="dateBar">
+                            <span class="date-bar-label">按时间段选</span>
+                            <input type="date" class="date-input" id="dpFrom" onchange="updateDateHint()" title="起始日期（含当天）">
+                            <span class="date-bar-sep">至</span>
+                            <input type="date" class="date-input" id="dpTo" onchange="updateDateHint()" title="结束日期（含当天）">
+                            <span class="date-hint" id="dpHint"></span>
+                            <button class="btn btn-mini date-ok" onclick="applyDateSelect(true)" title="清掉原来的勾选，只留这个区间内的作品">只选这些</button>
+                            <button class="btn btn-mini" onclick="applyDateSelect(false)" title="在已勾选的基础上，把这个区间内的也勾上">加入已选</button>
+                            <button class="btn btn-mini" onclick="toggleDateBar()" title="收起">收起</button>
                         </div>
                         <div class="wall-scroll" id="wallScroll">
                             <!-- ② 作者信息（卡片式，5 列，全部展开） -->
@@ -681,6 +752,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261102c109"></script>
+    <script src="app.js?v=20261103c125"></script>
 </body>
 </html>

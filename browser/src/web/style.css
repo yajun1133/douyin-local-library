@@ -453,6 +453,9 @@ img.author-cover { display: block; width: 100%; aspect-ratio: 3/4; object-fit: c
 .player-foot .btn { height: 26px; padding: 0 8px; font-size: 12px; white-space: nowrap; }
 .btn-nav { width: 26px; padding: 0 !important; text-align: center; }
 .player-pos { font-size: 12px; color: var(--text-muted); white-space: nowrap; min-width: 44px; text-align: center; }
+/* 一个作品有多段视频时（_1.mp4 + _2.mp4），播放器底部的段内翻页；和「上个/下个作品」隔一道竖线区分 */
+.vid-nav { display: inline-flex; align-items: center; gap: 2px; padding-left: 8px; margin-left: 2px; border-left: 1px solid var(--border); }
+.vid-nav .player-pos { min-width: 54px; }
 .player-title { flex: 1; min-width: 80px; font-size: 12px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-foot .btn[disabled] { opacity: 0.45; cursor: default; }
 .player-hint { font-size: 12px; color: #b45309; padding: 0 12px 8px; flex-shrink: 0; }
@@ -3163,6 +3166,12 @@ body {
     opacity: 0.9 !important;
 }
 
+/* 「多段视频」徽标：蓝底 + 暂停条图标，和「多动图」的圆点、多图的叠框一眼能分开 */
+.wall-badge.vid-badge {
+    background: rgba(37, 99, 235, 0.8) !important;
+    border-color: rgba(191, 219, 254, 0.5) !important;
+}
+
 
 /* ===== 2026-10-29 UI Polish (c61): 作者卡片去白边 + 紧凑下部 + 横屏视频上下黑边 ===== */
 
@@ -4297,6 +4306,30 @@ body::after {
 .export-panel .export-opt-row .fav-label { flex-shrink: 0; padding-top: 2px; width: 66px; font-size: 12px; color: var(--text-muted); line-height: 1.35; }
 .export-panel .export-radios { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; flex: 1; min-width: 0; }
 .export-panel .export-radios label { display: inline-flex; align-items: center; gap: 3px; font-size: 13px; cursor: pointer; }
+/* 每行最左边那个圆钮：＋ = 并集（默认），－ = 交集；点一下在两者之间切换
+   （2026-11-02 取代原来的全局「属性之间」单选，也从行尾挪到了行首） */
+.export-match { flex-shrink: 0; display: flex; align-items: center; padding-top: 1px; }
+.export-match .em-btn {
+    width: 24px; height: 24px; padding: 0 0 1px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 700; line-height: 1;
+    cursor: pointer; user-select: none;
+    transition: background .15s, border-color .15s, color .15s, transform .1s;
+}
+.export-match .em-btn.or { color: #1e5fd8; background: #deeaff; border: 1px solid #a6c5fb; }
+.export-match .em-btn.or:hover { background: #cbdcff; border-color: #7faaf9; }
+.export-match .em-btn.and { color: #b4580a; background: #ffe6cd; border: 1px solid #f0b57a; }
+.export-match .em-btn.and:hover { background: #ffd8b0; border-color: #e79f52; }
+.export-match .em-btn:active { transform: scale(.9); }
+.export-match .em-btn:focus-visible { outline: 2px solid #8fb4f8; outline-offset: 1px; }
+.export-match-hint { font-size: 11px; line-height: 1.7; color: var(--text-muted); margin: -2px 0 10px; }
+.export-match-hint .em-plus, .export-match-hint .em-minus {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; border-radius: 50%;
+    font-size: 11px; line-height: 1; vertical-align: -2px;
+}
+.export-match-hint .em-plus { color: #2f6fe4; background: #eaf1ff; }
+.export-match-hint .em-minus { color: #c1610b; background: #fff1e3; }
 .export-panel .export-foot-row { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
 .export-range { display: flex; align-items: center; gap: 6px; flex-basis: 100%; margin-top: 4px; }
 .export-range input[type="date"] { height: 30px; border: 1px solid var(--border); border-radius: 6px; padding: 0 6px; font-size: 12px; }
@@ -5319,6 +5352,90 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
 }
 .nd-range .btn.on:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
 
+/* 「新下载」页的按作者筛选面板：和「导出作者信息」同一套口径（每行一个 ＋/－ 组合开关）。
+   故意不复用 .filter-panel —— 那个 class 在本文件里有 4 处视图级覆盖，套过来会串样式。 */
+.nd-filter-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    z-index: 60;
+    width: min(540px, calc(100vw - 48px));
+    max-height: min(72vh, 640px);
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 14px 36px rgba(20, 30, 60, .18);
+    padding: 12px 14px 10px;
+    text-align: left;
+}
+.ndf-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text);
+    margin-bottom: 10px;
+}
+.ndf-sub { font-size: 11.5px; color: var(--text-muted); font-weight: 400; }
+.ndf-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 9px; }
+.ndf-label { flex: none; width: 56px; font-size: 11.5px; color: var(--text-muted); padding-top: 5px; }
+.ndf-opts { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
+.ndf-opts label {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 12px;
+    line-height: 1.5;
+    min-height: 24px;
+    cursor: pointer;
+    color: var(--text);
+    white-space: nowrap;
+}
+.ndf-opts input { margin: 0; cursor: pointer; accent-color: var(--primary); }
+.ndf-match { flex: none; display: flex; padding-top: 2px; }
+.ndf-match .em-btn {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    color: #1e5fd8;
+    background: #deeaff;
+    border: 1px solid #a6c5fb;
+}
+.ndf-match .em-btn.and { color: #b4580a; background: #ffe6cd; border-color: #f0b57a; }
+.ndf-match .em-btn:hover { filter: brightness(.96); }
+.ndf-hint {
+    font-size: 11px;
+    line-height: 1.75;
+    color: var(--text-muted);
+    margin: 4px 0 8px;
+    padding-left: 64px;
+}
+.ndf-hint .em-plus, .ndf-hint .em-minus {
+    display: inline-block;
+    min-width: 15px;
+    text-align: center;
+    border-radius: 50%;
+    font-weight: 700;
+}
+.ndf-hint .em-plus { color: #2f6fe4; background: #eaf1ff; }
+.ndf-hint .em-minus { color: #c1610b; background: #fff1e3; }
+.ndf-foot {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+
 .new-body { max-width: 100%; padding-bottom: 24px; }
 
 /* 一位作者一块：上面一行「名字 + 几个」，下面是这个作者这次下的全部作品 */
@@ -5393,6 +5510,13 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     font-size: 11px; color: #9aa3af;
     padding: 1px 7px 7px;
     font-variant-numeric: tabular-nums;
+}
+/* 「发布」两个字标出这个日期的含义：这一页是按**下载时间**切的，卡片上写的是**发布时间** */
+.nd-time-k {
+    font-style: normal;
+    font-size: 10px;
+    color: #b6bdc8;
+    margin-right: 3px;
 }
 
 .nd-empty {
@@ -5847,3 +5971,324 @@ body.side-collapsed .nd-body { grid-template-columns: minmax(0, 1fr) 500px !impo
 .del-author-btn { color: #8a919c; }
 .del-author-btn:hover { color: #e5484d; border-color: #f3c2c3; background: #fff5f5; }
 .del-author-btn .ico path { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+
+/* ===== c114：详情页「按时间段选作品」 ===== */
+/* 按钮：和多选删除同一排，视觉上比「移入回收站」轻一档 */
+.sel-date {
+    color: #7a4a22;
+    background: #fff8f2;
+    border-color: #ffe0c7;
+    font-weight: 600;
+}
+.sel-date:hover { background: #ffefdf; border-color: #f7c79b; }
+
+/* 展开的那一条：放在 detail-bar 下面、wall-scroll 上面。
+   不能做成绝对定位浮层——.work-wall 是 overflow:hidden，浮层会被裁掉。 */
+.date-bar {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #fff8f9;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+}
+.date-bar.hidden { display: none; }
+.date-bar-label { color: var(--text-muted); white-space: nowrap; }
+.date-bar-sep { color: var(--text-muted); }
+.date-input {
+    height: 26px;
+    padding: 0 7px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--text);
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+}
+.date-input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(229, 72, 77, .1); }
+.date-hint {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    margin-right: auto;
+}
+.date-hint.bad { color: #b91c1c; font-weight: 600; }
+.date-ok { color: #fff; background: #b91c1c; border-color: #b91c1c; }
+.date-ok:hover { background: #a11717; }
+
+/* 回收站标题行：批次数在左，一键清空靠右 */
+.rb-title { display: flex; align-items: center; gap: 8px; }
+.rb-clear-all { margin-left: auto; }
+
+/* ===== c114：回收站每一批可点开看明细 ===== */
+.rb-row { flex-wrap: wrap; }.rb-row .fm-main { cursor: pointer; }
+.rb-chev {
+    display: inline-block;
+    width: 12px;
+    color: var(--text-muted);
+    transition: transform .15s;
+    transform-origin: 50% 50%;
+}
+.rb-chev.open { transform: rotate(90deg); }
+.rb-sub {
+    flex: 0 0 100%;
+    margin: 6px 0 2px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--border);
+}
+.rb-sub.hidden { display: none; }
+.rb-sub-head { font-size: 12px; color: var(--text-muted); margin-bottom: 2px; }
+.rb-work {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 3px 2px;
+    font-size: 12px;
+    border-top: 1px solid #f4f5f7;
+}
+.rb-work:first-of-type { border-top: none; }
+.rb-wdate { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.rb-wdesc {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text);
+}
+.rb-wmeta { flex: none; color: var(--text-muted); white-space: nowrap; }
+.rb-loading { font-size: 12px; color: var(--text-muted); padding: 4px 2px; }
+
+/* ===== c118：作者列表「每作者一行」视图（照「新下载」栏目的样子）=====
+   一位作者 = 一行表头（名字 + 等级/频率/状态/标签 + N 个作品）
+             + 下面**一行**作品卡片（铺满可用宽度，放不下横向滚，绝不折第二行）。
+   右侧是常驻播放区：点左边任意作品就在那儿播，不跳作者页。 */
+.rows-wrap.rows-mode {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+}
+.rows-wrap.rows-mode .author-grid {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    grid-template-columns: none;
+}
+
+.author-row { min-width: 0; }
+.ar-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 2px 6px;
+    margin-bottom: 9px;
+    border-bottom: 1px solid #f0f2f5;
+    cursor: pointer;
+}
+.ar-head:hover .ar-name { color: var(--primary); }
+.ar-dot {
+    flex: none;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--primary);
+}
+.ar-name {
+    flex: none;
+    max-width: 30%;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ar-chips {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;      /* 标签全部显示，多了折行，不截断 */
+    align-items: center;
+    gap: 4px;
+}
+.ar-chips .mini-tag { font-size: 10px; }
+/* 表头右侧：最后下载时间 + 作品数（用户 11-03 标注要这两项） */
+.ar-side {
+    flex: none;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.ar-dl {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.ar-dl.old { color: #b45309; }        /* 30 天以上没下过：提醒色 */
+.ar-dl.none { color: #b7bdc7; }
+.ar-cnt {
+    flex: none;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* 作品一行：**固定列数、绝不左右滑动**（用户 2026-11-03 标注「不要可以左右滑动的，
+   固定一定数量的作品，不够就是空白」）。列数由 rowFitStrip() 按可用宽度算，写进 --ar-cols；
+   作品少于列数时 grid 天然留白。 */
+.ar-strip {
+    display: grid;
+    grid-template-columns: repeat(var(--ar-cols, 8), minmax(0, 1fr));
+    gap: 8px;
+    overflow: hidden;
+}
+
+/* 卡片：少量作品时平分铺满整行（max-width 防止一张卡被撑成巨图），多了就保持最小宽并横向滚 */
+.ar-card {
+    min-width: 0;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.ar-card:hover {
+    transform: translateY(-1px);
+    border-color: #f4b0bf;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, .08);
+}
+.ar-card.active {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(254, 44, 85, .14);
+}
+.ar-thumb {
+    position: relative;
+    aspect-ratio: 3 / 4;
+    background: #f1f3f5;
+    overflow: hidden;
+}
+.ar-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ar-thumb .placeholder,
+.ar-thumb img.placeholder {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; color: #aab0bb;
+}
+.ar-kind, .ar-multi {
+    position: absolute;
+    padding: 0 5px;
+    height: 16px;
+    line-height: 16px;
+    border-radius: 5px;
+    font-size: 10px;
+    color: #fff;
+    background: rgba(0, 0, 0, .55);
+    pointer-events: none;
+}
+.ar-kind { left: 4px; top: 4px; }
+.ar-multi { right: 4px; top: 4px; }
+.ar-time {
+    padding: 4px 6px 5px;
+    font-size: 10.5px;
+    color: var(--text-muted);
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ar-empty { font-size: 12px; color: #b7bdc7; align-self: center; padding-left: 2px; }
+
+/* ===== 右侧常驻播放区 ===== */
+/* 右侧播放区：**尺寸照「新下载」栏目那一套**（用户 2026-11-03：「预览的太小了，
+   改成和新下载一样的格式大小」）。那边是 440px 宽、高度撑满可视区（.nd-body 是 grid，
+   .nd-player 吃满整列高度）；这里是 sticky，所以用 calc 把窗口高度减掉
+   顶栏 56 + 内容区上下 padding 56 + 视图工具栏约 90，剩下的全给播放器。 */
+.rows-player {
+    position: sticky;
+    top: 32px;                 /* 停在顶部工具栏下方（.view-header 顶到 -26px） */
+    flex: 0 0 440px;
+    width: 440px;
+    height: calc(100vh - 200px);
+    min-height: 420px;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+.rows-player.hidden { display: none; }
+/* 画面吃掉除底栏以外的全部高度（和新下载的 .ndp-stage 一个意思），
+   不再用 3:4 的比例框 —— 竖屏 4K 源在这个尺寸下基本能铺满、上下不留大黑边 */
+.rp-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0f1115;
+    overflow: hidden;
+}
+.rp-stage video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.rp-img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.rp-empty {
+    padding: 26px 18px;
+    color: #99a1ae;
+    font-size: 13px;
+    line-height: 1.8;
+    text-align: center;
+}
+.rp-empty span { font-size: 12px; color: #767d89; }
+.rp-img-nav {
+    position: absolute;
+    left: 0; right: 0; bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+.rp-pos { font-size: 11.5px; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.6); }
+.rp-foot { padding: 9px 12px 11px; border-top: 1px solid var(--border); }
+.rp-foot:empty { display: none; }
+.rp-title {
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.rp-meta {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+.rp-open { margin-top: 8px; }
+
+/* 窄屏：播放区收一档，别把列表挤没 */
+@media (max-width: 1440px) {
+    .rows-player { flex: 0 0 380px; width: 380px; }
+}
+@media (max-width: 1280px) {
+    .rows-player { flex: 0 0 320px; width: 320px; }
+}
+@media (max-width: 1024px) {
+    .rows-wrap.rows-mode { flex-direction: column; }
+    .rows-player { position: static; width: 100%; flex: 0 0 auto; height: auto; }
+    .rp-stage { flex: 0 0 auto; height: 46vh; }
+}

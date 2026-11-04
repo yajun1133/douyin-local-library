@@ -78,13 +78,15 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 
 | 指标 | 口径 |
 |---|---|
-| 作者数 | `/api/meta.total_authors`（2026-11-01：**1752**）。比 `data.json` 的 1706 个账号多出来的那些是「合成账号」——只在 `user_data.json` 里有、本地没作品（当前 52 个，多是扩展「待下载 → 新建主页」建出来的）；黑名单里的账号会从列表和统计里剔掉（当前 18 条） |
-| 作品总数 | `data.json` 里各账号 `works` 之和（2026-11-01：**240,687** 个作品，其中视频 217,875 / 图文 22,934）。重复作品已在合并重名文件夹时移出索引 |
-| 星标 | `/api/meta.starred`（2026-11-01：**105**） |
-| sec_uid 覆盖 | 扫描时只有从 `Data/*.xlsx`（当前 663 份表）来的那部分，其余靠 `user_data.json` 叠加补（补齐顺序见第六章）。**当前 1753/1758**，剩 5 个注销/封禁/私密的号补不到，属正常 |
-| thumb_cache | ffmpeg 抽帧 400px 宽，上限 3072 MB，超了按 LRU 淘汰，可整个删 |
-| trans_cache | HEVC→H.264 转码产物，上限 300 MB，可随时整个删 |
-| cover_cache | 用户手动设的封面，**永不清理** |
+| 作者数 | `/api/meta.total_authors`（2026-11-04：**1961**）。比 `data.json` 的 1924 个账号多出来的那些是「合成账号」——只在 `user_data.json` 里有、本地没作品（当前 43 个，多是扩展「待下载 → 新建主页」建出来的）；黑名单里的账号会从列表和统计里剔掉（当前 20 条） |
+| 作品总数 | `data.json` 里各账号 `works` 之和（2026-11-04：**288,718** 个作品，其中含视频 261,979 / 其余为图文）。重复作品已在合并重名文件夹时移出索引 |
+| 文件总数 | `data.json` 里各作品 `files` 之和（2026-11-04：**386,726** 个；一个图文作品占 `_1.._9` 多个文件） |
+| 星标 | `/api/meta.starred`（2026-11-04：**119**） |
+| sec_uid 覆盖 | 扫描时只有从 `Data/*.xlsx` 来的那部分（这份表已经不常用了，2026-11-04 实测 0 份），其余靠 `user_data.json` 叠加补 + 登录态接口反查（补齐顺序见第六章）。**当前 1960/1967**，剩 7 个注销/封禁/私密的号补不到，属正常 |
+| 抖音号覆盖 | 同上，**当前 1955/1967**；缺的那 12 位接口返回空，页面上点「获取资料」也拿不到 |
+| thumb_cache | ffmpeg 抽帧 400px 宽，**纯 CPU**（`-threads 2`，不要加 `-hwaccel cuda`，实测慢 5 倍），上限 3072 MB，超了按 LRU 淘汰，可整个删。**同时最多跑 8 个 ffmpeg**（`_THUMB_SLOTS`）：列表滚屏会并发问几十张封面，靠进程数铺满核，不限并发只会互相抢核。2026-11-04 实测 79,764 张 / 1.59 GB |
+| trans_cache | HEVC→H.264 转码产物，上限 300 MB，可随时整个删。编码器顺序 **NVENC（GPU）→ h264_mf → libopenh264**，NVENC 失败一次就整个进程不再试 |
+| cover_cache | 封面图，文件名 = `md5(作品相对路径)`，**永不清理**（用户明确要求）。2026-11-04 实测 2,480 张 / 54 MB。⚠️ 作品文件一改名，这个 md5 就对不上了（见第八章第 36 条） |
 
 ### 外部依赖（硬编码路径，换机需同步修改）
 
@@ -113,11 +115,15 @@ user_data.json ─────────────────────�
 > **`data.json` 曾经会被标注污染，2026-11-01 已修（别再把老结论当现状）：**
 > 根因是 `CACHE["accounts"]` 和 `CACHE["data"]["accounts"]` 是**同一批 dict**，`load_user_data()` 原地把标注写进去；于是五个写盘点（`_files_rename_folder`、`_works_delete_inner`、`_recycle_restore`、`_files_rename_batch`、`_files_dup_resolve_inner`）一旦整份 `json.dump(CACHE["data"])`，标注就跟着落盘。而增量扫描是「读旧 `data.json` 再合并」，写进去就洗不掉，还会变成过期残缺值（实测 `starred` 只剩 93，真值 105）。
 > 修法：写盘一律过 `_index_only()`，剥掉 `ANNOT_ONLY_KEYS` 那 10 个字段（`alias / alt_accounts / cover / level / main_uid / note / starred / status / tags / update_freq`）；历史残留用 `tools/clean_index.py` 一次清干净。**现在磁盘上的 data.json 是干净的**，上面那 10 个字段一个都不该出现。
+> **归档前必须清「同作品两份文件」（2026-11-03）：** 10-31 改命名模板加了 `id` 后，DouK 把老作品按新名字重下了一遍，于是同一作品在磁盘上同时存在 `日期-昵称-描述.mp4`（老）和 `日期-昵称-描述-<id>.mp4`（新）。按 ID 聚合后这两份会裂成**两个作品**，看起来就是「一个作品出现两次」。全库盘出 **444 组**（419 组 md5 完全相同、16 组同片重编码、9 组要人眼判），删掉 435 个多余文件 + 15 个图集残缺残留，共 450 个 / 0.64 GB。
+> 判定口径：**同目录 + 去掉尾部 `-ID` 和 `_序号` 后同名 + 同后缀** 才是候选；比 md5 → 比时长 → 比 24×24 灰度图（差 ≤2 算同图）。**别只按「日期+描述」判**——同一天同一作者同名不同内容的作品大量存在（实测 1400 组全是不同作品，江柔那条 `扭腰` 两个视频画面完全不同），误删就是丢作品。
+> 当时没做「自动合并 ID/无 ID 两组」的逻辑，因为那会把上一条里的真·不同作品合到一起；靠清磁盘 + DouK 记录（253 个 ID 全部已在 `download_data`）双保险。
+
 > 仍然要守的：**别拿 `data.json` 当标注的备份或恢复源**——`user_data.json`（和 `backup/`）才是唯一权威；`douyin_id / signature / nickname / sec_uid / history` 是扫描器 schema 里就有的字段，值可能被标注改过，属于刻意保留的灰色地带（剥了会丢 `history` 的合并记录）。
 
 | 模块 | 职责 | 关键产物 |
 |---|---|---|
-| `scanner.py` | 遍历目录，解析 `UID_昵称_发布作品` 文件夹、作品文件名（`日期-昵称-描述`），从 `Data/*.xlsx` 取 sec_uid，合并同名改昵称账号（记录昵称历史）。**只有全量扫描，`--incremental` 参数是死代码** | `data.json` |
+| `scanner.py` | 遍历目录，解析 `UID_昵称_发布作品` 文件夹、作品文件名（`日期-昵称-描述[-作品ID]`），从 `Data/*.xlsx` 取 sec_uid，合并同名改昵称账号（记录昵称历史）。**只有全量扫描，`--incremental` 参数是死代码**。聚合键：**有作品 ID 就按 ID**（`("id", id)`），没有 ID 的老文件退回 `("dd", 日期, 描述)` | `data.json` |
 | `server.py` | 载入 data.json 进内存（`CACHE`），**叠加 user_data.json 标注**，提供 API + 静态/媒体托管 + 缩略图 + 编码探测 + HEVC 转码 | HTTP 服务（端口 8723） |
 | `app.js` | 前端状态管理（`state` / `detailState`）、分页加载、作者详情页（上下三段 + 左右两栏）、媒体预览、标注操作 | 交互逻辑 |
 
@@ -147,6 +153,7 @@ user_data.json ─────────────────────�
 
 - `desc` 取自文件名的描述段，可能带 `#话题`；文件名解析失败的会以 `date=""`+原始文件名作为一条独立作品。
 - 图文帖按「日期 + 描述」聚合为一组，`files` 按文件名末尾 `_序号` 排序。
+- 卡片右上角的媒体徽标（`wallBadgeHtml`）有三种，图标/配色刻意区分：**多图**（叠框，灰黑，张数）、**多动图**（圆点，灰黑，段数）、**多段视频**（暂停条，蓝底，段数）。纯视频作品（一张图都没有）以前会被 `motions>=2` 判成「多动图」，和 `workKindOf` 的「没图就是视频」打架（用户 2026-11-02 看到「圆圈+2」问是不是动图）；现在纯视频走单独分支，只有多段才标，并且播放器底部出现 `‹ 1/2 段 ›` 可以翻（`videoFilesOf` / `vidNavHtml` / `stepVideo`，2026-11-02 c113）
 
 #### 「图 + 动图」帖（抖音实况图）的文件结构 —— 别当成「视频 + 封面」
 
@@ -206,7 +213,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | 接口 | 方法 | 参数 | 返回 |
 |---|---|---|---|
 | `/api/meta` | GET | — | `{total_authors, starred, tags:{标签:数量}, years:{年:作品数}}`（统计口径 = 叠加标注后的 CACHE） |
-| `/api/authors` | GET | `offset`(默认0) / `limit`(默认60) / `sort`(nickname\|uid\|work_count\|video_count\|image_count\|latest\|earliest\|level\|added) / `dir`(asc\|desc) / `q`(关键字) / `scope`(all\|nickname\|note\|signature\|works，缺省=all) / `tag` / `year` / `cat`(all\|starred) / `status`(单选，含 `__unset`=未设置、`正常`、`注销`、`禁言/封号`、`停更/偶更`、`卖号`、`不好看了`、`待修改`；旧值 `停更/偶尔更`、`停更` 会自动映射成 `停更/偶更`) / `level`(夯\|顶级\|一般\|拉\|__unset，旧值 `1级（次）`→一般、`2级（拉）`→拉 会自动映射) / `sec_uid`(has\|none) / `starred`(yes\|no) / `latest_after` / `latest_before`(YYYY-MM-DD) / `cover`(has\|none) / `match`(and\|or，不同属性之间的组合方式，缺省 and=交集；or=并集，只作用于等级/状态/更新频率/标签/最后时间这几类属性，搜索/星标/封面始终是交集) | `{total, offset, items[]}`，items 不含 works，另带 `alias/starred/status/level/tags`(最多3个)/`cover`/`added_at` |
+| `/api/authors` | GET | `offset`(默认0) / `limit`(默认60) / `sort`(nickname\|uid\|work_count\|video_count\|image_count\|latest\|earliest\|level\|added) / `dir`(asc\|desc) / `q`(关键字) / `scope`(all\|nickname\|note\|signature\|works，缺省=all) / `tag` / `year` / `cat`(all\|starred) / `status`(单选，含 `__unset`=未设置、`正常`、`注销`、`禁言/封号`、`停更/偶更`、`卖号`、`不好看了`、`待修改`；旧值 `停更/偶尔更`、`停更` 会自动映射成 `停更/偶更`) / `level`(夯\|顶级\|一般\|拉\|__unset，旧值 `1级（次）`→一般、`2级（拉）`→拉 会自动映射) / `sec_uid`(has\|none) / `starred`(yes\|no) / `latest_after` / `latest_before`(YYYY-MM-DD) / `cover`(has\|none) / `match_level`、`match_tag`、`match_status`、`match_freq`、`match_latest`（各自 `and`=交集 / `or`=并集，**缺省 or**；2026-11-02 起每个属性单独控制，前端「① 选作者」每行左边那个圆钮就是它）。语义：**所有 and 项必须全满足，所有 or 项至少命中一个**；全是 and 等于老的交集，全是 or 等于老的并集。只作用于等级/标签/状态/更新频率/最后时间这几类属性，搜索/星标/封面始终是交集。旧的全局 `match` 仍兼容（哪个属性没单独传就用它） | `{total, offset, items[]}`，items 不含 works，另带 `alias/starred/status/level/tags`(最多3个)/`cover`/`added_at` |
 | `/api/search_works` | GET | `q` / `offset` / `limit` | 按作品 desc 搜索，返回**扁平化的作品列表** `{ok,total,items[{uid,nickname,alias,work_index,date,desc,poster_rel,poster_is_image,starred}]}`（前端「作品」范围搜索用，点进去定位到该作者这个作品） |
 | `/api/author` | GET | `uid` | 单个作者完整数据（含 works，已叠加标注，另带 `alt_info`：组内成员的 nickname/alias/douyin_id/work_count） |
 | `/api/alt_groups` | GET | — | **按组聚合的大小号文件夹**：`{total_groups, total_accounts, groups:[{key,name,custom,size,members[{uid,nickname,alias,cover,work_count,starred,status,main_uid,scanned}]}], names}`。并查集求连通分量，只返回成员 ≥2 的组 |
@@ -322,12 +329,24 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 - **缩略图**：ffmpeg 从第 1 秒抽帧生成 400px 宽 jpg，缓存 `thumb_cache/`（md5(rel) 命名）。**作品自带封面图时优先直接用封面图**（`pickPosterFile`），比抽帧清晰
 - **作者详情页取代抽屉**：点卡片后内容区整体切换成详情页（`#authorView` ↔ `#detailView`）。布局是抖音页的镜像：**左栏方形卡片墙（作品列表）/ 右栏上方作者信息框 + 下方播放器**；`refreshTop()` 只重绘信息框，避免改标注时打断正在播的视频
 - **作者列表卡片不显示 UID、但显示「N 作品 · 最新作品日期」**：`.author-meta` = `N 作品 · <latest>`（原来写 `UID xxx · N 作品`，用户要求去掉 UID——19 位数字既认不出人也不好看；后来又要求加「最后更新时间」，即 `stats.latest` 最新作品日期）。UID 只在详情页的字段行里出现。**别在列表里加回 UID**，要区分重名账号用别名/抖音号。
+- **两种作者列表显示方式（2026-11-03 c119，取代 c116 那版左右分栏）**：`state.authorLayout` = `grid`（默认网格卡片）/ `rows`（每作者一行），存 `localStorage.authorLayout`，按钮在视图工具条（`#layoutBtn`）。
+  - **版式照「新下载」栏目抄**（用户 11-02 22:38 要求「像新作品那个栏目里面那样」）：一位作者 = 一行**表头** `.ar-head`（圆点 + 名字 + 等级/频率/状态/标签 + 右侧 `⬇ N 天前` 和 `N 个作品`）+ 下面 `.ar-strip` **一行作品卡片**。
+  - **`N` 是固定列数、绝不左右滑动**（用户 11-03 09:32 标注：「这里不要可以左右滑动的，固定一定数量的作品，不够就是空白」）：`.ar-strip` 是 `display:grid; grid-template-columns: repeat(var(--ar-cols,8), minmax(0,1fr))`，列数由 `rowFitStrip()` 按容器实测宽度算（`(W+8)/(112+8)`，夹在 3~12），写进 `grid.style['--ar-cols']`；**多余的卡片加 `.hidden` 不渲染**，作品少于列数时 grid 天然留白（不需要占位元素）。窗口 resize 有 180ms 节流重算。
+    - ⚠️ 别改回 `overflow-x:auto` 那套横向滚动 —— 那是 c118 的做法，被用户明确否掉了。
+    - 卡片 `.ar-card` 现在是纯 grid item（`min-width:0`），宽高由列宽决定：3/4 封面 + 底部日期，图文左上角标「图文」、多文件右上角标数量。
+  - **右侧 `#rowsPlayer` 常驻播放区**（`position:sticky; top:32px`，停在顶部工具栏下；**尺寸照「新下载」栏目**：`440px` 宽、`height: calc(100vh - 200px)` 撑满可视高度，`.rp-stage` 是 `flex:1` 吃满除底栏外的全部高度 —— 以前用 `aspect-ratio:3/4 + max-height:60vh` 那一版用户嫌「预览的太小了」）：点左边任意卡片就在这儿播，**不跳作者页**。视频走 `/api/probe` → 放不了就 `/api/transcode`（和详情页同一条路），`<video>` 上加 `play().catch()` 兜底；图文按 `images[]` 一张张翻；底部给描述/日期/文件数 + 「打开作者页 →」。切回网格或换筛选会自动 `rowStopPlay()` 停播，别在后台出声。
+    - 无头浏览器验证播放要带 `--autoplay-policy=no-user-gesture-required`，并且用 **CDP `Input.dispatchMouseEvent`** 真点（`el.click()` 不算用户手势）——否则只看到 `paused=true`，那是环境限制不是代码问题（实测 4K 竖屏源 `paused:false`、`currentTime` 正常推进）。
+  - **表头的「⬇ N 天前」= `last_download`**（`download_log.db` 里该作者最新文件的 mtime），>30 天标提醒色 `.ar-dl.old`，没记录显示「没下载过」（用户 11-03 标注要「最后下载时间、多久没下载」）。
+  - 数据靠 `/api/authors?works=N` 带回来：每项多 `recent[{rel,is_image,images,date,desc,index,files}]` + `recent_more`。`images` 只对图文有意义（最多 9 张），视频留空。行模式每页只拉 **20 个作者**（网格是 60）——一行 12 张图，60 个作者一次会铺 700 多张。
+  - 切视图 = 给 `#rowsWrap` 加/去 `rows-mode` 类（两栏 flex），并且必须 `rowsPlayer.classList.toggle('hidden')`；**搜「作品」时**（`renderWorkHits`）要 `remove('rows-mode')` + 藏按钮 + 藏播放区，否则作品卡片会被纵向 flex 拉成一条一条、右边还留一块空播放器。
+- **更新频率/等级徽章上了列表卡片**（2026-11-02 c116）：`freqTagHtml()` **原样显示 `day/3天/周/月`**（用户 2026-11-03：「day 就是 day，不要写成日更」，筛选面板的选项文案同步改回来了），`levelTagHtml()` 复用详情页那套配色。**状态在 `update_freq_disabled_status` 里时（注销/禁言封号/卖号/私密/不好看了）不显示频率徽章**，否则会出现「注销 · 日更」这种自相矛盾。
+- **`/api/authors` 的 `tags` 已全量返回**（原来 `[:3]` 截断）：用户要求标签全部显示，前端按视图自己排。数据里单账号目前最多 2 个标签。
 - **封面**：媒体区「🖼 设为封面」把当前作品写进 `user_data.cover = {workFile: rel}`；视频封面由 `/thumb` 截帧，图片直接用原图（`coverUrlFrom()` 按扩展名分流）。**详情页头部和「全部作者」列表卡片都会显示**（`/api/authors` 的 items 带 `cover`，`load_user_data()` 会把标注里的 cover 同步进列表项）；设完立刻更新两处，不用刷新；图加载失败 `coverBroken()` 回退 📱 占位
 - **进入作者页不自动播放**：`openAuthor` 里 `setRailFilter('video', false)` + `showStagePlaceholder()`，右栏只提示「点击左侧作品开始播放」，点了才播
 - **视频与图文统一在右栏媒体区**：作品量大（几十万级）时，浏览器解码器覆盖不全，所以检测到 HEVC 会自动转码（PotPlayer 方案已弃用）；图文不进浮层，直接用同一块区域显示大图，多图在帖子内翻页——一处代码管两种媒体
 - **大小号存「组」而不是「边」**：每个账号的 `alt_accounts` 存的是**同组其他所有人**，所以任意一个人的数据里就带着完整组信息，读取零跨查。代价是冗余（N 个人各存一份）和「写必须整组重写」，换来的是：老数据能靠并查集自愈、服务端能无脑归一化、前端读一个字段就能画全组。**绝对不要再写「只给两端各加一条」那种补丁式代码**——那就是第 15 条坑的来源
 - **关联入口用搜索而不是让用户填 ID**：`/api/authors?q=` 早就同时匹配昵称/抖音号/UID/sec_uid，选择器直接复用。做新功能前先查服务端已有的搜索/筛选能力，别让用户手抄一串 19 位数字
-- **作者等级 `level` + 更新频率 `update_freq` 是两个独立字段**：等级（夯/顶级/一般/拉）做成胶囊，**两者完全不联动**（用户明确要求，`LEVEL_DEFAULT_FREQ` 已删除——以前设「夯」会自动填 `day`，改等级顺手改掉频率很别扭）；**设等级/改频率都整组同步**（`groupUidsWithSelf` + `setAccountFieldRaw`），点已选中的胶囊 = 取消（`value===cur ? '' : value`）
+- **作者等级 `level` + 更新频率 `update_freq` 是两个独立字段**：等级（夯/顶级/一般/拉）做成胶囊，**两者完全不联动**（用户明确要求，`LEVEL_DEFAULT_FREQ` 已删除——以前设「夯」会自动填 `day`，改等级顺手改掉频率很别扭）；**设等级整组同步、改频率只改本人**（2026-11-02 用户要求取消「大小号 ↔ 更新频率」关联：同组的小号可能天天发、大号几个月不动，频率本来就该各记各的；等级仍然整组同步，因为那是「重要程度」），点已选中的胶囊 = 取消（`value===cur ? '' : value`）
 - **搜索分范围 + 作品直达**：`scope`（all/nickname/note/signature/works）区分搜索范围；搜「作品」时走专门的 `/api/search_works`（扁平化作品列表），前端渲染作品卡片、点进去 `openAuthor(uid, workIndex)` 定位到该作品（`setRailFilter('all')+playWork(workIndex)`）
 - **「添加顺序」排序 = 作者文件夹 ctime**：`_load_data_locked` 逐个 `os.path.getctime` 存 `added_at`（合成账号/读不到 = 0），排序键 `(added_at, uid)`
 - **已移除**（用户要求）：直播记录、收藏夹关系、话题标签自动提取、编辑简介/抖音号按钮
@@ -390,6 +409,44 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
   - 续页重绘走 `renderNewDownloads({keepScroll:true})`：不 `ndPlayReset()`、按锚点还原 `scrollTop`、按 `uid + 日期/描述` 重新点亮正在播的那张卡
 - **视图隐藏时不能量宽度重排**（2026-11-02 修「从作者页退出来卡一帧图片」）：进作者详情会 `newView.classList.add('hidden')`，此时 `#newBody.clientWidth = 0`。旧版 `ResizeObserver` 看到 0 就当成「变窄了」排了一次重排，`ndLayout()` 用 0 算出 `maxCols=1`、每个气泡 `full`（整行宽）→ 返回新下载页第一眼就是「一张卡占满整列」的巨图，120ms 后才被第二次重排纠正。现在三道闸：① 观察器遇到 `w<=0` 直接返回、不写 `lastW`；② `ndLayout()` 在隐藏时沿用上次可见宽度 `ndGoodW`（从没量到过才按窗口宽估）；③ `ndRelayout()` / `ndMaybeLoadMore()` 在容器宽高为 0 时直接返回（顺带防止在详情页后台把所有页都续下来）
 - 切走视图 / 进详情页时必须 `ndPlayReset()`（清空 stage 的 DOM），否则 `<video>` 会在后台继续出声
+
+#### 3.4 新下载的作者筛选（2026-11-04 c124）
+
+工具栏 `#ndFilterBtn` 展开 `#ndFilterPanel`，**5 行**：作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间。
+和「导出作者信息」是同一套语义，**每行行首一个圆钮**（`ndf-match`，蓝 ＋ = 并集 / 橙 － = 交集），状态存 `ndFilter.matchMap`。
+
+- **筛选在服务端做**（`/api/new_downloads` 复用导出的 `attr_tests` / `_attr_mode`），不是前端过滤。
+  所以「左列表滚到底自动取下一页」取到的也全是筛完的结果，不会翻着翻着混进不该有的作者
+- 勾选立即生效（`ndFilterChange` → 重取第一页），面板不自动关，方便连着勾；有筛选时按钮上挂一个小圆点
+- ⚠️ **卡片上的日期是「作品发布日期」，筛选用的是「下载时间」**。这两个常常差好几年，
+  「今天」里出现 2025 年发布的作品是正常的 —— 为避免误读，卡片日期前缀写的是 `发布 YYYY-MM-DD`
+- ⚠️ 别在客户端做这个筛选：一页只取 1200 个文件，客户端筛完会「看着像漏了很多」，实际是没翻到的页被筛掉了
+
+### 3.5 封面 / 转码的硬件加速（2026-11-02）
+
+用户反馈「加载封面时 CPU 100%、显卡不动」。实测（12 核 + RTX 2060 SUPER，ffmpeg 8.1 LGPL 版）：
+
+**抽封面（并发 8，24 个真实视频，量总墙钟）**
+
+| 方案 | 总耗时 | 平均每张 | 结论 |
+|---|---|---|---|
+| 纯 CPU、`-threads 2` | **0.62s** | **26 ms** | 采用 |
+| 纯 CPU、默认线程数 | 1.19s | 50 ms | 更慢（并发时互相抢核） |
+| `-hwaccel cuda`、`-threads 2` | 3.49s | 145 ms | 慢 5.6 倍，**弃用** |
+
+**转码（一段 15.7s 的 HEVC）**
+
+| 方案 | 耗时 | CPU | 结论 |
+|---|---|---|---|
+| libopenh264 | 32.8s | 高 | 最慢 |
+| h264_mf | 13.5s | 高 | 备选 |
+| `-hwaccel cuda` + h264_nvenc | **8.66s** | 很低 | 采用（4K 源实测 17.7s → 2.4s） |
+
+要点：
+- **抽封面绝对不能走 GPU**：每个封面都是一次性 ffmpeg 进程，NVDEC 初始化 + 把那一帧从显存拷回的开销，远大于「解一帧」本身。**串行单张测着像持平（243ms vs 287ms），一并发就露馅（26ms vs 145ms）**——这是 2026-11-02 当天先加后撤的原因，别再改回去。
+- 所以 `_thumb_ffmpeg()` 现在是**纯 CPU**：`-threads 2` + 并发 8 个进程，靠进程数铺满 12 核，比「少进程多线程」快一倍。
+- **转码才是 GPU 的主场**：解码 + 编码都在显卡上，比软件快 4 倍且几乎不吃 CPU；`_nvenc_ok()` 失败一次就整进程不再试。
+- 顺带修了 `_eff_ffprobe()`：以前用 `custom.replace("ffmpeg.exe","ffprobe.exe").replace("ffmpeg","ffprobe")`，第二个 replace 会把**目录名**里的 ffmpeg 也换掉，拼出 `D://app//ffprobe-n8.1-...//ffprobe-n8.1-...//bin//ffprobe.exe` 这种不存在的路径 → 编码探测恒为空（`/api/probe` 永远说 playable）、转码永远按 720p 默认码率。现在只换文件名。
 
 ### 4. 导出作者信息（`#exportView`）
 
@@ -481,6 +538,20 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 ### 其它
 31. `.bat` 必须**纯 ASCII**（中文会因编码乱码直接报错）；启动脚本输出要 flush，否则双击像「没反应」。
 32. 挪走 / 删掉磁盘上的作品文件后，索引里还在 → 点开全黑；删文件必须同步改索引或重扫。
+33. **`/api/rescan` 是增量扫描，不是全量**（按文件夹 mtime 判断「这目录变过没」）。批量搬完文件立刻扫会漏，
+    要**再扫一次**才全 —— 2026-11-04 搬完 G 盘后，7 个刚放回的文件第一次只认到 2 个，第二次才对。
+    改文件内容的场景也同理：只看 mtime 的增量逻辑对「同名文件被替换」不敏感，必要时走全量。
+34. **`os.remove()` 会被沙箱重定向进回收站**，`CODEBUDDY_SAFE_DELETE_ENABLED=0` 并不生效。
+    表现：删了几 GB 文件，`df` 一点没释放（2026-11-04 实测 G 盘回收站压了 48.6 GB）。
+    真删要用 `ctypes.windll.kernel32.DeleteFileW`（一次调用即生效，不产生新的回收站条目）。
+    清回收站时 `$R`（数据）和配套的 `$I`（元数据）必须**成对删**，只删 `$R` 会留下孤儿 `$I`。
+35. 批量校验几万个文件的 SHA1 用**多进程**（`mp.Pool(6)`）：21615 个 / 48.6 GB，单进程 54 分钟 → 6 进程 22 分钟。
+    瓶颈是机械盘上的小文件随机读，加并发有效；先比 `st_size`、不同就直接判「不重复」，能省掉大部分 IO。
+36. **作品文件改名不会同步 `cover.workFile`，封面会成片变成灰块**（2026-11-02 去 ID、2026-11-04 又踩一次）。
+    `cover_cache` 的文件名是 `md5(作品相对路径)`，`user_data.json` 里存的也是那个相对路径 —— 名字一改，
+    两边同时对不上，`/cover?path=` 找不到源文件就 404。
+    `_patch_user_cover_after_rename()` **只管「作者文件夹」改名，不管「作品文件」改名**。
+    修法：拿索引按「日期 + 归一化描述」找回同一条作品的新文件名，改指针，再把旧缓存按新 md5 复制一份（省一次抽帧）。
 
 ---
 
@@ -532,10 +603,32 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 
 ---
 
-## 附录 A：最近改动（倒序，只留最近 10 条）
+## 附录 A：最近改动（倒序，最近的在前）
 
+> 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-04 c125 详情页加「推送到待下载」**：作者详情页 SEC_UID 那行、「获取资料」右边多一颗按钮，一键把这位作者推进待下载区（`POST http://127.0.0.1:8790/queue/add`，带上 uid / sec_uid / 昵称 / 抖音号 / 等级 / 状态 / 标签）。之后在「导出作者信息 → ① 选作者 → 待下载区」就能直接勾他，不用回抖音再找一遍。队列按 uid / sec_uid 判重，重复推只提示、不建两条。⚠️ 8790 是插件的本地查询服务（不是 8723 本体），没启动就推不了，提示语里写明了
+- **2026-11-04 c124 新下载加筛选**：工具栏多一个「筛选」，5 行（等级/标签/状态/频率/最后下载时间），每行行首圆钮 ＋＝并集 / －＝交集，和「导出作者信息」同一套语义。**筛选在服务端做**（复用导出的判定函数），所以往下翻页拿到的也全是筛完的结果。卡片日期前缀改成 `发布 YYYY-MM-DD` —— 以前直接把作品发布日期写在卡片上，而这一页是按「下载时间」切范围的，用户看到「今天」里全是 2025 年的作品会以为筛错了（其实是显示误导，数据一直是对的）
+- **2026-11-04 修封面成片变灰（202 位）**：`cover.workFile` 里记的相对路径在磁盘上找不到，原因是「去作品 ID」和「文件夹补 UID 前缀」两轮改名都没同步封面。按索引找回同一条作品的新文件名改指针，并把旧缓存按新 md5 复制一份（省抽帧）。有效封面 1614 → 1815。**根因见第八章第 36 条**
+- **2026-11-04 身份字段补齐 + 「G盘」标签**：从 G 盘并入的 160 位作者统一打 `G盘` 标签（其中 60 位原本连档案都没有，一并建了）；SEC_UID 补 62 位、抖音号补 122 位 —— 来源是对照表 CSV + 作者目录里的 `.txt`（存的是主页链接）+ 登录态接口反查。全库覆盖：SEC_UID 1960/1967、抖音号 1955/1967，剩的都是注销/私密，接口返回空
+- **2026-11-04 修 `profile_helper.py` 的 import**：`fetch_uid_by_secuid` 早已挪到 `tools/legacy/`，`sys.path` 只加了 `src/`，导致**页面上「获取资料」一直是坏的**（一调就 ModuleNotFoundError）。现在两个位置都试，功能恢复
+- **2026-11-04 G 盘老作品并入主库**：三批早期下载（4 种互不兼容的命名格式）共 162 个目录 → 合并进已有作者 100 位、新建 62 位、搬入 **15,298 个文件 / 36.5 GB**、判重 5,078 个。认作者的唯一依据是各目录里的 `.txt`（存 `https://www.douyin.com/user/MS4wLjAB…`）和标准目录名里的 UID —— **这批目录名和库里现行昵称差得离谱，按昵称匹配会大面积认错**
+- **2026-11-04 清空 G 盘回收站**：逐个算 SHA1 后，确认 **20,891 个 / 48.56 GB** 在 E 盘有字节完全相同的副本才删；24 个「同作品但文件不同」（大小都对不上）单独捞到 `_唯一版本/`，按用户口径（内容+名字+日期三项全一致才算同一条）不删。G 盘可用 93 GB → 141 GB
+- **2026-11-04 修「文件夹改名后文件数翻倍」**：`_files_rename_folder()` 改完目录没同步 `download_log.db` 的前缀，`_delete_missing()` 按旧 folder 精确匹配删不掉旧记录，watcher 扫到新目录又插一批 → `file` 表直接翻倍（某作者 249 → 498）。改名后立刻调 `download_db.rename_folder()` 改前缀
+- **2026-11-03 插件认人改成「只认 SEC_UID」**：`bridge.py` 的 `lookup()` 删掉「昵称精确」和「昵称包含」两条路径，只走 `sec_uid → uid → 作品ID反查`；昵称只用于**列提示**，不参与判定。未命中分三种：`name_diff`（同名但是另一个号）/ `name_unfilled`（库里那条没填 SEC_UID）/ `miss`+`need_sec`（页面没拿到 SEC_UID）。起因：同名的新旧两个号被硬认到已封的旧档案上，面板显示「禁言/封号」，看着像认错人。另修「描述区/评论区的 @ 提及被当成作者」——`a[href*="MS4wLjAB"]` 到处都是，得按区域排除
+- **2026-11-02 c113** 一个作品下成 `_1.mp4`+`_2.mp4` 时：播放器支持作品内翻段（底部 `‹ 1/2 段 ›`，`detailState.vidIndex` 复位/递增 + `stepVideo`）；卡片徽标由「多动图圆点」改为蓝底「多段视频」；纯视频单段不再有任何徽标
+- **2026-11-02 c112** 「① 选作者」的并集/交集开关改版：从行尾两个小方块改成**行首一个圆钮**（24px 圆形，蓝底 ＋ = 并集、橙底 － = 交集，点一下原地切换，`toggleExportMatch`），提示语同步
+- **2026-11-03 去重** 全库清理「同作品两份文件」（一份带作品 ID、一份不带）：444 组候选 → 删 450 个文件 / 0.64 GB，作品数不再出现同一天同一作品的重复卡片；清单存 `browser/backup/去重_20261103/`
+- **2026-11-03 c122** 播放区放大到「新下载」规格（440 宽 × `calc(100vh-200px)` 高，stage 用 flex 吃满）；频率徽章和筛选面板文案改回原值 `day/3天/周/月`（不再写「日更」）
+- **2026-11-03 c120** 按标注改两处：① 作品行改成**固定列数 grid、不横向滚**（`rowFitStrip` 按宽度算列数，多出的隐藏，不够留白）② 表头右侧加 `⬇ N 天前`（最后下载）。顺带确认视频能真播（headless 需 `--autoplay-policy=no-user-gesture-required` + CDP 真实鼠标事件）
+- **2026-11-03 c119** 「每作者一行」改版式：从「左信息 + 右缩略图」换成「一行作者表头 + 一行作品卡片」，右侧加**常驻播放区**，点卡片就地播放（视频自动转码、图文可翻页），不跳作者页；`recent` 加 `images[]`
+- **2026-11-02 c116/c117** 作者列表新增「每作者一行」模式（初版）：左侧作者信息（含**全部**标签 + 更新频率/等级徽章）+ 右侧最近 12 个作品缩略图；`/api/authors` 加 `works=N` 返回 `recent` + `recent_more`，`tags` 去掉 `[:3]` 截断；网格卡片也加上更新频率/等级徽章（状态属于「禁用频率」的账号不显示）。行模式每页 20 个作者
+- **2026-11-02 c110** 「① 选作者」去掉顶部的「属性之间 交集/并集」全局单选，改成每个属性行右侧一组小方块 **行首一个圆钮，里面 ＋（并集，默认）/ －（交集），点一下切换**：`_attr_mode(key)` 按 `match_<key>` 取模式，所有 － 项必须全满足、所有 ＋ 项至少命中一个；`exportState.match` 换成 `matchMap`，`clearExportAll` / 「重置」回到全 ＋
+- **2026-11-02** 抽封面并发闸 4 → **8**（用户要求）：`_THUMB_SLOTS = BoundedSemaphore(8)`，每进程仍 `-threads 2`，靠多进程占核而不是单进程多线程，12 核上基本铺满、又不会像不限并发那样互抢
+- **2026-11-02** 封面/转码硬件加速：抽封面并发闸（8 个 ffmpeg × 2 线程）；转码改 NVENC 优先（4K 17.7s 源 33s→2.4s）；修 `_eff_ffprobe()` 把目录名也替换掉的 bug（编码探测一直失败、转码一直按 720p）
+- **2026-11-02 当晚** 抽封面的 `-hwaccel cuda` **撤掉**（并发实测 145ms vs CPU 26ms，慢 5.6 倍，用户反馈加载变慢）；GPU 只留转码。串行单张测不出这个差异，是这次踩的坑
+- **2026-11-02 c109** 取消「大小号 ↔ 更新频率」联动：`setFreq` 只写当前账号（`setLevel` 仍整组同步）
 - **2026-11-02 c108** 修「从作者页返回新下载页卡一帧巨图」：视图隐藏时 `clientWidth=0` 被 `ResizeObserver` 当成变窄，重排退化成「一卡一整行」；改为隐藏时不重排、`ndLayout` 沿用上次可见宽、`ndRelayout`/`ndMaybeLoadMore` 加零宽高闸
 - **2026-11-02 c107** 取消「新下载只显示最新 600 个作品」的上限：改成按文件分页 + 滚到底自动续页，`/api/new_downloads` 由 `limit`(作品数)/`truncated` 换成 `limit`(文件数)/`cursor`/`has_more`
 - **2026-10-31 DouK 修** 文件名撞车导致作品被静默覆盖：`name_format` 加作品 `id`（`create_time nickname desc id`），`parse_work_filename()` 剥掉末尾那串 ID。实测那轮 3608 个文件名对应 3660 个作品 → 丢了 52 个；日志里反反复复的 `PermissionError(13)` 就是这个病的症状，不是杀软

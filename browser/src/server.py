@@ -342,10 +342,20 @@ def _eff_ffmpeg():
 
 
 def _eff_ffprobe():
-    """探测视频编码用的 ffprobe（由 ffmpeg 路径派生，设置里改了 ffmpeg 就跟着变）。"""
+    """探测视频编码用的 ffprobe（由 ffmpeg 路径派生，设置里改了 ffmpeg 就跟着变）。
+
+    ⚠️ 只换**文件名**里的 ffmpeg：以前写的是 custom.replace("ffmpeg.exe","ffprobe.exe")
+    .replace("ffmpeg","ffprobe")，后一个 replace 会把目录名
+    （D:\\app\\ffmpeg-n8.1-...\\ffmpeg-n8.1-...）也换成 ffprobe，拼出一个不存在的路径
+    → ffprobe 永远调不通 → 编码探测恒为空、转码永远按 720p 默认码率来（2026-11-02 修）。
+    """
     custom = (load_settings().get("paths") or {}).get("ffmpeg") or ""
     if custom:
-        return custom.replace("ffmpeg.exe", "ffprobe.exe").replace("ffmpeg", "ffprobe")
+        d, base = os.path.split(custom)
+        i = base.lower().find("ffmpeg")
+        if i >= 0:
+            base = base[:i] + "ffprobe" + base[i + len("ffmpeg"):]
+        return os.path.join(d, base)
     return FFPROBE
 
 
@@ -476,6 +486,112 @@ def _patch_user_cover_after_rename(uid, old_folder, new_folder):
         print("[rename] 用户标注里的封面没同步:", e)
 
 
+def _build_attr_tests(q):
+    """按 query 构造「作者属性」判定函数：[(key, fn(item, acc), 'and'|'or'), ...]
+
+    覆盖 等级 / 标签 / 账号状态 / 更新频率 / 已下载作品最后时间。
+    每行自带一个组合开关（match_level=and 之类）：and（－）= 必须满足，or（＋）= 命中任一。
+    整体语义：所有 － 行全满足，并且（存在 ＋ 行时）至少命中一个 ＋ 行。
+    「导出作者信息」和「新下载」两页共用这一份 —— 用户要求两边筛选一模一样（2026-11-03）。
+    """
+    def _one(name):
+        return (q.get(name) or [""])[0]
+
+    q_status = _one("status").strip()
+    q_level = _one("level").strip()
+    q_freq = _one("freq").strip()
+    q_tag = _one("tag").strip()
+    q_latest_after = _one("latest_after").strip()
+    q_latest_before = _one("latest_before").strip()
+    q_match = _one("match").strip().lower()
+
+    def _attr_mode(key):
+        v = (q.get("match_" + key) or [""])[0].strip().lower()
+        if v in ("and", "or"):
+            return v
+        if q_match in ("and", "or"):
+            return q_match
+        return "or"
+
+    # 状态/等级/频率/标签都是逗号分隔多值；__unset = 未设置（字段为空）
+    status_set = {s.strip() for s in q_status.split(",") if s.strip()} if q_status else set()
+    level_set = {s.strip() for s in q_level.split(",") if s.strip()} if q_level else set()
+    freq_set = {s.strip() for s in q_freq.split(",") if s.strip()} if q_freq else set()
+    tag_set = {s.strip() for s in q_tag.split(",") if s.strip()} if q_tag else set()
+    # 设置里勾了「不能设置更新频率」的状态（注销/禁言封号/卖号…）：这类账号不参与频率筛选
+    try:
+        freq_locked_status = {str(x).strip()
+                              for x in (load_settings().get("update_freq_disabled_status") or [])}
+    except Exception:
+        freq_locked_status = set()
+
+    # 统一做成判定函数列表，「未设置」用空串表示；__unset 只是候选值之一，
+    # 不能把同组其它值一起吞掉（多选「未设置 + 注销」时注销那批不能消失）。
+    tests = []
+    if status_set:
+        def _t_status(item, a, _s=status_set):
+            st = (a or {}).get("status") or ""
+            return (st == "" and "__unset" in _s) or (st in _s)
+        tests.append(("status", _t_status))
+    if level_set:
+        def _t_level(item, a, _s=level_set):
+            lv = (a or {}).get("level") or ""
+            lv = LEVEL_ALIAS.get(lv, lv)
+            return (lv == "" and "__unset" in _s) or (lv in _s)
+        tests.append(("level", _t_level))
+    if freq_set:
+        def _t_freq(item, a, _s=freq_set, _lock=freq_locked_status):
+            st = (a or {}).get("status") or ""
+            if st in _lock:
+                return False
+            fr = (a or {}).get("update_freq") or ""
+            return (fr == "" and "__unset" in _s) or (fr in _s)
+        tests.append(("freq", _t_freq))
+    if tag_set:
+        def _t_tag(item, a, _s=tag_set):
+            acc_tags = (a.get("tags") or []) if a else []
+            return bool(_s and any(t in acc_tags for t in _s))
+        tests.append(("tag", _t_tag))
+    if q_latest_after or q_latest_before:
+        def _t_latest(item, a, _a=q_latest_after, _b=q_latest_before):
+            latest = (item.get("latest") or "")[:10]
+            if _a and (not latest or latest < _a):
+                return False
+            if _b and (not latest or latest > _b):
+                return False
+            return True
+        tests.append(("latest", _t_latest))
+
+    return [(k, fn, _attr_mode(k)) for k, fn in tests]
+
+
+def _attr_uids(q, accounts, lst):
+    """属性筛选命中的 uid 集合；一个属性条件都没设时返回 None（= 不筛）。
+
+    「新下载」页只关心「这些文件属于哪些作者」，筛选判定和 /api/authors 完全同源。
+    """
+    tests = _build_attr_tests(q)
+    if not tests:
+        return None
+    out = set()
+    for item in lst:
+        a = accounts.get(item["uid"])
+        and_ok, or_any, has_or = True, False, False
+        for _key, fn, mode in tests:
+            hit = bool(fn(item, a))
+            if mode == "and":
+                if not hit:
+                    and_ok = False
+                    break
+            else:
+                has_or = True
+                if hit:
+                    or_any = True
+        if and_ok and (not has_or or or_any):
+            out.add(item["uid"])
+    return out
+
+
 def _files_rename_folder(uid, new_nick):
     uid = str(uid or "").strip()
     new_nick = (new_nick or "").strip()
@@ -502,6 +618,13 @@ def _files_rename_folder(uid, new_nick):
         os.rename(src, dst)
     except OSError as e:
         return {"ok": False, "error": "改名失败：%s" % e}
+
+    # 下载记录库跟着改：这一步必须在 watcher 扫到新文件夹之前做完，
+    # 否则它会按新路径另插一批，而旧路径的记录没有任何人删（file 表翻倍，文件数虚高）。
+    try:
+        download_db.rename_folder(old_folder, new_folder)
+    except Exception as e:  # noqa: BLE001
+        print("[rename] 下载记录库没同步:", e)
 
     # 同步索引。改不动就退回「后台重扫」，至少不会让页面长期指向死链。
     try:
@@ -821,6 +944,60 @@ def _recycle_list():
     return {"ok": True, "batches": out, "total_size": total, "dir": RECYCLE_DIR}
 
 
+def _recycle_detail(batch_id):
+    """回收站里某一批的**明细**：具体有哪些作品（日期 / 描述 / 文件数 / 文件名 / 体积）。
+
+    2026-11-02 加：回收站列表只给「N 个作品」，用户点开才发现不知道删的是哪几条，
+    全恢复又不甘心的情形。这里按批返回作品正文，前端点一行就展开看。
+    体积按 items 里的 rel 对回 works 的文件名算，算不出来的给 0。
+    """
+    batch_id = str(batch_id or "").strip()
+    d = _recycle_load()
+    b = None
+    for it in d.get("batches") or []:
+        if it.get("id") == batch_id:
+            b = it
+            break
+    if not b:
+        return {"ok": False, "error": "回收站里没有这一批：%s" % batch_id}
+
+    size_of = {}
+    for it in b.get("items") or []:
+        try:
+            size_of[str(it.get("rel") or "").replace("\\", "/")] = int(it.get("size") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    works = []
+    for w in b.get("works") or []:
+        files = []
+        wsize = 0
+        for f in w.get("files") or []:
+            rel = str(f.get("rel") or "")
+            sz = size_of.get(rel.replace("\\", "/"), 0)
+            wsize += sz
+            files.append({"rel": rel, "name": os.path.basename(rel.replace("/", os.sep)), "size": sz})
+        works.append({
+            "date": w.get("date") or "",
+            "desc": w.get("desc") or "",
+            "media_type": w.get("media_type") or "",
+            "files": files,
+            "file_count": len(files),
+            "size": wsize,
+        })
+    return {
+        "ok": True,
+        "id": b.get("id") or "",
+        "time": b.get("time") or "",
+        "uid": b.get("uid") or "",
+        "nickname": b.get("nickname") or "",
+        "works": works,
+        "count": len(works),
+        "size": int(b.get("size") or 0),
+        "exists": os.path.isdir(_recycle_batch_dir(batch_id)),
+    }
+
+
 def _recycle_restore(batch_id):
     """把一批作品搬回原位、插回索引。文件先搬（不占锁），索引后改（占锁）。"""
     batch_id = str(batch_id or "").strip()
@@ -936,6 +1113,41 @@ def _recycle_purge(batch_id):
     d["batches"] = [x for x in (d.get("batches") or []) if x.get("id") != batch_id]
     _recycle_save(d)
     return {"ok": True, "freed": size, "works": len(b.get("works") or [])}
+
+def _recycle_purge_all():
+    """一键清空回收站：所有批次真删（文件 + 记录），不可恢复。
+
+    2026-11-02 加。一次删几万个文件要几十秒，单个批次就 15GB 的情况也遇到过，
+    所以这里**逐批删、失败的单批留着继续删下一批**，最后把失败的报回去，
+    不要因为一个目录被占用就整锅失败。
+    """
+    d = _recycle_load()
+    batches = d.get("batches") or []
+    if not batches:
+        return {"ok": True, "freed": 0, "works": 0, "batches": 0, "failed": []}
+    freed = 0
+    works = 0
+    kept = []
+    failed = []
+    for b in batches:
+        bid = str(b.get("id") or "")
+        bdir = _recycle_batch_dir(bid) if bid else ""
+        try:
+            if bdir and os.path.isdir(bdir):
+                shutil.rmtree(bdir)
+        except OSError as e:
+            failed.append({"id": bid, "error": str(e)})
+            kept.append(b)
+            continue
+        freed += int(b.get("size") or 0)
+        works += len(b.get("works") or [])
+    d["batches"] = kept
+    _recycle_save(d)
+    print("[recycle] purge_all batches=%d freed=%.1fMB failed=%d"
+          % (len(batches) - len(kept), freed / 1048576.0, len(failed)))
+    return {"ok": True, "freed": freed, "works": works,
+            "batches": len(batches) - len(kept), "failed": failed}
+
 
 def _files_rename_batch(uids=None, do_all=False):
     """批量把「文件夹名」改成「标注昵称」：一次改完只写一次 data.json、只重载一次索引。
@@ -1835,6 +2047,57 @@ TRANS_CACHE_MAX_MB = 300    # 转码视频 300M
 _CACHE_TRIM_LOCK = threading.Lock()   # 只保护缓存目录的增删，不要和 _CACHE_LOCK 混用
 _THUMB_TRIM_TICK = [0]    # 每生成 N 张缩略图触发一次淘汰检查
 THUMB_TRIM_EVERY = 200
+
+# ---------- 硬件加速（2026-11-02）----------
+# 分工原则：**显卡只干它真快的活**。
+#   · 视频转码（HEVC→H.264，播放时才触发）：GPU 是**真快**，
+#     15.7s 的源 openh264 32.8s → cuda 解码 + NVENC 8.7s，CPU 几乎不占 → 走 GPU。
+#   · 抽封面（每个视频只取 1 帧）：GPU **更慢**。串行单张测着像"持平"，
+#     并发 8 实测却是 26ms（CPU） vs 145ms（cuda），慢 5 倍多 → 走 CPU，见 _thumb_ffmpeg。
+_NVENC = {"ok": None}       # None=还没试过 / True / False（失败一次就不再试）
+# 同时跑几个 ffmpeg 抽封面：列表一次滚屏会并发问几十张，不限的话会同时起几十个
+# ffmpeg（每个默认吃满所有核），互相抢核 → CPU 100% 且总耗时更长。
+# 实测 24 个视频（每进程 2 线程）：并发 4 → 0.65s / 并发 8 → 0.62s / 并发 12 → 0.67s，
+# 8 最优；默认线程数反而更慢（并发 8 时 1.19s），所以线程数必须压在 2。
+_THUMB_SLOTS = threading.BoundedSemaphore(8)
+
+
+def _nvenc_ok():
+    """显卡编码能不能用（惰性，试过一次就记住结果）。"""
+    return _NVENC["ok"] is not False
+
+
+def _thumb_ffmpeg(full, out):
+    """跑一次 ffmpeg 抽封面。**纯 CPU**，不碰显卡。
+
+    2026-11-02 实测（24 个真实视频，并发 8）：
+        CPU -threads 2  → 总墙钟 0.62s / 平均 26 ms   ← 现在走这条
+        CPU 默认线程    → 总墙钟 1.19s / 平均 50 ms
+        -hwaccel cuda   → 总墙钟 3.49s / 平均 145 ms
+    显卡解码抽**单帧**反而慢 5 倍多：每个进程都要初始化一遍 NVDEC、再把这 1 帧
+    从显存拷回来，这部分固定开销远大于「解码一帧」本身，并发时尤其明显
+    （之前注释里写的「速度基本持平」是串行单张测的，被这个假象骗了）。
+    显卡留给真正吃算力的活：HEVC→H.264 转码走 h264_nvenc，
+    实测一段 15.7s 的源 32.8s → 8.7s，CPU 几乎不占。
+    """
+    cmd = [_eff_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-nostats",
+           "-threads", "2",            # 每进程只给 2 个线程：靠并发 8 个进程铺满核，别互相抢
+           "-ss", "1", "-i", full, "-frames:v", "1",
+           "-vf", "scale=400:-2", "-q:v", "5", out]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:
+        pass
+    ok = os.path.isfile(out) and os.path.getsize(out) > 0
+    if not ok:
+        # 半截文件不能留在原地，否则外层 os.replace 会把破图当成品写进缓存
+        try:
+            if os.path.isfile(out):
+                os.remove(out)
+        except OSError:
+            pass
+    return ok
 
 PORT = 8723
 
@@ -2743,19 +3006,26 @@ def transcode_for_browser(full_path, rel, on_progress=None):
     bitrate = transcode_bitrate(target, meta.get("bitrate") or 0)
 
     tmp_path = out_path + ".part.mp4"
-    # 本机 ffmpeg 是 LGPL 版，没有 libx264 → 依次尝试 openh264（软编）、h264_mf（系统编码器）
-    encoders = [
-        ["-c:v", "libopenh264", "-b:v", bitrate],
-        ["-c:v", "h264_mf", "-b:v", bitrate],
-    ]
+    # 编码器依次尝试：显卡（NVENC）→ 系统编码器（h264_mf）→ 软件（libopenh264）。
+    # 本机 ffmpeg 是 LGPL 版，没有 libx264。
+    # 实测（RTX 2060 SUPER，一段 15.7s 的 HEVC 源）：
+    #   libopenh264 32.8s / h264_mf 13.5s / cuda 解码 + NVENC 8.66s，而且几乎不占 CPU。
+    # NVENC 第一次失败（没 N 卡 / 驱动太老 / 分辨率超限）就把 _NVENC["ok"] 置 False，
+    # 这次剩下的、以及本进程后面所有转码都直接跳过它，不再白等一次失败。
+    encoders = []
+    if _nvenc_ok():
+        encoders.append((["-hwaccel", "cuda"],
+                         ["-c:v", "h264_nvenc", "-preset", "p4", "-b:v", bitrate], "nvenc"))
+    encoders.append(([], ["-c:v", "h264_mf", "-b:v", bitrate], "mf"))
+    encoders.append(([], ["-c:v", "libopenh264", "-b:v", bitrate], "sw"))
     deadline = time.time() + 900
-    for enc in encoders:
+    for pre, enc, tag in encoders:
         if os.path.isfile(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
-        cmd = [_eff_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-nostats",
+        cmd = [_eff_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-nostats"] + pre + [
                "-progress", "pipe:1",     # 进度从 stdout 读，stderr 保持干净
                "-i", full_path] + vf + enc + [
                "-c:a", "aac", "-b:a", "128k",
@@ -2792,6 +3062,10 @@ def transcode_for_browser(full_path, rel, on_progress=None):
         # 「文件存在且 >0 就复用」会让它永远重建不了。
         if proc.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
             break
+        if tag == "nvenc":
+            # 显卡编码失败（没 N 卡 / 驱动老 / 这个分辨率不支持）：
+            # 本进程后面别再试了，直接走系统编码器，省一次必然失败的重试
+            _NVENC["ok"] = False
         if os.path.isfile(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -3100,16 +3374,11 @@ class Handler(BaseHTTPRequestHandler):
             # 之后「文件存在」就再也不会重建，表现为一张永久破图。
             tmp_path = "%s.%d.part.jpg" % (cache_path, threading.get_ident())
             try:
-                subprocess.run(
-                    [_eff_ffmpeg(), "-y", "-ss", "1", "-i", full, "-frames:v", "1",
-                     "-vf", "scale=400:-2", "-q:v", "5", tmp_path],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=30, creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                # 并发闸：列表一次滚屏会同时问几十张，放开跑只会互相抢核（见 _THUMB_SLOTS）
+                with _THUMB_SLOTS:
+                    ok = _thumb_ffmpeg(full, tmp_path)
+                if ok and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
                     os.replace(tmp_path, cache_path)
-            except Exception:
-                pass
             finally:
                 if os.path.isfile(tmp_path):
                     try:
@@ -3190,13 +3459,24 @@ class Handler(BaseHTTPRequestHandler):
         # 页大小只是一个翻页节奏，滚到底自动接着取下一页，直到这个范围全部出来。
         page_files = max(1, min(_int("limit", 2400), 20000))
         cursor = ((q.get("cursor") or [""])[0] or "").strip()
-        total_files, rows, next_cursor, has_more = download_db.recent(
-            since, page_files, uid_only or None, cursor or None)
 
         load_data()
         # 等级 / 更新频率 / 标签都存在 user_data.json 里，叠加进 CACHE 才拿得到
         load_user_data()
         accs = CACHE.get("accounts") or {}
+
+        # 作者属性筛选 —— 和「导出作者信息」那一栏同一套口径（等级/标签/状态/更新频率/
+        # 最后下载时间，每行自己一个 ＋/－ 组合开关）。先算出命中的作者，再让 SQL 按 uid 过滤，
+        # 这样翻页和 total_files 都是「筛完之后」的准确值，不会出现筛了人还翻出别人的作品。
+        ok_uids = None if uid_only else _attr_uids(q, accs, CACHE.get("list") or [])
+        if ok_uids is not None and not ok_uids:
+            self._send_json({"since": since, "until": int(time.time()), "total_files": 0,
+                             "shown_items": 0, "cursor": None, "has_more": False,
+                             "groups": [], "filtered_uids": 0})
+            return
+
+        total_files, rows, next_cursor, has_more = download_db.recent(
+            since, page_files, uid_only or None, cursor or None, uids=ok_uids)
 
         groups, order, bykey = {}, [], {}
         for f in rows:
@@ -3706,87 +3986,38 @@ class Handler(BaseHTTPRequestHandler):
         # 用 all 会把作品简介里提到这个词的作者全捞出来，搜一个词加一堆不相干的人。
         q_scope = (q.get("scope") or [""])[0].strip().lower()
         q_sort = (q.get("sort") or ["nickname"])[0]
-        q_tag = (q.get("tag") or [""])[0]             # 标签：逗号分隔多值（含任一标签即命中）
         q_year = (q.get("year") or [""])[0]
         q_cat = (q.get("cat") or ["all"])[0]
-        q_status = (q.get("status") or [""])[0]
-        q_level = (q.get("level") or [""])[0]            # 作者等级：夯/顶级/一般/拉/__unset
-        q_freq = (q.get("freq") or [""])[0]              # 更新频率：day/3天/周/月/__unset
         q_sec = (q.get("sec_uid") or [""])[0]          # has | none | ""
         q_star = (q.get("starred") or [""])[0]          # yes | no | ""
-        q_latest_after = (q.get("latest_after") or [""])[0]   # YYYY-MM-DD（含当天）
-        q_latest_before = (q.get("latest_before") or [""])[0]  # YYYY-MM-DD（自定义区间的上界）
         q_cover = (q.get("cover") or [""])[0]                  # has | none（是否有封面）
         q_dir = (q.get("dir") or [""])[0].lower()              # asc | desc（空 = 按字段默认）
-        # 「不同属性之间」怎么组合：and（默认，交集 = 都要满足）/ or（并集 = 命中任一即可）。
-        # 只作用于属性类筛选（等级/状态/更新频率/标签/已下载作品最后时间）；
-        # 搜索、星标、封面这些是「定位」不是「属性」，永远按交集处理。
-        q_match = (q.get("match") or ["and"])[0].strip().lower()
-        or_mode = q_match == "or"
-
+        # 属性筛选（等级/标签/状态/更新频率/最后下载时间，每行自带 ＋/－ 组合开关）
+        # 抽成公共函数：「新下载」页要做成和「导出作者信息」一模一样的筛选，两边必须同口径。
         accounts = CACHE["accounts"]
-        # 状态筛选：逗号分隔多值（也兼容旧的单值）。特殊值：
-        #   __unset = 未设置（status 为空）；正常/注销/禁言封号… = 对应状态
-        status_set = {s.strip() for s in q_status.split(",") if s.strip()} if q_status else set()
-        level_set = {s.strip() for s in q_level.split(",") if s.strip()} if q_level else set()
-        freq_set = {s.strip() for s in q_freq.split(",") if s.strip()} if q_freq else set()
-        # 设置里勾了「不能设置更新频率」的状态（注销 / 禁言封号 / 卖号…）：
-        # 这类账号一律不参与「更新频率」筛选 —— 哪怕历史数据里还残留 update_freq（含 __unset），
-        # 也不能被 day/3天… 筛出来，否则按频率导出的名单里会混进已经注销的人。
-        try:
-            freq_locked_status = {str(x).strip() for x in (load_settings().get("update_freq_disabled_status") or [])}
-        except Exception:
-            freq_locked_status = set()
-
-        # 属性筛选统一做成「判定函数」列表：默认全要满足（交集），match=or 时改成命中任一（并集）。
-        # 这样加新属性只要往 attr_tests 里塞一个函数，交集/并集自动都支持。
-        # 「未设置」用空串表示；__unset 只是候选值之一，不能把同组其它值一起吞掉
-        # （多选「未设置 + 注销」时，旧写法会让注销那批整体消失）。
-        attr_tests = []
-        if status_set:
-            def _t_status(item, a, _s=status_set):
-                st = (a or {}).get("status") or ""
-                return (st == "" and "__unset" in _s) or (st in _s)
-            attr_tests.append(_t_status)
-        if level_set:
-            def _t_level(item, a, _s=level_set):
-                lv = (a or {}).get("level") or ""
-                lv = LEVEL_ALIAS.get(lv, lv)
-                return (lv == "" and "__unset" in _s) or (lv in _s)
-            attr_tests.append(_t_level)
-        if freq_set:
-            def _t_freq(item, a, _s=freq_set, _lock=freq_locked_status):
-                st = (a or {}).get("status") or ""
-                if st in _lock:
-                    # 状态本身就不允许有更新频率：不参与这一项，连「未设置」也不算命中
-                    return False
-                fr = (a or {}).get("update_freq") or ""
-                return (fr == "" and "__unset" in _s) or (fr in _s)
-            attr_tests.append(_t_freq)
-        if q_tag:
-            def _t_tag(item, a, _s={t.strip() for t in q_tag.split(",") if t.strip()}):
-                acc_tags = (a.get("tags") or []) if a else []
-                return bool(_s and any(t in acc_tags for t in _s))
-            attr_tests.append(_t_tag)
-        if q_latest_after or q_latest_before:
-            def _t_latest(item, a, _a=q_latest_after, _b=q_latest_before):
-                latest = (item.get("latest") or "")[:10]
-                if _a and (not latest or latest < _a):
-                    return False
-                if _b and (not latest or latest > _b):
-                    return False
-                return True
-            attr_tests.append(_t_latest)
+        attr_test_modes = _build_attr_tests(q)
 
         result = []
         for item in lst:
             a = accounts.get(item["uid"])
             if q_cat == "starred" and not (a and a.get("starred")):
                 continue
-            # 属性筛选：交集 = 全部满足；并集 = 命中任一即可（只在真的选了属性时才起作用）
-            if attr_tests:
-                hits = [bool(t(item, a)) for t in attr_tests]
-                if not (any(hits) if or_mode else all(hits)):
+            # 属性筛选（只在真的选了属性时才起作用）：
+            #   － 行（and）必须全部满足；＋ 行（or）至少要命中一项。
+            # 全是 － 就是老的交集，全是 ＋ 就是老的并集，混着用两种语义自然叠加。
+            if attr_test_modes:
+                and_ok, or_any, has_or = True, False, False
+                for _key, _fn, _mode in attr_test_modes:
+                    hit = bool(_fn(item, a))
+                    if _mode == "and":
+                        if not hit:
+                            and_ok = False
+                            break
+                    else:
+                        has_or = True
+                        if hit:
+                            or_any = True
+                if not and_ok or (has_or and not or_any):
                     continue
             # sec_uid 有/无
             sec = (item.get("sec_uid") or "").strip()
@@ -3840,7 +4071,10 @@ class Handler(BaseHTTPRequestHandler):
                            "status": (a or {}).get("status", ""),
                            "level": (a or {}).get("level", ""),
                            "update_freq": (a or {}).get("update_freq", ""),
-                           "tags": (a or {}).get("tags", [])[:3]})
+                           # 2026-11-02 c116：原来只给前 3 个标签，卡片上第三個之后的
+                           # 一律看不见。用户要求「标签全部都要显示」，改成全量返回，
+                           # 由前端按视图（网格卡片 / 每作者一行）自己决定怎么排。
+                           "tags": list((a or {}).get("tags") or [])})
 
         # 排序：字段 + 方向（dir 缺省时按字段各自的习惯方向，见 SORT_DEFAULT_DIR）
         def sort_key(x):
@@ -3892,6 +4126,56 @@ class Handler(BaseHTTPRequestHandler):
             c = _LATEST_CACHE.get(it["uid"]) or {}
             it["remote_live"] = c.get("latest") or ""
             it["remote_live_at"] = c.get("at") or ""
+
+        # 「每作者一行」视图要顺带给出该作者最近 N 个作品（缩略图 + 日期 + 描述）。
+        # works=N 不传 = 老行为（不给作品，纯卡片列表）。只取有本地作品的作者，
+        # 按 data.json 里已有的顺序（日期倒序）取前 N 条，不再额外扫盘。
+        try:
+            want_works = int((q.get("works") or ["0"])[0] or 0)
+        except ValueError:
+            want_works = 0
+        want_works = max(0, min(want_works, 40))
+        if want_works:
+            accounts_full = CACHE.get("accounts") or {}
+            for it in page:
+                src = accounts_full.get(it["uid"]) or {}
+                recent = []
+                for wi, w in enumerate(src.get("works") or []):
+                    if len(recent) >= want_works:
+                        break
+                    files = w.get("files") or []
+                    if not files:
+                        continue
+                    media = (w.get("media_type") or "").lower()
+                    # 图文作品直接用它自己的第一张图（本来就是 jpg）；视频走首帧缩略图
+                    if media == "image":
+                        rel = files[0].get("rel") or ""
+                        is_image = True
+                    else:
+                        rel = files[0].get("rel") or ""
+                        is_image = os.path.splitext(rel)[1].lower() in IMAGE_EXTS
+                    if not rel:
+                        continue
+                    # 图文作品把全部图都带上（右侧播放区要能一张张翻）；
+                    # 视频只给首帧，翻段（_1/_2）在列表里没必要展开
+                    imgs = []
+                    if is_image:
+                        for f in files[:9]:
+                            r2 = f.get("rel") or ""
+                            if r2 and os.path.splitext(r2)[1].lower() in IMAGE_EXTS:
+                                imgs.append(r2)
+                    recent.append({
+                        "rel": rel,
+                        "is_image": is_image,
+                        "images": imgs,
+                        "date": w.get("date") or "",
+                        "desc": w.get("desc") or "",
+                        "index": wi,
+                        "files": len(files),
+                    })
+                it["recent"] = recent
+                it["recent_more"] = max(0, (it.get("work_count") or 0) - len(recent))
+
         self._send_json({"total": total, "offset": offset, "items": page})
 
     def _api_alt_groups(self):
@@ -4852,6 +5136,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(_recycle_list())
             return
 
+        if path == "/api/recycle/detail":
+            # 某一批里到底有哪些作品（点开回收站那一行时查）
+            body = self._read_json_body()
+            self._send_json(_recycle_detail(body.get("id")))
+            return
+
         if path == "/api/recycle/restore":
             body = self._read_json_body()
             self._send_json(_recycle_restore(body.get("id")))
@@ -4860,6 +5150,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/recycle/purge":
             body = self._read_json_body()
             self._send_json(_recycle_purge(body.get("id")))
+            return
+
+        if path == "/api/recycle/purge_all":
+            # 一键清空回收站（所有批次真删，不可恢复）
+            self._read_json_body()
+            self._send_json(_recycle_purge_all())
             return
 
         if path == "/api/files/dup_resolve":

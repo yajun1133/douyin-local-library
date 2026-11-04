@@ -13,6 +13,7 @@
 放在 `data/download_log.db`（SQLite，WAL 模式：扫描器写的同时网页能读）。
 """
 
+import json
 import os
 import sqlite3
 import threading
@@ -107,6 +108,67 @@ def record_folder(uid, folder, files, now=None):
             c.close()
 
 
+def rename_folder(old_folder, new_folder):
+    """作者文件夹改名后，同步库里的 rel / folder 两列（前缀替换）。
+
+    2026-11-03 补：以前改名只改磁盘 + data.json，不碰 download_log.db。
+    结果 watcher 扫到新文件夹时又 INSERT 一批，老路径的记录没人删（_delete_missing
+    是按 folder 精确匹配删的，改名后它查不到老 folder），同一位作者的文件数直接翻倍。
+    必须在 os.rename 之后、watcher 反应过来之前调用，此时库里只有旧路径，UPDATE 不会撞主键。
+    """
+    if not old_folder or not new_folder or old_folder == new_folder:
+        return 0
+    pre = old_folder + "/"
+    with _LOCK:
+        c = _connect()
+        try:
+            with c:
+                cur = c.execute(
+                    "UPDATE file SET folder=?, rel=? || substr(rel, ?) WHERE rel LIKE ?",
+                    (new_folder, new_folder + "/", len(pre) + 1, pre + "%"))
+                n = cur.rowcount
+                c.execute("UPDATE author SET folder=? WHERE folder=?", (new_folder, old_folder))
+            return n
+        finally:
+            c.close()
+
+
+def recount_author(uid):
+    """按 file 表现算某个作者的 file_count / bytes / last_download（清理残留记录后用）。"""
+    uid = str(uid or "")
+    if not uid:
+        return None
+    with _LOCK:
+        c = _connect()
+        try:
+            with c:
+                cnt, byt, last = c.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(size),0), COALESCE(MAX(mtime),0) "
+                    "FROM file WHERE uid=?", (uid,)).fetchone()
+                c.execute("UPDATE author SET file_count=?, bytes=?, last_download=? WHERE uid=?",
+                          (cnt, byt, last, uid))
+            return {"files": cnt, "bytes": byt, "last_download": last}
+        finally:
+            c.close()
+
+
+def drop_folder(folder):
+    """整段删掉某个文件夹名下的全部文件记录（改名后残留的旧路径用这个清）。"""
+    folder = (folder or "").strip()
+    if not folder:
+        return 0
+    with _LOCK:
+        c = _connect()
+        try:
+            with c:
+                cur = c.execute("DELETE FROM file WHERE folder=?", (folder,))
+                n = cur.rowcount
+                c.execute("DELETE FROM author WHERE folder=?", (folder,))
+            return n
+        finally:
+            c.close()
+
+
 def summary():
     """{uid: {"count","last","bytes","scan"}} —— 服务启动时一次拿全（1700 行很快）。"""
     out = {}
@@ -157,11 +219,14 @@ def totals():
     return {"authors": a or 0, "files": f or 0, "bytes": b or 0}
 
 
-def recent(since=0, limit=600, uid=None, cursor=None):
+def recent(since=0, limit=600, uid=None, cursor=None, uids=None):
     """最近下载的文件（按 mtime 倒序），给「新下载」页用。
 
     mtime 是文件落盘时间 ≈ 下载完成时间，所以「今天下载的」= mtime >= 今天 0 点。
     返回 (符合条件的总文件数, 本页行, 下一页 cursor, 还有没有下一页)。
+
+    uids: 作者属性筛选算出来的白名单（「新下载」页那套和「导出作者信息」一致的筛选）。
+    用 json_each 传数组而不是拼一堆 ? ——作者上千个时占位符会撞 SQLite 的变量上限。
 
     2026-11-02：不再有「只看最新 N 个」的硬上限，改成一页一页往下翻。
     分页用 keyset（cursor = "mtime|rel"，rel 是主键保证唯一），不用 OFFSET：
@@ -180,6 +245,12 @@ def recent(since=0, limit=600, uid=None, cursor=None):
         if uid:
             base_where += " AND uid = ?"
             base_args.append(uid)
+        elif uids is not None:
+            uids = list(uids)
+            if not uids:
+                return 0, [], None, False
+            base_where += " AND uid IN (SELECT value FROM json_each(?))"
+            base_args.append(json.dumps([str(u) for u in uids], ensure_ascii=False))
         total = c.execute("SELECT COUNT(*) FROM file WHERE " + base_where, base_args).fetchone()[0]
 
         where, args = base_where, list(base_args)

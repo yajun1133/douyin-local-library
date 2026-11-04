@@ -22,6 +22,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# fetch_uid_by_secuid 后来挪到 tools/legacy/ 了，这里两种位置都试一下，
+# 否则 import 直接挂、整条「获取资料」链路不可用（2026-11-04 踩到）。
+_LEGACY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "legacy")
+if os.path.isdir(_LEGACY):
+    sys.path.insert(0, _LEGACY)
 import fetch_uid_by_secuid as F
 
 F.init_env()

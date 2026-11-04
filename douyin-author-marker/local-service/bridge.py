@@ -382,42 +382,29 @@ class AuthorIndex:
 
     def lookup(self, sec_uid: str = "", uid: str = "", nickname: str = "",
                aweme_id: str = "", meta: dict | None = None) -> dict:
-        with self.lock:
-            status, matched_by, target = "miss", "none", None
-            cands: list[str] = []
+        """认人只认确定性 ID：SEC_UID / uid / 作品ID。
 
-            if sec_uid:
-                target = self.by_sec.get(sec_uid.strip())
+        2026-11-03 起**彻底不再按昵称认人**（用户口径：「以后改为用 SEC_UID 判断作者」）。
+        原因是昵称一点都不唯一：同名的一大把，同一个人还会改名、换号，
+        以前「昵称精确 + 昵称包含」两条路把 `应翔专营店` 的新号接到了已封的旧档案上。
+        现在昵称只用来**列提示**（库里同名的是谁），永不参与判定。
+
+        三条线索：
+          ① SEC_UID  页面 URL / 锚点 / 接口响应里的 MS4wLjAB…，终身不变，唯一权威
+          ② uid      页面极少给；给了就是库主键，同样确定
+          ③ 作品ID   作品归属是确定的，用它反查作者不算猜
+        """
+        with self.lock:
+            matched_by, target = "none", None
+            sec_q = (sec_uid or "").strip()
+            uid_q = str(uid or "").strip()
+
+            if sec_q:
+                target = self.by_sec.get(sec_q)
                 if target:
                     matched_by = "sec_uid"
-            if not target and uid:
-                u = uid.strip()
-                if u in self.authors:
-                    target = u
-                    matched_by = "uid"
-            if not target and nickname:
-                k = norm_name(nickname)
-                lst = self.by_nick.get(k) or []
-                if len(lst) == 1:
-                    target, matched_by = lst[0], "nickname"
-                elif len(lst) > 1:
-                    # 同名多个：优先有下载记录的
-                    lst2 = sorted(lst, key=lambda x: self.authors[x].get("last_download") or 0,
-                                  reverse=True)
-                    cands = lst2
-                    target, matched_by = lst2[0], "nickname_ambiguous"
-            if not target and nickname:
-                k = norm_name(nickname)
-                if len(k) >= 2:
-                    hits = []
-                    for nk, lst in self.by_nick.items():
-                        if k in nk:
-                            hits.extend(lst)
-                    if len(hits) == 1:
-                        target, matched_by = hits[0], "nickname_fuzzy"
-                    elif len(hits) > 1:
-                        cands = hits[:8]
-
+            if not target and uid_q and uid_q in self.authors:
+                target, matched_by = uid_q, "uid"
             if not target and aweme_id:
                 # 页面只给了视频ID（推荐流常见）：库里这个作品是我们下载过的，就用它反查作者
                 hit = self.aweme.get(str(aweme_id).strip())
@@ -425,7 +412,50 @@ class AuthorIndex:
                     target, matched_by = hit[0], "aweme"
 
             if not target:
-                return {"status": "miss", "matched_by": "none", "candidates": cands}
+                # 没认出来：把库里同名的那几条**只当提示**列出来，绝不当成本人。
+                # （一旦塞进 author，扩展会拿它的 uid/sec_uid 去推「待下载」，就推错人了）
+                # 分两种：
+                #   ① 库里填了 SEC_UID 且都不是页面的 → 同名的另一个号，很常见
+                #   ② 库里那条压根没填 SEC_UID     → 无从判断，只能说「无法确认」
+                same: list[dict] = []
+                unfilled: list[dict] = []
+                if nickname:
+                    for u in (self.by_nick.get(norm_name(nickname)) or [])[:8]:
+                        r = self.authors.get(u) or {}
+                        one = {"uid": u, "nickname": r.get("nickname") or "",
+                               "douyin_id": r.get("douyin_id") or "",
+                               "sec_uid": r.get("sec_uid") or "",
+                               "status": r.get("status") or "",
+                               "level": r.get("level") or "",
+                               "file_count": r.get("file_count") or 0,
+                               "last_download": r.get("last_download") or 0}
+                        (same if one["sec_uid"].strip() else unfilled).append(one)
+
+                # need_sec=True 表示「页面根本没拿到 SEC_UID」，前端据此提示「点进主页再查」
+                need_sec = not sec_q
+
+                if need_sec:
+                    # 连页面都没给 SEC_UID：既证明不了是本人，也证明不了是另一个人。
+                    # 只说「只认出昵称」，把同名的列出来当参考 —— 不下 name_diff 那种结论。
+                    same_and_unfilled = same + unfilled
+                    return {"status": "miss", "matched_by": "none", "need_sec": True,
+                            "candidates": [x["uid"] for x in same_and_unfilled],
+                            "same_name": same_and_unfilled}
+                if same:
+                    log("同名不同号：页面 sec=%s 昵称=%s；库里同名的是 %s（%s 个作品）" % (
+                        sec_q[:20], nickname, same[0].get("nickname") or "",
+                        same[0].get("file_count")))
+                    return {"status": "name_diff", "matched_by": "sec_uid_mismatch",
+                            "need_sec": need_sec,
+                            "candidates": [x["uid"] for x in same],
+                            "same_name": same, "same_unfilled": unfilled}
+                if unfilled:
+                    return {"status": "name_unfilled", "matched_by": "sec_uid_missing",
+                            "need_sec": need_sec,
+                            "candidates": [x["uid"] for x in unfilled],
+                            "same_name": unfilled, "same_unfilled": unfilled}
+                return {"status": "miss", "matched_by": "none", "need_sec": need_sec,
+                        "candidates": []}
 
             rec = self.authors.get(target) or {}
             out = {
@@ -471,7 +501,7 @@ class AuthorIndex:
             except Exception as e:
                 log("recent 按发布日重排失败：", e)
             return {"status": "hit", "matched_by": matched_by, "author": out,
-                    "candidates": cands, "video": video, "remote": remote}
+                    "candidates": [], "video": video, "remote": remote}
 
 
 IDX = AuthorIndex()

@@ -112,6 +112,24 @@
     return m ? m[1] : '';
   }
 
+  /* 描述区、评论区里的 @ 也是 /user/MS4wLjAB… 链接，但那是「被提及的人」，不是作者。
+     2026-11-03 用户截图：视频作者是「@你是否愧疚(初心纯…」，横栏却认成了描述里 @ 的
+     「初心纯女电竞俱乐部」—— 就是这里挑错了锚点。所以先按区域把描述/评论排除掉，
+     再用抖音自己标的作者名去对，最后才按距离挑。 */
+  const BAD_ZONE = '[data-e2e*="comment"], [data-e2e*="reply"], [data-e2e*="desc"], ' +
+    '[data-e2e*="search"], [data-e2e*="recommend"]';
+  const AUTH_ZONE = '[data-e2e*="author"], [data-e2e*="user-info"], [data-e2e*="userinfo"], ' +
+    '[data-e2e*="avatar"], [data-e2e*="user-name"]';
+
+  function inZone(el, sel) {
+    try { return !!(el.closest && el.closest(sel)); } catch (e) { return false; }
+  }
+
+  /* 昵称比较用的规范形态：去掉开头的 @（新版抖音作者名本身也带 @）、去掉所有空白 */
+  function cleanName(s) {
+    return String(s || '').replace(/^@+/, '').replace(/\s+/g, '').trim();
+  }
+
   function visibleAnchors() {
     const out = [];
     document.querySelectorAll('a[href*="MS4wLjAB"]').forEach((a) => {
@@ -122,14 +140,30 @@
       if (r.bottom < -40 || r.top > innerHeight + 40) return;
       let txt = (a.innerText || a.textContent || '').trim().replace(/\s+/g, ' ');
       if (txt.length > 40) txt = txt.slice(0, 40);
-      out.push({ el: a, sec_uid: sec, text: BAD_TEXT.test(txt) ? '' : txt, r });
+      out.push({ el: a, sec_uid: sec, text: BAD_TEXT.test(txt) ? '' : txt, r,
+        bad: inZone(a, BAD_ZONE), auth: inZone(a, AUTH_ZONE) });
     });
     return out;
   }
 
-  function pickAnchorNear(vidEl, secHint) {
-    const list = visibleAnchors();
+  function pickAnchorNear(vidEl, secHint, nameHint) {
+    const all = visibleAnchors();
+    if (!all.length) return null;
+    // 描述区/评论区的 @ 提及一律剔掉。**整页只剩这些时返回 null** ——
+    // 宁可显示「未收录」，也不要把视频里 @ 的那个人当成作者（认错人比认不出糟得多）。
+    const list = all.filter((x) => !x.bad);
     if (!list.length) return null;
+
+    // ① 抖音自己标的作者名对得上 → 最准（作者名旁边就是头像，改版也跑不掉）
+    const nn = cleanName(nameHint);
+    if (nn) {
+      const byName = list.find((x) => {
+        const t = cleanName(x.text);
+        return t && (t === nn || t.indexOf(nn) === 0 || nn.indexOf(t) === 0);
+      });
+      if (byName) return byName;
+    }
+    // ② 接口响应里那条给过的 sec_uid（按作品 ID 精确取的，可信）
     if (secHint) {
       const same = list.find((x) => x.sec_uid === secHint);
       if (same) return same;
@@ -137,10 +171,12 @@
     if (!vidEl) return list[0];
     const vr = vidEl.getBoundingClientRect();
     const cx = vr.left + vr.width / 2, cy = vr.top + vr.height / 2;
-    let best = null, bestD = Infinity;
+    let best = null, bestScore = Infinity;
     for (const it of list) {
       const d = Math.hypot(it.r.left + it.r.width / 2 - cx, it.r.top + it.r.height / 2 - cy);
-      if (d < bestD) { bestD = d; best = it; }
+      // 同一距离下优先作者区的锚点
+      const score = d + (it.auth ? 0 : 500);
+      if (score < bestScore) { bestScore = score; best = it; }
     }
     return best;
   }
@@ -148,16 +184,20 @@
   /* 有些页面（短剧/合集/新版详情）作者名不是 <a href="/user/...">，而是纯文本节点。
      按抖音自己的 data-e2e 标记取，取不到就返回空，绝不去猜。 */
   function textAuthorName() {
+    // 只用明确的标记。`[data-e2e*="author"]` 这种模糊匹配会命中评论区里的
+    // 「comment-author」，把评论人的名字当成作者（2026-11-03 踩过一次）。
     const sels = ['[data-e2e="video-author-name"]', '[data-e2e="user-name"]',
       '[data-e2e="author-name"]', '[data-e2e="douyin-account"]',
-      '[data-e2e="detail-video-author"]',
-      '[data-e2e*="author"]', '[data-e2e*="user-name"]'];
+      '[data-e2e="detail-video-author"]', '[data-e2e="video-detail-author"]',
+      '[data-e2e="user-info-name"]'];
     try {
       for (let i = 0; i < sels.length; i++) {
         const el = document.querySelector(sels[i]);
         if (!el) continue;
+        // 描述区里的 @ 提及也可能被上面的选择器捞到，排除掉
+        if (inZone(el, BAD_ZONE)) continue;
         let t = String(el.innerText || el.textContent || '').trim().split('\n')[0].trim();
-        t = t.replace(/^@/, '').trim();
+        t = t.replace(/^@+/, '').trim();
         if (t && t.length <= 30) return t;
       }
     } catch (e) { /* ignore */ }
@@ -256,16 +296,21 @@
 
     const vid = activeVideoEl();
     const hint = hook && hook.sec_uid ? hook.sec_uid : '';
-    const anc = pickAnchorNear(vid, hint);
+    // 抖音自己标的作者名先取出来：既能给锚点定位（避免挑到描述里 @ 的人），
+    // 也能在页面上根本没有作者链接时当兜底。
+    const tn = textAuthorName();
+    const anc = pickAnchorNear(vid, hint, tn);
 
     if (hook && awemeId && hook.aweme_id === awemeId) {
       return { sec_uid: hook.sec_uid, uid: hook.uid || '', nickname: hook.nickname || '',
         aweme_id: awemeId, src: 'net', meta: hook.meta || null };
     }
     if (anc) {
+      // 锚点文字可能是描述里的 @ 提及，名字优先用页面标的作者名
+      const nm = cleanName(tn) || cleanName(anc.text);
       return { sec_uid: anc.sec_uid, uid: '',
-        nickname: (hook && hook.sec_uid === anc.sec_uid && hook.nickname) || anc.text || '',
-        aweme_id: awemeId, src: 'dom',
+        nickname: (hook && hook.sec_uid === anc.sec_uid && hook.nickname) || nm || '',
+        aweme_id: awemeId, src: anc.bad ? 'dom-weak' : 'dom',
         meta: pickMeta(hook && hook.meta, awemeId, !!(hook && hook.sec_uid === anc.sec_uid)) };
     }
     // 有 awemeId 时 hook 是按 ID 精确取的，可信；
@@ -281,8 +326,7 @@
       return { sec_uid: ps.sec_uid, uid: '', nickname: ps.nickname || '',
         aweme_id: awemeId, src: 'page' };
     }
-    // 最后的兜底：只有作品 ID（后端能反查作者）或只有页面上的作者名（按昵称精确匹配）
-    const tn = textAuthorName();
+    // 最后的兜底：只有作品 ID（后端能反查作者）或只有页面上的作者名（不参与认人，只显示）
     if (awemeId || tn) {
       return { sec_uid: '', uid: '', nickname: tn || '', aweme_id: awemeId,
         src: tn ? 'dom-name' : 'url' };
@@ -498,17 +542,30 @@
     if (!hit) {
       const aa = d.author || {};
       const nm = aa.nickname || ctx.nickname || '';
-      const unknown = !(aa.sec_uid || aa.uid || ctx.sec_uid || ctx.uid || ctx.nickname);
-      const canPush = !!(aa.sec_uid || aa.uid || ctx.sec_uid || ctx.uid);
+      // 认人只认 SEC_UID（2026-11-03 起）：页面上没拿到 SEC_UID 就没法确认是库里哪一位
+      const hasSec = !!(ctx.sec_uid || aa.sec_uid);
+      const unknown = !(hasSec || ctx.uid || aa.uid || ctx.nickname || ctx.aweme_id);
+      const canPush = hasSec;
+      // 同名不同号：库里有个同名作者，但 SEC_UID 跟当前页面不是一个人
+      const nd = d.status === 'name_diff';
+      // 同名但库里那条没填 SEC_UID：无从判断，只能说无法确认
+      const nu = d.status === 'name_unfilled';
+      const ndCount = (d.same_name || []).length;
       // 悬停可以看到到底走到了哪一步，方便定位为啥认不出
       const diag = '识别来源：' + (ctx.src || '无') +
+        (ctx.sec_uid ? ' · SEC_UID ' + ctx.sec_uid : ' · 没拿到 SEC_UID') +
         (ctx.aweme_id ? ' · 作品ID ' + ctx.aweme_id : ' · 没拿到作品ID') +
-        (ctx.nickname ? ' · 昵称 ' + ctx.nickname : '');
+        (ctx.nickname ? ' · 昵称 ' + ctx.nickname : '') +
+        (nd ? ' · 库里同名的是另一个号（SEC_UID 不同）' : '') +
+        (nu ? ' · 库里同名的那条没填 SEC_UID' : '');
       return '<div class="hbar" title="' + esc(diag) + '">' +
         '<span class="dot ' + dot + '"></span>' +
         '<span class="bnick" title="' + esc(nm) + '">' + esc(nm || '未知作者') + '</span>' +
         '<span class="bsep">·</span>' +
-        '<span class="bmiss">' + (unknown ? '认不出作者' : '本地库未收录') + '</span>' +
+        '<span class="bmiss">' + (unknown ? '认不出作者'
+          : (nd ? '同名不同号' + (ndCount > 1 ? '（' + ndCount + ' 位）' : '')
+            : nu ? '同名但库里无 SEC_UID'
+              : hasSec ? '本地库未收录' : '未拿到 SEC_UID')) + '</span>' +
         '<span class="sp"></span>' +
         '<button class="bbtn q" data-act="queue-add"' + (canPush ? '' : ' disabled') +
         ' title="推送到待下载区（库里没有会自动新建作者主页）">＋待下载</button>' +
@@ -645,8 +702,6 @@
 
       const toast = st.toast ? '<div class="toast' + (st.toastErr ? ' err' : '') + '">' +
         esc(st.toast) + '</div>' : '';
-      const amb = d.matched_by === 'nickname_ambiguous'
-        ? '<div class="vid no">· 昵称匹配到 ' + (d.candidates || []).length + ' 位同名，展示的是库存最多的一位</div>' : '';
 
       body = '<div class="who"><span class="nick" title="' + esc(a.nickname) + '">' +
         esc(a.nickname || '（未填昵称）') + '</span>' +
@@ -656,16 +711,47 @@
         '</span></div>' +
         tagRow + aSub +
         '<div class="grid">' + rows + '</div>' +
-        toast + lag + vline + amb +
+        toast + lag + vline +
         (list ? '<div class="list">' + list + '</div>' : '') +
         '<div class="ft"><span>数据更新 ' + esc((d.meta && d.meta.scanned_at || '').slice(5, 16)) +
         '</span><span class="sp"></span><span>仅本机读取</span></div>';
     } else {
       const nm = (d.author && d.author.nickname) || ctx.nickname || '';
-      body = '<div class="msg"><b>本地库未收录</b>' +
-        (nm ? '<div class="sub">作者：' + esc(nm) + '</div>' : '') +
-        '<div class="sub">该作者还没有下载记录（或已改名且未同步）。</div>' +
-        '<div class="acts"><button data-act="retry">再查一次</button>' +
+      const nd = d.status === 'name_diff';        // 库里同名的是另一个号
+      const nu = d.status === 'name_unfilled';    // 库里同名那条没填 SEC_UID
+      const same = d.same_name || [];
+      // 认人只认 SEC_UID：没拿到就没有「＋待下载」，因为建档没有可信依据
+      const hasSec = !!(ctx && ctx.sec_uid);
+      const canPush = hasSec;
+      // 同名的那条只当提示，绝不当本人
+      const sameHtml = same.length
+        ? '<div class="sub">库里同名：' + same.map(function (x) {
+            return '<b>' + esc(x.nickname || x.uid) + '</b>' +
+              (x.status ? '（' + esc(x.status) + '）' : '') + ' · 已存 ' + (x.file_count || 0) + ' 个';
+          }).join('、') + '</div>' +
+          '<div class="sub">' + (nd
+            ? '但 SEC_UID 跟当前页面不一样，是另一个号（同一个人另开的号很常见）。'
+            : nu
+              ? '但库里那条没填 SEC_UID，没法确认是不是同一个人。'
+              : '但当前页面没拿到 SEC_UID，无法确认是不是这一位。') + '</div>'
+        : '';
+      const title = nd ? '同名，但不是同一个号'
+        : nu ? '同名，但库里那条没有 SEC_UID'
+          : hasSec ? '本地库未收录' : '没拿到 SEC_UID';
+      const hint = nd
+        ? '点「＋待下载」会按当前页面的 SEC_UID 单独建一条，不会并到同名那条上。'
+        : nu
+          ? '要收就按当前页面的 SEC_UID 新建一条；也可以去库里给那条补上 SEC_UID。'
+          : hasSec
+            ? '该作者还没有下载记录（或已改名且未同步）。'
+            : '当前页面只认出昵称，没法确认是哪一位。点进 TA 的主页再查一次就准了。';
+      body = '<div class="msg"><b>' + title + '</b>' +
+        (nm ? '<div class="sub">当前页面：' + esc(nm) + '</div>' : '') +
+        sameHtml +
+        '<div class="sub">' + hint + '</div>' +
+        '<div class="acts">' +
+        (canPush ? '<button class="q" data-act="queue-add" title="按当前页面的 SEC_UID 推送到待下载区（库里没有会自动新建作者主页）">＋待下载</button>' : '') +
+        '<button data-act="retry">再查一次</button>' +
         '<button data-act="openlib">打开本地库</button></div></div>';
     }
 
@@ -716,31 +802,9 @@
     return list[0].el;
   }
 
-  /* 在作者头像右上角找位置：往上找 4 层，挑一个「方的、圆角」的小 img */
-  function findAvatar(anchor) {
-    const imgs = [];
-    let node = anchor;
-    for (let up = 0; up < 4 && node; up++) {
-      if (node.querySelectorAll) {
-        node.querySelectorAll('img').forEach(function (i) { imgs.push(i); });
-      }
-      node = node.parentElement;
-    }
-    for (let i = 0; i < imgs.length; i++) {
-      const img = imgs[i];
-      const r = img.getBoundingClientRect();
-      if (r.width < 22 || r.width > 96) continue;
-      if (Math.abs(r.width - r.height) > 10) continue;
-      let cs = null;
-      try { cs = getComputedStyle(img); } catch (e) { continue; }
-      const rad = parseFloat(cs.borderRadius) || 0;
-      let prad = 0;
-      try { prad = parseFloat(getComputedStyle(img.parentElement).borderRadius) || 0; } catch (e) { }
-      if (rad >= r.width * 0.3 || prad >= r.width * 0.3) return img;
-    }
-    return null;
-  }
-
+  /* 已存数量角标：挂在作者昵称锚点上，压在昵称正上方（用户 2026-11-03 要求）。
+     以前是压到头像右上角 —— 会挡脸，而且头像常常带挂件/边框，看着更乱。
+     这里用 absolute 贴着昵称，不改父级布局；昵称被省略号裁切时退回内侧右上角。 */
   function ensurePill() {
     if (!S.showPill || !st.data || st.data.status !== 'hit') { removePill(); return; }
     const a = st.data.author || {};
@@ -753,26 +817,25 @@
     const n = a.file_count || 0;
     const label = n >= 1000 ? (Math.round(n / 100) / 10) + 'k' : String(n);
 
-    // ① 首选：头像右上角一个小圆点
-    const img = findAvatar(anchor);
-    if (img && img.parentElement) {
-      const host = img.parentElement;
-      let clip = false;
-      try {
-        const hcs = getComputedStyle(host);
-        clip = hcs.overflow === 'hidden';
-        if (hcs.position === 'static') host.style.position = 'relative';
-      } catch (e) { /* ignore */ }
+    // ① 首选：昵称上方（左对齐）一个小圆点
+    try {
+      const hcs = getComputedStyle(anchor);
+      if (hcs.position === 'static') anchor.style.position = 'relative';
+      if (hcs.display === 'inline') anchor.style.display = 'inline-block';
+      // 昵称容器自己裁切（省略号）时，出头的小圆点会被裁掉，那种情况缩到内侧右上角
+      const clipped = hcs.overflow === 'hidden';
       const dot = document.createElement('span');
       dot.textContent = label;
       dot.title = '本地已存 ' + n + ' 个作品';
-      dot.style.cssText = 'position:absolute;' + (clip ? 'top:0;right:0;' : 'top:-2px;right:-2px;') +
-        'z-index:9;min-width:17px;height:17px;padding:0 3px;border-radius:9px;' +
+      dot.style.cssText = 'position:absolute;z-index:9;' +
+        (clipped ? 'top:0;right:0;' : 'left:0;bottom:100%;margin-bottom:1px;') +
+        'min-width:16px;height:15px;padding:0 4px;border-radius:8px;' +
         'background:rgba(20,22,28,.95);border:1px solid rgba(255,212,121,.9);color:#ffd479;' +
-        'font-size:10px;font-weight:700;line-height:15px;text-align:center;box-sizing:border-box;' +
-        'pointer-events:none;font-family:inherit;';
-      try { host.appendChild(dot); pill = dot; pillSec = sec; return; } catch (e) { /* fallthrough */ }
-    }
+        'font-size:10px;font-weight:700;line-height:13px;text-align:center;box-sizing:border-box;' +
+        'pointer-events:none;font-family:inherit;white-space:nowrap;';
+      anchor.appendChild(dot);
+      pill = dot; pillSec = sec; return;
+    } catch (e) { /* fallthrough */ }
 
     // ② 兜底：昵称后面的小胶囊
     const el = document.createElement('span');
@@ -866,25 +929,27 @@
       const au = (m && m.au) || {};
       const payload = {
         uid: a.uid || c.uid || '',
-        sec_uid: a.sec_uid || c.sec_uid || '',
+        // 页面给的 SEC_UID 优先：它才是「当前这个人」的终身 ID，库里的只是历史记录
+        sec_uid: c.sec_uid || a.sec_uid || '',
         nickname: a.nickname || c.nickname || '',
         douyin_id: a.douyin_id || '',
         tags: a.tags || [], level: a.level || '', status: a.status || '',
         follower: au.follower || 0, signature: au.signature || ''
       };
       const inBar = !!(btn.closest && btn.closest('.hbar'));
-      if (!payload.uid && !payload.sec_uid) {
+      const oldTxt = btn.textContent;
+      // 认人只认 SEC_UID（2026-11-03 起）：没有它就推不了，否则只能靠昵称猜，早晚推错人
+      if (!payload.sec_uid) {
         if (inBar) {
-          btn.textContent = '认不出作者';
-          setTimeout(function () { if (btn.isConnected) btn.textContent = '＋待下载'; }, 2200);
+          btn.textContent = '没有 SEC_UID';
+          setTimeout(function () { if (btn.isConnected) btn.textContent = oldTxt; }, 2200);
         } else {
           st.toastErr = true;
-          st.toast = '认不出这位作者，先点进他的主页再推';
+          st.toast = '没拿到 SEC_UID，先点进 TA 的主页再推';
           render();
         }
         return;
       }
-      const oldTxt = btn.textContent;
       btn.textContent = '…';
       sendToBg({ type: 'queueAdd', payload }).then(function (res) {
         const d = (res && res.data) || {};

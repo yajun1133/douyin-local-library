@@ -17,7 +17,7 @@
 | 技术栈 | Python `ThreadingHTTPServer` + 原生 HTML/CSS/JS。**无框架、无构建、无数据库、无 AI 依赖** |
 | 端口 | `http://127.0.0.1:8723` |
 | 启动 | 双击 `start-browser.bat`，或 `python src\server.py`。**已在运行时双击不会再起第二个进程**（脚本先 curl `/api/meta` 探测，活着就只开浏览器并退出） |
-| 数据量 | 现查 `/api/meta`（2026-11-01：1752 位作者 / 240,687 个作品 / 索引约 72MB） |
+| 数据量 | 现查 `/api/meta`（2026-11-04：1961 位作者 / 288,718 个作品 / 386,726 个文件 / 索引约 86MB） |
 | 不可再生的数据 | **只有 `data\user_data.json`（用户的标注）**，其余全可重建 |
 
 **最容易踩的六条**（详见第 4 节）：
@@ -41,7 +41,8 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 ```
 
 - 作者数 / 星标 / 标签云 都在这个接口；口径说明见 `PROJECT.md` 第一章
-- 2026-11-01 核对：作者 **1752** · 星标 **105** · 前端 **c102** · `node --check`（node v26.13.0，已在 PATH）与 `py_compile` 均通过
+- 2026-11-04 核对：作者 **1961** · 星标 **119** · 前端 **c124** · `node --check`（node v26.13.0，已在 PATH）与 `py_compile` 均通过
+- 2026-11-04 的改动集中在：新下载筛选（c124）、G 盘老作品并入（15,298 个文件）、封面指针修复（202 位）、身份字段补齐。细节见 `PROJECT.md` 附录 A 前几条
 - **没有阻塞性缺陷**，剩下的都是体验优化
 - 缺 sec_uid、转码 job 丢失、死代码等已知项见 `PROJECT.md` 第五章末尾
 
@@ -51,7 +52,7 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 
 ### 2.1 启动 / 重启
 ```bash
-cd /d D:\ai_Project\douyin-local-library\浏览器
+cd /d D:\ai_Project\douyin-local-library\browser
 python src\server.py            # 前台跑，Ctrl+C 停
 ```
 需要重启时（**只有改了 `server.py` 才需要**，改前端刷新即可）：
@@ -169,9 +170,10 @@ curl -s --noproxy 127.0.0.1 -G "http://127.0.0.1:8723/api/authors" --data-urlenc
 ## 6. 常用命令
 
 ```bash
-cd /d D:\ai_Project\douyin-local-library\浏览器
+cd /d D:\ai_Project\douyin-local-library\browser
 
-# 全量重扫（1815 个文件夹约 20 分钟；重建 data.json，不动 user_data.json）
+# 全量重扫（约 1900 个文件夹约 20 分钟；重建 data.json，不动 user_data.json）
+# ⚠️ /api/rescan 走的是增量（按文件夹 mtime），批量搬完文件后要扫两次才全
 python src\scanner.py
 
 # 扫完补 sec_uid（新下载的博主没有 xlsx，扫完 sec_uid 是空的）
@@ -197,8 +199,8 @@ python tools\restore_backup.py --latest
 
 ## 7. 当前功能（一句话一个）
 
-**浏览**：作者网格分页（无限滚动，监听 `.content`）· 详情页左作品列表 / 右播放区 · 图文多图 · HEVC 原生硬解（无extension/解不动时自动转码兜底）· 竖屏「填满」裁切
-**筛选**：搜索（全部/昵称/备注/简介/作品五种范围，作品搜索直接出作品卡并定位）· 排序 9 项 + 正反序 · 筛选面板（SEC_UID 有/无、星标、最后更新含自定义区间、**等级/状态/更新频率多选**、封面）
+**浏览**：作者网格分页（无限滚动，监听 `.content`）· **「每作者一行」模式**（`#layoutBtn` 切换，一行作者表头 + 一行作品卡片，右侧常驻播放区点卡片就地播，不跳详情页）· 详情页左作品列表 / 右播放区 · 图文多图 · HEVC 原生硬解（无extension/解不动时自动转码兜底）· 竖屏「填满」裁切
+**筛选**：搜索（全部/昵称/备注/简介/作品五种范围，作品搜索直接出作品卡并定位）· 排序 9 项 + 正反序 · 筛选面板（SEC_UID 有/无、星标、最后更新含自定义区间、**等级/状态/更新频率多选**、封面）· **新下载页另有一套 5 行筛选**（等级/标签/状态/频率/最后下载时间，每行行首圆钮 ＋并集 / －交集，**在服务端筛**所以翻页也一致）
 **标注**：星标 · 标签 · 备注（note）· 别名（alias，显示时替代昵称）· 账号状态 8 类 · 作者等级 4 档 · 更新频率 4 档 · 历史记录 · 封面（视频截帧/图片原图）
 **大小号**：多向关联组 · 整组同步等级（频率不跟组走，各记各的）· 自定义文件夹名 · 设为大号
 **侧边栏**：功能（批量获取资料、获取最近收藏、导出作者信息、设置）/ 分类（全部作者、星标、大小号、黑名单、7 个状态）/ 等级（4 档）/ 更新频率（4 档）/ 标签 / 年份
@@ -243,7 +245,7 @@ curl -X POST http://127.0.0.1:8723/api/save -H "Content-Type: application/json" 
 
 ## 9. 给新对话的开场话术（直接复制）
 
-> 项目在 `D:\ai_Project\douyin-local-library\browser\`，是一个本地抖音下载内容浏览器（Python `ThreadingHTTPServer` + 原生前端，端口 8723，版本 `?v=20261031c102`）。
+> 项目在 `D:\ai_Project\douyin-local-library\browser\`，是一个本地抖音下载内容浏览器（Python `ThreadingHTTPServer` + 原生前端，端口 8723，版本 `?v=20261103c124`）。
 > 请先读 `docs\HANDOVER.md`（怎么接手）和 `docs\PROJECT.md`（技术细节与踩坑），再动手。
 > 必须守住的：改前端要升 `?v=` 版本号；写 `user_data.json` 只能走 `merge_save_user_data()`；不要 fetch `data.json`；加设置项只改 `DEFAULT_SETTINGS`；本机 ffmpeg 无 libx264。
 > 我的需求是：……

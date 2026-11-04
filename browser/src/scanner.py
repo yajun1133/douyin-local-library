@@ -59,6 +59,12 @@ UID_FOLDER_RE = re.compile(r"^UID(\d+)_(.*)_发布作品$")
 # 文件名解析: 日期-昵称-描述_序号.扩展名
 # 描述中可能包含 _数字 后缀（图文序号），用非贪婪匹配 + 末尾 _(\d+) 处理
 FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.*?)-(.*?)(?:_(\d+))?\.([A-Za-z0-9]+)$")
+# 两段式：`日期-昵称[_序号].ext` —— 这条作品**没有描述**。
+# 老版 DouK 对空描述留一个尾横杠（`日期-昵称-.mp4`，主正则可以解析成 desc=""）；
+# 2026-11-02 统一去掉文件名末尾的作品 ID 之后，空描述会变成更干净的 `日期-昵称.mp4`，
+# 主正则要求两段 `-` 就匹配不上了，会被当成「无法解析」丢进 raw 作品（日期空、标题是文件名）。
+# 历史上还有一批 `2022-11-01-SoilfIreiIl_1.jpeg` 这种同样只有两段的，一并救回来。
+FILE_RE_TWO = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.+?)(?:_(\d+))?\.([A-Za-z0-9]+)$")
 
 
 def log(msg):
@@ -75,18 +81,44 @@ def progress(done, total):
     print(f"PROGRESS {done}/{total}", flush=True)
 
 
+def _desc_rank(d):
+    """描述「像人话」的程度：空 = 0，纯数字（DouK 拿 ID 当描述）= 1，有文字 = 2。
+
+    同一个作品的两份文件可能一份有描述、一份只有 ID 兜底，聚合时取排名高的那个。
+    """
+    if not d:
+        return 0
+    return 1 if re.fullmatch(r"\d+", str(d)) else 2
+
+
 def parse_work_filename(filename):
     """解析作品文件名，返回 (date, author, desc, seq, ext) 或 None"""
     m = FILE_RE.match(filename)
     if not m:
-        return None
+        # 两段式兜底：`日期-昵称[_n].ext`，描述为空（见 FILE_RE_TWO 的注释）
+        m2 = FILE_RE_TWO.match(filename)
+        if not m2:
+            return None
+        date, author, seq, ext = m2.groups()
+        return {"date": date, "author": author, "desc": "", "seq": seq,
+                "ext": ext.lower(), "id": ""}
     date, author, desc, seq, ext = m.groups()
-    # 2026-10-31 起 DouK 的 name_format 末尾加了作品 ID（防同名覆盖），
-    # 文件名变成「日期-昵称-描述-19位ID.mp4」。这段 ID 要剥掉，
-    # 否则描述里会多一串数字，界面上显示成「@某作者-7566012345678901234」。
-    # 只剥「-数字」这种带分隔符的尾巴：描述本身就是一串数字的作品（老文件）不受影响。
-    desc = re.sub(r"-\d{15,20}$", "", desc)
-    return {"date": date, "author": author, "desc": desc, "seq": seq, "ext": ext.lower()}
+    # 末尾那串 15~20 位数字就是 DouK 的作品 ID，剥掉别让它显示在描述里。
+    # 两种来源都要处理：
+    #   ① 2026-10-31 起 name_format 末尾加了 id → 「日期-昵称-描述-<id>.mp4」
+    #   ② 更老的文件里「描述为空 → DouK 拿 ID 当描述」→ 「日期-昵称-<id>.mp4」
+    # 所以判据是「desc 末尾是独立的数字段」，不是「desc 整个是数字」。
+    aweme_id = ""
+    mm = re.search(r"(?:^|-)(\d{15,20})$", desc)
+    if mm:
+        aweme_id = mm.group(1)
+        desc = desc[:mm.start()].rstrip("-") if mm.start() > 0 else ""
+    # 「日期-昵称-<id>-<id>.mp4」这种双 ID 名字（重复下载的产物）剥完末尾还剩一个 ID，
+    # 它本来就是「这条作品没有描述」，别让人在界面上看到一串数字当标题。
+    if aweme_id and desc == aweme_id:
+        desc = ""
+    return {"date": date, "author": author, "desc": desc, "seq": seq,
+            "ext": ext.lower(), "id": aweme_id}
 
 
 def scan_folder(folder_path):
@@ -152,10 +184,17 @@ def scan_author_folder(folder_name):
             media = "image"
 
         if p:
-            key = (p["date"], p["desc"])
+            # 2026-11-02：**有作品 ID 就按 ID 聚合**。同一个 aweme_id 一定是同一个作品，
+            # 哪怕文件名因为「改了命名模板 / 作者改名 / 描述被清空」而变得不一样
+            # —— 按「日期+描述」聚合时这类会裂成两个作品（一个标题正常、一个是一串数字）。
+            # 没有 ID 的老文件（更早期别的工具下的）退回原来的「日期+描述」，否则会把不相关的合成一个。
+            key = ("id", p["id"]) if p["id"] else ("dd", p["date"], p["desc"])
             w = works_map[key]
             w["date"] = p["date"]
-            w["desc"] = p["desc"]
+            # 描述取「更像人话的那条」：空 / 纯数字是 DouK 的 ID 兜底值，
+            # 不能让它盖掉同作品另一份文件上的真描述（比如 #黑爵）。
+            if _desc_rank(p["desc"]) > _desc_rank(w["desc"]):
+                w["desc"] = p["desc"]
             if media == "video":
                 w["media_type"] = "video"
             elif not w["media_type"]:

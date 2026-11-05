@@ -487,12 +487,16 @@ def _patch_user_cover_after_rename(uid, old_folder, new_folder):
 
 
 def _build_attr_tests(q):
-    """按 query 构造「作者属性」判定函数：[(key, fn(item, acc), 'and'|'or'), ...]
+    """按 query 构造「作者属性」判定函数：[(key, fn(item, acc), 'or'|'not'), ...]
 
-    覆盖 等级 / 标签 / 账号状态 / 更新频率 / 已下载作品最后时间。
-    每行自带一个组合开关（match_level=and 之类）：and（－）= 必须满足，or（＋）= 命中任一。
-    整体语义：所有 － 行全满足，并且（存在 ＋ 行时）至少命中一个 ＋ 行。
-    「导出作者信息」和「新下载」两页共用这一份 —— 用户要求两边筛选一模一样（2026-11-03）。
+    覆盖 等级 / 标签 / 账号状态 / 更新频率 / 已下载作品最后时间 / 是否有封面。
+    每行自带一个开关（match_level=not 之类），语义按用户 2026-11-05 的口径：
+        ＋（or）  = 包含：这一行勾中的值属于「我要的」
+        －（not） = 排除：这一行勾中的值属于「我要去掉的」
+    整体语义：先剔除所有 － 行命中的人，剩下的人里（存在 ＋ 行时）至少命中一个 ＋ 行。
+    全是 ＋ 就是纯并集；全是 － 就是「全部作品，去掉这些」。默认 ＋。
+
+    「导出作者信息」「新下载」「全部作者」三处共用这一份 —— 用户要求三边筛选一模一样。
     """
     def _one(name):
         return (q.get(name) or [""])[0]
@@ -501,23 +505,28 @@ def _build_attr_tests(q):
     q_level = _one("level").strip()
     q_freq = _one("freq").strip()
     q_tag = _one("tag").strip()
+    q_cover = _one("cover").strip()
     q_latest_after = _one("latest_after").strip()
     q_latest_before = _one("latest_before").strip()
     q_match = _one("match").strip().lower()
 
     def _attr_mode(key):
         v = (q.get("match_" + key) or [""])[0].strip().lower()
-        if v in ("and", "or"):
-            return v
-        if q_match in ("and", "or"):
-            return q_match
+        if v:
+            # 「and」是 2026-11-05 之前的旧叫法（交集），现在统一按「排除」处理，
+            # 免得旧链接/旧书签点进来变成「必须同时满足」那种看不懂的结果
+            return "not" if v in ("not", "and", "exclude") else "or"
+        if q_match in ("not", "and"):
+            return "not"
         return "or"
 
-    # 状态/等级/频率/标签都是逗号分隔多值；__unset = 未设置（字段为空）
+    # 状态/等级/频率/标签/封面都是逗号分隔多值；__unset = 未设置（字段为空），
+    # __notag = 一个标签都没有（只在标签行有意义）
     status_set = {s.strip() for s in q_status.split(",") if s.strip()} if q_status else set()
     level_set = {s.strip() for s in q_level.split(",") if s.strip()} if q_level else set()
     freq_set = {s.strip() for s in q_freq.split(",") if s.strip()} if q_freq else set()
     tag_set = {s.strip() for s in q_tag.split(",") if s.strip()} if q_tag else set()
+    cover_set = {s.strip().lower() for s in q_cover.split(",") if s.strip()} if q_cover else set()
     # 设置里勾了「不能设置更新频率」的状态（注销/禁言封号/卖号…）：这类账号不参与频率筛选
     try:
         freq_locked_status = {str(x).strip()
@@ -549,9 +558,21 @@ def _build_attr_tests(q):
         tests.append(("freq", _t_freq))
     if tag_set:
         def _t_tag(item, a, _s=tag_set):
-            acc_tags = (a.get("tags") or []) if a else []
-            return bool(_s and any(t in acc_tags for t in _s))
+            acc_tags = [str(t).strip() for t in ((a or {}).get("tags") or []) if str(t).strip()]
+            # 「没有标签」：这条账号身上一个标签都没有（配合 － 圆钮就是「去掉所有带标签的」）
+            if "__notag" in _s and not acc_tags:
+                return True
+            return any(t in acc_tags for t in _s if t != "__notag")
         tests.append(("tag", _t_tag))
+    if cover_set:
+        def _t_cover(item, a, _s=cover_set):
+            has_cover = bool((a or {}).get("cover") or item.get("cover"))
+            if "has" in _s and has_cover:
+                return True
+            if "none" in _s and not has_cover:
+                return True
+            return False
+        tests.append(("cover", _t_cover))
     if q_latest_after or q_latest_before:
         def _t_latest(item, a, _a=q_latest_after, _b=q_latest_before):
             latest = (item.get("latest") or "")[:10]
@@ -576,18 +597,20 @@ def _attr_uids(q, accounts, lst):
     out = set()
     for item in lst:
         a = accounts.get(item["uid"])
-        and_ok, or_any, has_or = True, False, False
+        # ＋ 行（or）：至少命中一个；－ 行（not）：命中就剔除。
+        # 没有 ＋ 行时就是「全部作品，去掉 － 那几样」。
+        excluded, or_any, has_or = False, False, False
         for _key, fn, mode in tests:
             hit = bool(fn(item, a))
-            if mode == "and":
-                if not hit:
-                    and_ok = False
+            if mode == "not":
+                if hit:
+                    excluded = True
                     break
             else:
                 has_or = True
                 if hit:
                     or_any = True
-        if and_ok and (not has_or or or_any):
+        if not excluded and (not has_or or or_any):
             out.add(item["uid"])
     return out
 
@@ -2080,9 +2103,13 @@ def _thumb_ffmpeg(full, out):
     显卡留给真正吃算力的活：HEVC→H.264 转码走 h264_nvenc，
     实测一段 15.7s 的源 32.8s → 8.7s，CPU 几乎不占。
     """
+    # 图片不能 seek：一张 jpg 只有一帧，`-ss 1` 直接越过结尾 → 输出空文件 →
+    # 前端拿到 500。照片墙（赏图模式）靠这个接口，一打开就是几百张，必须能出图。
+    seek = [] if full.lower().endswith(IMG_EXT + (".bmp",)) else ["-ss", "1"]
     cmd = [_eff_ffmpeg(), "-y", "-hide_banner", "-loglevel", "error", "-nostats",
            "-threads", "2",            # 每进程只给 2 个线程：靠并发 8 个进程铺满核，别互相抢
-           "-ss", "1", "-i", full, "-frames:v", "1",
+           ] + seek + [
+           "-i", full, "-frames:v", "1",
            "-vf", "scale=400:-2", "-q:v", "5", out]
     try:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2218,6 +2245,22 @@ def _load_data_locked(force=False):
         return False
     CACHE["load_error"] = ""
     accounts = data.get("accounts", {})
+    # 有些老目录当初拿不到昵称、下载器把 sec_uid 当名字用，文件夹就成了
+    # `UID123_MS4wLjAB…_发布作品`，扫描时原样取出来当昵称 → 列表上顶着一长串乱码
+    # （2026-11-05 用户报的）。这里统一清洗内存副本：昵称看着像 sec_uid 就置空
+    # （页面会退回显示 UID），顺便把 sec_uid 补上。磁盘索引交给 scanner 的新逻辑慢慢修。
+    try:
+        import scanner as _sc
+        for _uid_c, _acc_c in accounts.items():
+            if not isinstance(_acc_c, dict):
+                continue
+            _nk = _acc_c.get("nickname") or ""
+            if _sc.looks_like_sec_uid(_nk):
+                _acc_c["nickname"] = ""
+                if not (_acc_c.get("sec_uid") or "").strip():
+                    _acc_c["sec_uid"] = _nk.strip()
+    except Exception as _e:  # noqa: BLE001
+        print("[data] 昵称清洗跳过：%s" % _e)
     # 记下「这一版索引里到底有哪些 uid」（黑名单剔除前）。load_user_data 靠它区分
     # 「还是合成账号」和「已经被扫描进来了」—— 见 _load_user_data_locked 里那段说明。
     CACHE["data_uids"] = set(accounts.keys())
@@ -3507,11 +3550,17 @@ class Handler(BaseHTTPRequestHandler):
             if g is None:
                 acc = accs.get(f["uid"]) or {}
                 nick = (acc.get("nickname") or "").strip()
+                if nick and _sc.looks_like_sec_uid(nick):
+                    nick = ""      # 旧索引里昵称被写成 sec_uid 的那种，别往外显示
                 if not nick:
                     # 刚下完还没被扫描到：从文件夹名 UIDxxx_昵称_发布作品 里兜一个
                     folder = f["rel"].split("/")[0] if "/" in f["rel"] else ""
                     m = re.match(r"^UID\d+_(.+?)_发布作品$", folder)
-                    nick = (m.group(1) if m else folder) or f["uid"]
+                    guess = (m.group(1) if m else folder).strip()
+                    # 目录名那一段也可能是 sec_uid（下载器抓不到昵称时的兜底），不能当名字用
+                    if _sc.looks_like_sec_uid(guess):
+                        guess = ""
+                    nick = guess or f["uid"]
                 g = {"uid": f["uid"], "nickname": nick, "items": [],
                      # 作者身上的标注（播放区下方要显示）：等级 / 更新频率 / 状态 / 标签
                      "level": str(acc.get("level") or "").strip(),
@@ -3990,7 +4039,7 @@ class Handler(BaseHTTPRequestHandler):
         q_cat = (q.get("cat") or ["all"])[0]
         q_sec = (q.get("sec_uid") or [""])[0]          # has | none | ""
         q_star = (q.get("starred") or [""])[0]          # yes | no | ""
-        q_cover = (q.get("cover") or [""])[0]                  # has | none（是否有封面）
+        q_cover = (q.get("cover") or [""])[0]                  # has | none | has,none（交给 _build_attr_tests）
         q_dir = (q.get("dir") or [""])[0].lower()              # asc | desc（空 = 按字段默认）
         # 属性筛选（等级/标签/状态/更新频率/最后下载时间，每行自带 ＋/－ 组合开关）
         # 抽成公共函数：「新下载」页要做成和「导出作者信息」一模一样的筛选，两边必须同口径。
@@ -4003,21 +4052,21 @@ class Handler(BaseHTTPRequestHandler):
             if q_cat == "starred" and not (a and a.get("starred")):
                 continue
             # 属性筛选（只在真的选了属性时才起作用）：
-            #   － 行（and）必须全部满足；＋ 行（or）至少要命中一项。
-            # 全是 － 就是老的交集，全是 ＋ 就是老的并集，混着用两种语义自然叠加。
+            #   － 行（not）命中就剔除；＋ 行（or）至少要命中一项。
+            # 全是 ＋ 是纯并集，全是 － 就是「全部作品，去掉这几样」（用户 2026-11-05 口径）。
             if attr_test_modes:
-                and_ok, or_any, has_or = True, False, False
+                excluded, or_any, has_or = False, False, False
                 for _key, _fn, _mode in attr_test_modes:
                     hit = bool(_fn(item, a))
-                    if _mode == "and":
-                        if not hit:
-                            and_ok = False
+                    if _mode == "not":
+                        if hit:
+                            excluded = True
                             break
                     else:
                         has_or = True
                         if hit:
                             or_any = True
-                if not and_ok or (has_or and not or_any):
+                if excluded or (has_or and not or_any):
                     continue
             # sec_uid 有/无
             sec = (item.get("sec_uid") or "").strip()
@@ -4031,13 +4080,8 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             if q_star == "no" and starred:
                 continue
-            # 是否有封面：user_data 里自己设的封面，或 data.json 扫描时带的封面
-            if q_cover:
-                has_cover = bool((a or {}).get("cover") or item.get("cover"))
-                if q_cover == "has" and not has_cover:
-                    continue
-                if q_cover == "none" and has_cover:
-                    continue
+            # 「是否有封面」已经在 _build_attr_tests 里当成一行处理了（支持 ＋/－ 圆钮），
+            # 这里不再单独判一次 —— 否则用户在封面行点成 － 会和这里的「必须满足」打架。
             if q_year:
                 if not (a and any(w.get("date", "").startswith(q_year) for w in (a.get("works") or []))):
                     continue
@@ -4600,6 +4644,23 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"ok": False, "error": "调用失败：%s" % e}
 
+    @staticmethod
+    def _douk_mark(r):
+        """DouK 建目录用的是 `UID{uid}_{mark}_发布作品`（mark 优先于昵称，见下载器
+        download.py: `return user_id, mark or user_name`）。
+
+        **2026-11-05 改**：以前这里填的是昵称 —— 昵称一改（最常见是加个 emoji）mark 就跟着变，
+        下载器按新名字另建一个目录，老目录里的文件它看不见（is_skip 判的是「ID 在记录表」
+        或「目标文件存在」），于是**整位作者重下一遍**，文件夹也越积越多。
+        现在填「现有文件夹名里的那一段」：下载器算出来的路径和磁盘上那个目录一模一样，
+        直接命中、一个都不重下。没有文件夹（新作者）才退回昵称。
+        """
+        f = (r.get("folder") or "").strip()
+        m = re.match(r"^UID\d+_(.*)_发布作品$", f)
+        if m and m.group(1).strip():
+            return m.group(1)
+        return r.get("nickname") or r.get("alias") or r.get("sec_uid") or ""
+
     def _export_authors(self, data):
         """导出作者信息，三种格式：
 
@@ -4667,6 +4728,7 @@ class Handler(BaseHTTPRequestHandler):
                 "earliest": (it.get("earliest") or "")[:10],
                 # 本地库里有没有作品 —— 决定要不要写 DouK 的 earliest（见 _earliest_of）
                 "has_works": bool(it.get("work_count") or it.get("latest")),
+                "folder": it.get("folder") or a.get("folder") or "",
                 "url": ("https://www.douyin.com/user/" + sec) if sec else "",
             })
         # sec_uid 来源：按 sec_uid 反查账号，查得到就把标注一并带上
@@ -4696,6 +4758,7 @@ class Handler(BaseHTTPRequestHandler):
                     "latest": (it.get("latest") or "")[:10],
                     "earliest": (it.get("earliest") or "")[:10],
                     "has_works": bool(it.get("work_count") or it.get("latest")),
+                    "folder": it.get("folder") or a.get("folder") or "",
                     "url": "https://www.douyin.com/user/" + s,
                 })
 
@@ -4764,7 +4827,7 @@ class Handler(BaseHTTPRequestHandler):
             return ""
 
         entries = [{
-            "mark": r["nickname"] or r["alias"] or r["sec_uid"],
+            "mark": self._douk_mark(r),
             "url": r["url"],
             "tab": "post",          # 留空 DouK 每个号都会报「tab 参数 设置错误」，填 post 干净
             "earliest": _earliest_of(r),

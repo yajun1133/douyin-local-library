@@ -81,7 +81,9 @@ body {
 }
 .filter-panel {
     position: absolute; top: 36px; right: 0; z-index: 50;
-    width: 320px; background: var(--panel); border: 1px solid var(--border);
+    /* 320px 放不下「圆钮 + 行名 + 勾选项 + 全选」四列，会挤成错位的一团（2026-11-05） */
+    width: 560px; max-width: calc(100vw - 24px);
+    background: var(--panel); border: 1px solid var(--border);
     border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.12);
     padding: 12px; display: flex; flex-direction: column; gap: 12px;
     max-height: min(72vh, 560px);
@@ -123,6 +125,27 @@ body {
     padding-top: 10px; border-top: 1px solid var(--border);
 }
 .filter-foot .btn { height: 30px; padding: 0 14px; font-size: 12px; }
+
+/* 带 ＋/－ 圆钮的行改成横向四列：圆钮 / 行名 / 勾选项 / 全选（2026-11-05） */
+.filter-group.fg-row {
+    display: grid;
+    grid-template-columns: 20px 82px minmax(0, 1fr) auto;
+    align-items: start;
+    column-gap: 8px;
+    row-gap: 6px;
+}
+.filter-group.fg-row .filter-label { padding-top: 3px; white-space: nowrap; }
+.filter-group.fg-row .export-match { padding-top: 2px; }
+/* 没有圆钮的行（SEC_UID / 星标）也跟着缩进一列，否则和带圆钮的行参差不齐 */
+.filter-group:not(.fg-row) .filter-label,
+.filter-group:not(.fg-row) .filter-opts { margin-left: 28px; }
+/* 「筛选结果：等级：夯、顶级，去掉 纹身标签」——放在筛选面板外面，常驻一行 */
+.author-sentence {
+    margin: 0 0 12px; padding: 7px 12px; border-radius: 8px;
+    background: #f4f6fa; border: 1px solid var(--border);
+    font-size: 12.5px; line-height: 1.6; color: var(--text);
+}
+.author-sentence b { color: var(--text-muted); font-weight: 600; margin-right: 4px; }
 /* 排序方向切换按钮（紧跟排序下拉） */
 #sortDirBtn { height: 30px; padding: 0 12px; font-size: 12px; border-radius: 7px; }
 /* 选择器必须写成 .btn.btn-primary：本文件后面的 .btn 会覆盖同特异性的单类选择器，
@@ -1480,7 +1503,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .status-note-input { height: 34px; border-radius: 9px; }
 .filter-panel {
     top: 43px;
-    width: 336px;
+    /* 336px 放不下「圆钮 + 行名 + 勾选项 + 全选」四列（2026-11-05） */
+    width: 560px;
+    max-width: calc(100vw - 24px);
     padding: 16px;
     border-color: rgba(225, 228, 234, .9);
     border-radius: 15px;
@@ -4177,7 +4202,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261105c126';
+    content: 'v20261105c138';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -4338,11 +4363,25 @@ body::after {
 }
 .export-match .em-btn.or { color: #1e5fd8; background: #deeaff; border: 1px solid #a6c5fb; }
 .export-match .em-btn.or:hover { background: #cbdcff; border-color: #7faaf9; }
-.export-match .em-btn.and { color: #b4580a; background: #ffe6cd; border: 1px solid #f0b57a; }
-.export-match .em-btn.and:hover { background: #ffd8b0; border-color: #e79f52; }
+.export-match .em-btn.not { color: #b4580a; background: #ffe6cd; border: 1px solid #f0b57a; }
+.export-match .em-btn.not:hover { background: #ffd8b0; border-color: #e79f52; }
 .export-match .em-btn:active { transform: scale(.9); }
 .export-match .em-btn:focus-visible { outline: 2px solid #8fb4f8; outline-offset: 1px; }
 .export-match-hint { font-size: 11px; line-height: 1.7; color: var(--text-muted); margin: -2px 0 10px; }
+/* 「作者等级」旁边的全选：一行小字按钮，不抢勾选框的视觉权重 */
+.row-all-btn {
+    margin-left: 5px; padding: 0 6px; height: 18px; font-size: 11px; line-height: 16px;
+    border-radius: 5px; vertical-align: middle; font-weight: 500;
+}
+/* 「筛选结果：全部作品，去掉 纹身标签」——一句话说明这次筛的是什么（2026-11-05） */
+.export-sentence {
+    margin: 2px 0 10px; padding: 7px 10px; border-radius: 8px;
+    background: #f4f6fa; border: 1px solid var(--border);
+    font-size: 12.5px; line-height: 1.6; color: var(--text);
+}
+.export-sentence b { color: var(--text-muted); font-weight: 600; margin-right: 4px; }
+.export-sentence.empty { background: transparent; border-style: dashed; color: var(--text-muted); }
+.export-sentence.empty b { color: var(--text-muted); }
 .export-match-hint .em-plus, .export-match-hint .em-minus {
     display: inline-flex; align-items: center; justify-content: center;
     width: 15px; height: 15px; border-radius: 50%;
@@ -5430,7 +5469,7 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     background: #deeaff;
     border: 1px solid #a6c5fb;
 }
-.ndf-match .em-btn.and { color: #b4580a; background: #ffe6cd; border-color: #f0b57a; }
+.ndf-match .em-btn.not { color: #b4580a; background: #ffe6cd; border-color: #f0b57a; }
 .ndf-match .em-btn:hover { filter: brightness(.96); }
 .ndf-hint {
     font-size: 11px;
@@ -5509,15 +5548,14 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     font-size: 22px; color: #c2c9d2; background: #f1f3f5;
 }
 
-/* 角标：图文 / 多张 */
-.nd-kind, .nd-multi {
+/* 角标：作品里的文件数（图文=张数，视频=段数；2026-11-05 起不再写「图文」两个字） */
+.nd-multi {
     position: absolute; bottom: 5px;
     font-size: 10px; line-height: 1; padding: 3px 5px;
     border-radius: 4px; color: #fff;
     background: rgba(15, 23, 42, .62);
     backdrop-filter: blur(2px);
 }
-.nd-kind { left: 5px; letter-spacing: .5px; }
 .nd-multi { right: 5px; }
 
 /* 缩略图下面两行：作者 + 发布时间 */
@@ -6201,7 +6239,8 @@ body.side-collapsed .nd-body { grid-template-columns: minmax(0, 1fr) 500px !impo
     display: flex; align-items: center; justify-content: center;
     font-size: 22px; color: #aab0bb;
 }
-.ar-kind, .ar-multi {
+/* 角标只有「文件数」（图文=张数 / 视频=段数），2026-11-05 起不再写「图文」两个字 */
+.ar-multi {
     position: absolute;
     padding: 0 5px;
     height: 16px;
@@ -6212,7 +6251,6 @@ body.side-collapsed .nd-body { grid-template-columns: minmax(0, 1fr) 500px !impo
     background: rgba(0, 0, 0, .55);
     pointer-events: none;
 }
-.ar-kind { left: 4px; top: 4px; }
 .ar-multi { right: 4px; top: 4px; }
 .ar-time {
     padding: 4px 6px 5px;
@@ -6312,3 +6350,101 @@ body.side-collapsed .nd-body { grid-template-columns: minmax(0, 1fr) 500px !impo
     .rows-player { position: static; width: 100%; flex: 0 0 auto; height: auto; }
     .rp-stage { flex: 0 0 auto; height: 46vh; }
 }
+
+/* ===== 纯净赏图（作者详情页「🖼 赏图」） =====
+   刻意的固定深色：图片在纯黑上最好看，不跟明暗主题走。
+   除了顶部一条细栏，没有任何边框/卡片/标题，图与图只隔 2px。 */
+body.gallery-open { overflow: hidden; }
+
+.gallery-view {
+    position: fixed; inset: 0; z-index: 900;
+    display: flex; flex-direction: column;
+    background: #0a0a0c;
+}
+.gallery-view.hidden { display: none; }
+
+.gallery-bar {
+    flex: 0 0 auto; height: 46px;
+    display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: rgba(10, 10, 12, .94);
+    border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+.gallery-title { font-size: 13px; font-weight: 600; color: #e9e9ec; }
+.gallery-count { font-size: 12px; color: #8a8a93; }
+.gallery-spacer { flex: 1 1 auto; }
+.gallery-close {
+    width: 30px; height: 30px; flex: 0 0 auto;
+    border: 0; border-radius: 8px; cursor: pointer;
+    background: rgba(255, 255, 255, .08); color: #d9d9de;
+    font-size: 19px; line-height: 1;
+}
+.gallery-close:hover { background: rgba(255, 255, 255, .18); color: #fff; }
+
+/* 瀑布流：columns 让每列高度自然错开，图片按原比例，不裁切。
+   ⚠️ columns 必须放在**高度不确定**的内层：直接挂在滚动容器上时，容器高度是固定的，
+     多列内容会横向排出去然后被 overflow-x 裁掉，既不滚动也不显示（第一版就栽在这）。 */
+.gallery-body {
+    flex: 1 1 auto; overflow-y: auto; overflow-x: hidden;
+}
+.gallery-cols {
+    padding: 2px;
+    columns: 240px; column-gap: 2px;
+}
+.gallery-item {
+    position: relative;
+    margin: 0 0 2px; break-inside: avoid;
+    line-height: 0; cursor: zoom-in;
+    background: #151518;
+}
+/* aspect-ratio 只是**占位**：图还没到之前撑出 3:4 的高度，否则整面墙高度是 0，
+   浏览器的 loading=lazy 会认为「都在视口里但没尺寸」而不去加载，滚动条也不出现，
+   于是永远加载不出来（第一版就是这么翻车的）。图到了以后按真实比例显示。 */
+.gallery-item img { width: 100%; height: auto; aspect-ratio: 3 / 4; display: block; }
+.gallery-item:hover img { filter: brightness(1.07); }
+.gallery-item.bad { display: none; }
+.gallery-n {
+    position: absolute; right: 6px; bottom: 6px;
+    font-style: normal; font-size: 11px; line-height: 1;
+    padding: 3px 5px; border-radius: 4px;
+    color: #fff; background: rgba(0, 0, 0, .58);
+}
+
+/* 大图 */
+.gallery-lb {
+    position: fixed; inset: 0; z-index: 960;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, .96);
+}
+.gallery-lb.hidden { display: none; }
+.gallery-lb img {
+    max-width: 94vw; max-height: 92vh;
+    object-fit: contain; cursor: default;
+}
+.gallery-lb-btn {
+    position: absolute; top: 50%; transform: translateY(-50%);
+    width: 50px; height: 76px;
+    border: 0; border-radius: 10px; cursor: pointer;
+    background: rgba(255, 255, 255, .07); color: #fff; font-size: 32px; line-height: 1;
+}
+.gallery-lb-btn:hover { background: rgba(255, 255, 255, .18); }
+.gallery-lb-btn.prev { left: 18px; }
+.gallery-lb-btn.next { right: 18px; }
+.gallery-lb-count {
+    position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: #cfcfd5;
+    background: rgba(0, 0, 0, .55); padding: 5px 13px; border-radius: 999px;
+}
+.gallery-lb-close {
+    position: absolute; top: 18px; right: 18px;
+    width: 34px; height: 34px; border: 0; border-radius: 9px; cursor: pointer;
+    background: rgba(255, 255, 255, .08); color: #d9d9de; font-size: 20px; line-height: 1;
+}
+.gallery-lb-close:hover { background: rgba(255, 255, 255, .2); color: #fff; }
+
+/* 筛选栏里那颗「赏图」按钮 */
+.work-filter-btn.gallery-btn { color: #b34a86; }
+.work-filter-btn.gallery-btn:hover { background: #ffe9f3; border-color: #f3bcd7; }
+.work-filter-btn.gallery-btn.disabled { opacity: .45; }
+
+@media (max-width: 1100px) { .gallery-cols { columns: 190px; } }
+@media (max-width: 760px)  { .gallery-cols { columns: 140px; } .gallery-lb-btn { width: 40px; height: 60px; font-size: 26px; } }

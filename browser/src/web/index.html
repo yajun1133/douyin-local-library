@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261105c126">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261105c126">
-    <link rel="stylesheet" href="style.css?v=20261105c126">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261105c138">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261105c138">
+    <link rel="stylesheet" href="style.css?v=20261105c138">
 </head>
 <body>
     <button class="sidebar-expand" id="sidebarExpand" title="展开侧边栏">»</button>
@@ -129,13 +129,6 @@
                             <div class="filter-panel hidden" id="filterPanel">
                                 <div class="filter-body">
                                 <div class="filter-group">
-                                    <div class="filter-label filter-label-q">不同属性之间<span class="hint-wrap"><button type="button" class="hint-q" aria-label="怎么组合" onmouseenter="showHintPop(this)" onmouseleave="hideHintPop(this)" onclick="toggleHintPop(event, this)">?</button><span class="hint-pop"><b>同一个属性里勾多个 = 并集</b>（命中任一即可，例如等级同时勾「夯」和「顶级」，两拨人都要）。<br><b>不同属性之间</b>默认 <b>交集</b>（必须同时满足，例如等级「夯」+ 状态「正常」= 既是夯又正常）；想「等级是夯 <b>或者</b> 状态是正常」，把这里切成 <b>并集</b>。</span></span></div>
-                                    <div class="filter-opts" data-key="match">
-                                        <label><input type="radio" name="fMatch" value="and" checked> 交集（都要满足）</label>
-                                        <label><input type="radio" name="fMatch" value="or"> 并集（命中任一）</label>
-                                    </div>
-                                </div>
-                                <div class="filter-group">
                                     <div class="filter-label">SEC_UID</div>
                                     <div class="filter-opts" data-key="sec_uid">
                                         <label><input type="radio" name="fSec" value="" checked> 不限</label>
@@ -151,7 +144,8 @@
                                         <label><input type="radio" name="fStar" value="no"> 不是</label>
                                     </div>
                                 </div>
-                                <div class="filter-group">
+                                <div class="filter-group fg-row">
+                                    <div class="export-match" data-key="latest"></div>
                                     <div class="filter-label">已下载作品<br>最后时间</div>
                                     <div class="filter-opts" data-key="latest">
                                         <label><input type="radio" name="fLatest" value="" checked> 不限</label>
@@ -163,32 +157,36 @@
                                         <label><input type="radio" name="fLatest" value="365d"> 1年内</label>
                                         <label><input type="radio" name="fLatest" value="custom"> 自选</label>
                                     </div>
-                                    <div class="filter-range hidden" id="filterRange">
-                                        <input type="date" id="latestFrom" title="起始日期（含当天）">
-                                        <span>至</span>
-                                        <input type="date" id="latestTo" title="结束日期（含当天）">
-                                        <button class="btn btn-mini" type="button" onclick="clearLatestRange()" title="清空日期">×</button>
-                                    </div>
                                 </div>
-                                <div class="filter-group">
+                                <div class="filter-range hidden" id="filterRange">
+                                    <input type="date" id="latestFrom" title="起始日期（含当天）">
+                                    <span>至</span>
+                                    <input type="date" id="latestTo" title="结束日期（含当天）">
+                                    <button class="btn btn-mini" type="button" onclick="clearLatestRange()" title="清空日期">×</button>
+                                </div>
+                                <div class="filter-group fg-row">
+                                    <div class="export-match" data-key="level"></div>
                                     <div class="filter-label">作者等级</div>
                                     <div class="filter-opts" data-key="level">
+                                        <label><input type="checkbox" name="fLevel" value="__unset"> 未设置</label>
                                         <label><input type="checkbox" name="fLevel" value="夯"> 夯</label>
                                         <label><input type="checkbox" name="fLevel" value="顶级"> 顶级</label>
                                         <label><input type="checkbox" name="fLevel" value="一般"> 一般</label>
                                         <label><input type="checkbox" name="fLevel" value="拉"> 拉</label>
-                                        <label><input type="checkbox" name="fLevel" value="__unset"> 未设置</label>
                                     </div>
+                                    <button type="button" class="btn btn-mini row-all-btn" onclick="authorRowAll('fLevel')"
+                                            title="这一行全部勾上；再点一次全不选">全选</button>
                                 </div>
-                                <div class="filter-group">
+                                <div class="filter-group fg-row">
+                                    <div class="export-match" data-key="cover"></div>
                                     <div class="filter-label">封面</div>
                                     <div class="filter-opts" data-key="cover">
-                                        <label><input type="radio" name="fCover" value="" checked> 不限</label>
-                                        <label><input type="radio" name="fCover" value="has"> 有封面</label>
-                                        <label><input type="radio" name="fCover" value="none"> 无封面</label>
+                                        <label><input type="checkbox" name="fCover" value="has"> 有封面</label>
+                                        <label><input type="checkbox" name="fCover" value="none"> 无封面</label>
                                     </div>
                                 </div>
-                                <div class="filter-group">
+                                <div class="filter-group fg-row">
+                                    <div class="export-match" data-key="status"></div>
                                     <div class="filter-label">账号状态</div>
                                     <div class="filter-opts filter-status" data-key="status">
                                         <label><input type="checkbox" name="fStatus" value="__unset"> 未设置</label>
@@ -202,15 +200,21 @@
                                         <label><input type="checkbox" name="fStatus" value="待修改"> 待修改</label>
                                     </div>
                                 </div>
-                                <div class="filter-group">
+                                <div class="filter-group fg-row">
+                                    <div class="export-match" data-key="freq"></div>
                                     <div class="filter-label">更新频率</div>
                                     <div class="filter-opts" data-key="freq">
+                                        <label><input type="checkbox" name="fFreq" value="__unset"> 未设置</label>
                                         <label><input type="checkbox" name="fFreq" value="day"> day</label>
                                         <label><input type="checkbox" name="fFreq" value="3天"> 3天</label>
                                         <label><input type="checkbox" name="fFreq" value="周"> 周</label>
                                         <label><input type="checkbox" name="fFreq" value="月"> 月</label>
-                                        <label><input type="checkbox" name="fFreq" value="__unset"> 未设置</label>
                                     </div>
+                                </div>
+                                <div class="filter-hint">
+                                    每行左边的圆钮：<b class="em-plus">＋</b> = <b>包含</b>（勾中的这些是我要的，默认），
+                                    点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值始终是「命中任一」；
+                                    不同行的 ＋ 之间取并集，－ 行全部剔除。一个都不勾 = 全部作者。
                                 </div>
                                 </div>
                                 <div class="filter-foot">
@@ -238,6 +242,9 @@
                         <button class="btn hidden" id="exportBtn" onclick="exportSecUids()" title="把当前界面的作者（含所在大小号组）的 SEC_UID 导出成完整主页链接 txt">📤 导出 SECID</button>
                     </div>
                 </div>
+                <!-- 筛选结果的人话：放在筛选面板**外面**（用户 2026-11-05 要求），
+                     面板收起来也一直能看到当前筛的是什么 -->
+                <div class="author-sentence hidden" id="authorFilterSentence"></div>
                 <div class="rows-wrap" id="rowsWrap">
                     <div class="author-grid" id="authorGrid">
                         <div class="loading">加载中...</div>
@@ -340,6 +347,8 @@
                                 <div class="export-match" data-key="level"></div>
                                 <span class="fav-label">作者等级</span>
                                 <div class="export-radios" id="exportLevelRadios"></div>
+                                <button type="button" class="btn btn-mini row-all-btn" onclick="exportRowAll('expLevel')"
+                                        title="这一行全部勾上；再点一次全不选">全选</button>
                             </div>
                             <div class="export-opt-row">
                                 <div class="export-match" data-key="tag"></div>
@@ -357,6 +366,11 @@
                                 <div class="export-radios" id="exportFreqRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="cover"></div>
+                                <span class="fav-label">封面</span>
+                                <div class="export-radios" id="exportCoverRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
                                 <div class="export-match" data-key="latest"></div>
                                 <span class="fav-label">已下载作品<br>最后时间</span>
                                 <div class="export-radios" id="exportLatestRadios"></div>
@@ -367,9 +381,12 @@
                                 </div>
                             </div>
                             <div class="export-match-hint">
-                                每行左边的圆钮：<b class="em-plus">＋</b> = 这一项和其它 ＋ 项取<b>并集</b>（命中任一即可，<b>默认</b>），
-                                点一下变成 <b class="em-minus">－</b> = 取<b>交集</b>（必须同时满足）。同一行里勾多个值，始终是「命中任一」。
+                                每行左边的圆钮：<b class="em-plus">＋</b> = <b>包含</b>（勾中的这些是我要的，默认），
+                                点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值始终是「命中任一」；
+                                不同行的 ＋ 之间取并集，－ 行全部剔除。一个都不勾 = 全部作品。
                             </div>
+                            <!-- 筛选结果的人话：用户 2026-11-05 要求「下面要写明筛的是什么」 -->
+                            <div class="export-sentence" id="exportSentence"><b>筛选结果：</b>全部作品</div>
                             <div class="export-foot-row">
                                 <button class="btn" onclick="clearExportAll()" title="清空上面的筛选条件、已选名单和下面的预览（切到别的界面不会自动清）">清空</button>
                                 <button class="btn" onclick="previewExport()">预览选中的作者</button>
@@ -493,8 +510,9 @@
                                     <div class="ndf-opts" id="ndLatestOpts"></div>
                                 </div>
                                 <div class="ndf-hint">
-                                    每行左边：<b class="em-plus">＋</b> 并集（命中任一即可，默认）·
-                                    <b class="em-minus">－</b> 交集（必须同时满足）。同一行勾多个值永远是「命中任一」。
+                                    每行左边：<b class="em-plus">＋</b> 包含（勾中的是我要的，默认）·
+                                    <b class="em-minus">－</b> 排除（勾中的去掉）。同一行勾多个值永远是「命中任一」；
+                                    不同行的 ＋ 之间取并集，－ 行全部剔除。
                                 </div>
                                 <div class="ndf-foot">
                                     <button class="btn btn-mini" onclick="ndResetFilter()" title="全部恢复默认（不限）">↺ 重置</button>
@@ -682,6 +700,25 @@
                 </div>
             </section>
 
+            <!-- 纯净赏图：作者详情页的「🖼 赏图」按钮打开。
+                 把这位作者所有图文作品的图片铺成一整面照片墙，除了顶部一条细栏什么都没有。 -->
+            <section id="galleryView" class="gallery-view hidden">
+                <div class="gallery-bar" id="galleryBar">
+                    <span class="gallery-title" id="galleryTitle">赏图</span>
+                    <span class="gallery-count" id="galleryCount"></span>
+                    <span class="gallery-spacer"></span>
+                    <button class="gallery-close" onclick="closeGallery()" title="关闭（Esc）">×</button>
+                </div>
+                <div class="gallery-body" id="galleryBody" onscroll="onGalleryScroll()"><div class="gallery-cols" id="galleryCols"></div></div>
+                <div class="gallery-lb hidden" id="galleryLb" onclick="closeGalleryLb(event)">
+                    <img id="galleryLbImg" src="" alt="" onclick="event.stopPropagation()">
+                    <button class="gallery-lb-btn prev" onclick="stepGalleryLb(-1, event)" title="上一张（←）">‹</button>
+                    <button class="gallery-lb-btn next" onclick="stepGalleryLb(1, event)" title="下一张（→）">›</button>
+                    <span class="gallery-lb-count" id="galleryLbCount"></span>
+                    <button class="gallery-lb-close" onclick="closeGalleryLb(event, true)" title="关闭（Esc）">×</button>
+                </div>
+            </section>
+
         </main>
     </div>
 
@@ -752,6 +789,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261105c126"></script>
+    <script src="app.js?v=20261105c138"></script>
 </body>
 </html>

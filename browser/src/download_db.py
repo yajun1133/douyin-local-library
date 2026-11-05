@@ -108,6 +108,43 @@ def record_folder(uid, folder, files, now=None):
             c.close()
 
 
+def merge_folder(child_folder, main_folder, dup_ok=True):
+    """把 child 文件夹的记录并进 main（同 uid 多文件夹归一用，见 folder_merge.py）。
+
+    和 rename_folder 的区别只有一点：主文件夹里**可能已经有同名文件**
+    （两个目录各存了一份），而 `file.rel` 是主键，直接 UPDATE 会撞键。
+    dup_ok=True 时先把这些会撞的行删掉（磁盘上那份重复副本马上会被 rmdir 掉，
+    留着记录反而会让「文件数」虚高）；dup_ok=False 时什么都不做，交给人工。
+
+    返回 (删除的重复行数, 改前缀的行数)。
+    """
+    if not child_folder or not main_folder or child_folder == main_folder:
+        return 0, 0
+    pre = child_folder + "/"
+    off = len(pre) + 1
+    with _LOCK:
+        c = _connect()
+        try:
+            with c:
+                gone = 0
+                if dup_ok:
+                    cur = c.execute(
+                        "DELETE FROM file WHERE folder=?1 AND "
+                        "(?2 || '/' || substr(rel, ?3)) IN "
+                        "(SELECT rel FROM file WHERE folder=?2)",
+                        (child_folder, main_folder, off))
+                    gone = cur.rowcount
+                cur = c.execute(
+                    "UPDATE file SET folder=?, rel=? || substr(rel, ?) WHERE rel LIKE ?",
+                    (main_folder, main_folder + "/", off, pre + "%"))
+                n = cur.rowcount
+                c.execute("UPDATE author SET folder=? WHERE folder=?",
+                          (main_folder, child_folder))
+            return gone, n
+        finally:
+            c.close()
+
+
 def rename_folder(old_folder, new_folder):
     """作者文件夹改名后，同步库里的 rel / folder 两列（前缀替换）。
 

@@ -56,6 +56,16 @@ IMAGE_EXTS = {".jpeg", ".jpg", ".png", ".webp", ".gif"}
 # 文件夹命名正则（只匹配作者发布作品）
 UID_FOLDER_RE = re.compile(r"^UID(\d+)_(.*)_发布作品$")
 
+# 少部分老目录当初拿不到昵称，直接把 sec_uid 当名字用了（下载器抓不到主页资料时的兜底），
+# 于是文件夹名长成 `UID123_MS4wLjABAAAA…_发布作品`。这种中间那段其实**是 sec_uid 不是昵称**：
+# 必须还原（昵称留空、把 sec_uid 补上），否则列表里会顶着一长串 MS4wLjAB…（2026-11-05 用户报的 bug）
+SEC_UID_LIKE = re.compile(r"^MS4wLjAB[\w-]{16,}$")
+
+
+def looks_like_sec_uid(s):
+    """这个字符串看着像不像一个 sec_uid（而不是人取的昵称）"""
+    return bool(s and SEC_UID_LIKE.match(str(s).strip()))
+
 # 文件名解析: 日期-昵称-描述_序号.扩展名
 # 描述中可能包含 _数字 后缀（图文序号），用非贪婪匹配 + 末尾 _(\d+) 处理
 FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-(.*?)-(.*?)(?:_(\d+))?\.([A-Za-z0-9]+)$")
@@ -164,9 +174,24 @@ def scan_author_folder(folder_name):
         return None
     uid = m.group(1)
     nickname = m.group(2)
+    # 目录名里那一段可能是 sec_uid 而不是昵称（见 SEC_UID_LIKE 的注释）：认出来就还原，
+    # 昵称留空等「获取资料」补，同时把 sec_uid 补上（这类账号原本 sec_uid 是空的）
+    sec_uid_guess = ""
+    if looks_like_sec_uid(nickname):
+        sec_uid_guess = nickname.strip()
+        nickname = ""
 
     folder_path = os.path.join(SCAN_ROOT, folder_name)
     files = scan_folder(folder_path)
+
+    # 目录名没给出可用昵称（那一段是 sec_uid，或者干脆空着）→ 从作品文件名里捞一个。
+    # 文件名是 `日期-昵称-描述.ext`，第二段就是下载当时的昵称，比目录名可信。
+    if not nickname:
+        for _f in files:
+            _a = ((_f.get("parsed") or {}).get("author") or "").strip()
+            if _a and not looks_like_sec_uid(_a):
+                nickname = _a
+                break
 
     # 按作品聚合（同一日期+描述的一组图片算一个作品）
     works_map = defaultdict(lambda: {"date": "", "desc": "", "media_type": "", "files": []})
@@ -239,7 +264,7 @@ def scan_author_folder(folder_name):
     return {
         "uid": uid,
         "nickname": nickname,
-        "sec_uid": "",
+        "sec_uid": sec_uid_guess,
         "douyin_id": "",
         "signature": "",
         "folder": folder_name,
@@ -614,6 +639,18 @@ def main():
     if not os.path.isdir(SCAN_ROOT):
         log(f"错误: 目录不存在 {SCAN_ROOT}")
         sys.exit(1)
+
+    # 归一：同一个 uid 只能有一个文件夹（见 folder_merge.py）
+    # 下载器给作者建目录用的是 `UID{uid}_{当前昵称}_发布作品`，昵称一改（最常见是加 emoji）
+    # 下次下载就按新名字另建一个，旧作品留在原地、界面上看不见。必须在扫描之前做：
+    # 先把磁盘理顺，这一趟扫出来的才是合并后的结果，否则又要等下一轮才对齐。
+    phase("合并同作者文件夹")
+    try:
+        import folder_merge
+        folder_merge.auto_merge(log=log)
+    except Exception as e:  # noqa: BLE001
+        # 合并失败绝不能挡住扫描 —— 大不了这轮还是老样子
+        log(f"合并同作者文件夹出错（继续扫描）: {e}")
 
     # 提取 sec_uid 映射
     phase("提取 sec_uid 映射")

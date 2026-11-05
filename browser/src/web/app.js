@@ -86,11 +86,15 @@ const state = {
     currentLevel: null,  // 等级筛选（'夯'/'顶级'/'一般'/'拉'，null=不过滤）
     currentFreq: null,   // 更新频率筛选（'day'/'3天'/'周'/'月'，null=不过滤）
     // 右上角筛选面板（独立于侧边栏，与分类/状态列/标签/年份叠加生效）
-    // status/level/freq 都是多选（数组），cover 是单选：'' = 不限
-    // latest：'' | '7d' | '30d' | '90d' | '365d' | 'custom'（自定义区间）
+    // status/level/freq/cover 都是多选（数组），空数组 = 不限
+    // latest：'' | '3d' | '7d' | '14d' | '30d' | '60d' | '365d' | 'custom'（自定义区间）
     // latestFrom / latestTo：自定义区间的起止日期（YYYY-MM-DD，可只填一端）
-    // match：不同属性之间 and=交集（默认）/ or=并集
-    filters: { sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '', level: [], cover: '', status: [], freq: [], match: 'and' },
+    // matchMap：每行左侧的圆钮 —— or=＋包含（默认）/ not=－排除（2026-11-05 用户口径）
+    filters: {
+        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        level: [], cover: [], status: [], freq: [],
+        matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+    },
     searchQuery: '',
     searchScope: '',     // 搜索范围：''(全部) | nickname | note | signature | works
     // 每个账号状态自己写的一段说明（"我怎么理解这个状态"）：{ 状态名: 文本 }
@@ -270,27 +274,31 @@ async function loadAuthors(reset) {
     if (state.searchScope) params.set('scope', state.searchScope);
     if (state.currentTag) params.set('tag', state.currentTag);
     if (state.currentYear) params.set('year', state.currentYear);
-    // 账号状态：侧边栏状态列（单选）与筛选面板（多选）取并集
-    const statusSet = new Set();
-    if (state.currentStatus) statusSet.add(state.currentStatus);
-    (state.filters.status || []).forEach((s) => statusSet.add(s));
-    if (statusSet.size) params.set('status', Array.from(statusSet).join(','));
-    // 作者等级：侧边栏等级（单选）与筛选面板（多选）取并集
-    const levelSet = new Set();
-    if (state.currentLevel) levelSet.add(state.currentLevel);
-    (state.filters.level || []).forEach((l) => levelSet.add(l));
-    if (levelSet.size) params.set('level', Array.from(levelSet).join(','));
-    // 更新频率：侧边栏频率（单选）与筛选面板（多选）取并集
-    const freqSet = new Set();
-    if (state.currentFreq) freqSet.add(state.currentFreq);
-    (state.filters.freq || []).forEach((fr) => freqSet.add(fr));
-    if (freqSet.size) params.set('freq', Array.from(freqSet).join(','));
-    // 不同属性之间：交集（默认，不用传）/ 并集
-    if (state.filters.match === 'or') params.set('match', 'or');
-    // 筛选面板：sec_uid 有/无、星标 是/否、封面、最后更新时间
+    // 账号状态 / 等级 / 频率：侧边栏那列（单选）与筛选面板（多选）取并集。
+    // 但侧边栏那列本质是「包含」语义：面板这一行如果是 －（排除），就不能把侧边栏的
+    // 值并进去，否则「排除注销」会把侧边栏正选着的「注销」也一起排除，永远筛不到人。
+    const mm = state.filters.matchMap || {};
+    const mergeSide = (key, sideVal, arr) => {
+        const set = new Set();
+        if (mm[key] !== 'not' && sideVal) set.add(sideVal);
+        (arr || []).forEach((v) => set.add(v));
+        return Array.from(set);
+    };
+    const statusAll = mergeSide('status', state.currentStatus, state.filters.status);
+    if (statusAll.length) params.set('status', statusAll.join(','));
+    const levelAll = mergeSide('level', state.currentLevel, state.filters.level);
+    if (levelAll.length) params.set('level', levelAll.join(','));
+    const freqAll = mergeSide('freq', state.currentFreq, state.filters.freq);
+    if (freqAll.length) params.set('freq', freqAll.join(','));
+    // 每行自己的圆钮：match_x=not 表示这一行是「排除」；不传 = 包含（默认）
+    ['level', 'status', 'freq', 'cover', 'latest'].forEach((k) => {
+        if (mm[k] === 'not') params.set('match_' + k, 'not');
+    });
+    // 筛选面板：sec_uid 有/无、星标 是/否、封面（多选）
     if (state.filters.sec_uid) params.set('sec_uid', state.filters.sec_uid);
     if (state.filters.starred) params.set('starred', state.filters.starred);
-    if (state.filters.cover) params.set('cover', state.filters.cover);
+    const covers = state.filters.cover || [];
+    if (covers.length) params.set('cover', covers.join(','));
     // 最后更新时间：预设区间（最近 N 天）或自定义起止日期
     const lat = state.filters.latest;
     if (lat === 'custom') {
@@ -504,8 +512,9 @@ function authorRowHtml(a) {
                      onclick="rowPlayCard(this)" title="${escapeHtml(tip)}">
             <div class="ar-thumb">
                 <img data-src="${src}" alt="" onerror="thumbError(this)">
-                ${w.is_image ? '<span class="ar-kind">图文</span>' : ''}
-                ${files > 1 ? `<span class="ar-multi">${files}</span>` : ''}
+                ${w.is_image
+                    ? `<span class="ar-multi">${files}</span>`
+                    : (files > 1 ? `<span class="ar-multi">${files}</span>` : '')}
             </div>
             <div class="ar-time">${escapeHtml(String(w.date || '').slice(5) || '—')}</div>
         </div>`;
@@ -1187,6 +1196,8 @@ async function deleteAuthor(uid) {
 }
 
 function closeDetail() {
+    // 赏图浮层是盖在详情页上的，详情页关了它还留着会挡住列表
+    if (!document.getElementById('galleryView').classList.contains('hidden')) closeGallery();
     if (detailState.selectMode) exitWorkSelect();
     // 详情页里曾跳转过别的作者（点小号/关联成员）→ 返回上一个作者，而不是直接回列表
     if (state.detailStack.length) {
@@ -1511,6 +1522,10 @@ function renderDetailTop() {
         `<button class="btn work-filter-btn ${detailState.filter === t ? 'active' : ''}" data-type="${t}" onclick="setRailFilter('${t}')">${label}<b class="wf-n">${typeCounts[t] || 0}</b></button>`
     ).join('');
     const workDirLabel = detailState.workDir === 'asc' ? '↑ 最早在前' : '↓ 最新在前';
+    // 纯净赏图：所有图文作品的图铺成一面墙（不跟当前分类走，永远是「全部图」）
+    const gCount = galleryCountOf(a);
+    filters += `<button class="btn gallery-btn${gCount ? '' : ' disabled'}" onclick="${gCount ? 'openGallery()' : 'showToast(\'这位作者没有图文作品\')'}"
+        title="纯净赏图：把这位作者所有图文作品的图片铺成一整面照片墙">🖼 赏图${gCount ? `<b class="wf-n">${gCount}</b>` : ''}</button>`;
     filters += `<button class="btn work-dir-btn" id="workDirBtn" onclick="toggleWorkDir()" title="作品排序：最新在前 / 最早在前">${workDirLabel}</button>`;
 
     document.getElementById('detailTop').innerHTML = `
@@ -1800,7 +1815,193 @@ function setRailFilter(type, autoplay) {
     }
 }
 
-// 删完作品后**只动被删的那几张卡**，不整体重渲。
+// ===== 纯净赏图：把这位作者所有图文作品的图片铺成一整面照片墙 =====
+// 不进详情页也能看清「这人到底拍了多少图」：没有卡片边框、没有标题、没有播放器，
+// 只有图 + 一条细顶栏。点任意一张进大图，左右键翻，Esc 退。
+const GALLERY_CHUNK = 120;              // 一屏一屏往 DOM 里加，几千张也不卡
+const galleryState = { items: [], shown: 0, lb: -1, keyBound: false, timer: 0 };
+
+// 按钮上那个数字：只数张数、不建完整列表（refreshTop 被调用得很频繁）
+// 结果缓存在 author 对象上，openAuthor 每次重新拉数据就自然失效
+function galleryCountOf(a) {
+    if (!a) return 0;
+    if (a._gCount === undefined) {
+        let n = 0;
+        (a.works || []).forEach((w) => {
+            n += mediaItemsOf(w).filter((it) => it.kind === 'image').length;
+        });
+        a._gCount = n;
+    }
+    return a._gCount;
+}
+
+// 摊平成「一张图一条」，带上是第几个作品的第几张（大图层要用）
+function galleryItemsOf(a) {
+    const out = [];
+    const ws = ((a && a.works) || []).slice()
+        .sort((x, y) => String(y.date || '').localeCompare(String(x.date || '')));   // 最新在前
+    ws.forEach((w) => {
+        const imgs = mediaItemsOf(w).filter((it) => it.kind === 'image');
+        const n = imgs.length;
+        imgs.forEach((it, k) => out.push({ rel: it.rel, work: w, k, n }));
+    });
+    return out;
+}
+
+function openGallery() {
+    const a = detailState.author;
+    if (!a) return;
+    const items = galleryItemsOf(a);
+    if (!items.length) { showToast('这位作者没有图文作品'); return; }
+
+    galleryState.items = items;
+    galleryState.shown = 0;
+    galleryState.lb = -1;
+    document.getElementById('galleryTitle').textContent = (a.alias || a.nickname || a.uid) + '';
+    document.getElementById('galleryCount').textContent =
+        `${items.length} 张 · ${dedupeWorks(items)} 个作品`;
+    const body = document.getElementById('galleryBody');
+    const cols = document.getElementById('galleryCols');
+    cols.innerHTML = '';
+    body.scrollTop = 0;
+    document.getElementById('galleryLb').classList.add('hidden');
+    document.getElementById('galleryView').classList.remove('hidden');
+    document.body.classList.add('gallery-open');
+
+    appendGalleryChunk();
+    // 图片是懒加载 + 缩略图现生成，刚插进去时高度还是 0，这一刻量 scrollHeight 没意义。
+    // 交给 galleryImgLoaded()：每张图加载完都顺手检查一次「墙够不够高」，不够就再铺一批。
+    setTimeout(tryFillGallery, 400);
+
+    // 滚动加载：用 addEventListener 而不是内联 onscroll（内联属性在某些环境下不触发）
+    if (!body.dataset.scrollBound) {
+        body.addEventListener('scroll', onGalleryScroll, { passive: true });
+        body.dataset.scrollBound = '1';
+    }
+    if (!galleryState.keyBound) {
+        document.addEventListener('keydown', onGalleryKey);
+        galleryState.keyBound = true;
+    }
+    // 兜底：scroll 事件在个别环境（无头浏览器、某些触控板驱动）不一定派发，
+    // 打开期间每 700ms 自己瞄一眼「是不是快到底了」。几百张图的场景下这点开销可以忽略。
+    if (galleryState.timer) clearInterval(galleryState.timer);
+    galleryState.timer = setInterval(() => {
+        if (document.getElementById('galleryView').classList.contains('hidden')) return;
+        onGalleryScroll();
+    }, 700);
+}
+
+function dedupeWorks(items) {
+    const seen = new Set();
+    items.forEach((it) => seen.add(it.work));
+    return seen.size;
+}
+
+function closeGallery() {
+    if (galleryState.timer) { clearInterval(galleryState.timer); galleryState.timer = 0; }
+    document.getElementById('galleryView').classList.add('hidden');
+    document.getElementById('galleryLb').classList.add('hidden');
+    document.body.classList.remove('gallery-open');
+    galleryState.lb = -1;
+}
+
+function appendGalleryChunk() {
+    const body = document.getElementById('galleryCols');
+    if (!body) return;
+    const items = galleryState.items;
+    const from = galleryState.shown;
+    const to = Math.min(items.length, from + GALLERY_CHUNK);
+    if (from >= to) return;
+    let html = '';
+    for (let i = from; i < to; i++) {
+        const it = items[i];
+        const tag = it.n > 1 ? `<i class="gallery-n">${it.k + 1}/${it.n}</i>` : '';
+        html += `<figure class="gallery-item" onclick="openGalleryLb(${i})" title="${escapeHtml(it.work.date || '')} ${escapeHtml(it.work.desc || '')}">`
+            + `<img src="${mediaUrl(it.rel)}" alt="" decoding="async"`
+            + ` onload="galleryImgLoaded()" onerror="this.parentNode.classList.add('bad')">`
+            + tag
+            + `</figure>`;
+    }
+    body.insertAdjacentHTML('beforeend', html);
+    galleryState.shown = to;
+}
+
+// 图片加载完 → 墙变高了 → 再看要不要继续铺。
+// 用 200ms 合并：一屏几十张同时 load，不合并会每张都量一次 scrollHeight（强制重排）。
+let galleryFillTimer = 0;
+function galleryImgLoaded() {
+    if (galleryFillTimer) return;
+    galleryFillTimer = setTimeout(() => {
+        galleryFillTimer = 0;
+        tryFillGallery();
+    }, 200);
+}
+
+function tryFillGallery() {
+    // 关掉以后不能继续铺：隐藏状态下 scrollHeight 恒为 0，会一直判定「墙不够高」
+    // 然后无限往 DOM 里加图（关了半天再打开发现卡，就是这个）
+    const view = document.getElementById('galleryView');
+    if (!view || view.classList.contains('hidden')) return;
+    const body = document.getElementById('galleryBody');
+    if (!body) return;
+    if (galleryState.shown >= galleryState.items.length) return;
+    if (body.scrollHeight > body.clientHeight + 120) return;   // 已经能滚了就别急着铺
+    appendGalleryChunk();
+}
+
+function onGalleryScroll() {
+    const body = document.getElementById('galleryBody');
+    if (!body || body.scrollHeight <= body.clientHeight) return;
+    if (body.scrollTop + body.clientHeight >= body.scrollHeight - 1200) appendGalleryChunk();
+}
+
+function openGalleryLb(i) {
+    const it = galleryState.items[i];
+    if (!it) return;
+    galleryState.lb = i;
+    document.getElementById('galleryLbImg').src = mediaUrl(it.rel);
+    const parts = [String(i + 1) + '/' + galleryState.items.length];
+    if (it.work.date) parts.push(it.work.date);
+    if (it.n > 1) parts.push('第 ' + (it.k + 1) + ' 张');
+    document.getElementById('galleryLbCount').textContent = parts.join('　');
+    document.getElementById('galleryLb').classList.remove('hidden');
+}
+
+function closeGalleryLb(ev, force) {
+    // 点图片本身不关（只有点空白处才关）
+    if (!force && ev && ev.target && ev.target.id !== 'galleryLb') return;
+    document.getElementById('galleryLb').classList.add('hidden');
+    galleryState.lb = -1;
+}
+
+function stepGalleryLb(dir, ev) {
+    if (ev) ev.stopPropagation();
+    const n = galleryState.items.length;
+    if (!n) return;
+    let i = galleryState.lb;
+    if (i < 0) return;
+    i = (i + dir + n) % n;                       // 首尾循环，翻到头继续按不会卡住
+    openGalleryLb(i);
+    // 翻到还没渲染的那一段时，先把墙往后铺，免得关掉大图后卡在空白处
+    if (i >= galleryState.shown - 1) appendGalleryChunk();
+}
+
+function onGalleryKey(e) {
+    const view = document.getElementById('galleryView');
+    if (!view || view.classList.contains('hidden')) return;
+    const lbOpen = !document.getElementById('galleryLb').classList.contains('hidden');
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (lbOpen) closeGalleryLb(null, true); else closeGallery();
+        return;
+    }
+    if (!lbOpen) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); stepGalleryLb(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); stepGalleryLb(1); }
+}
+
+
 // 大作者几千个作品，renderRail 一次要重建几千个节点（外加重新 observe 缩略图），
 // 在删除这种「用户正盯着看」的操作里会明显卡一下。这里就地移除 + 把后面的下标前移。
 function refreshRailAfterDelete(delIdxs) {
@@ -4070,8 +4271,7 @@ function syncFilterPanelFromState() {
     set('fStar', f.starred || '');
     set('fLatest', f.latest || '');
     setMulti('fLevel', f.level);
-    set('fMatch', f.match || 'and');
-    set('fCover', f.cover || '');
+    setMulti('fCover', f.cover);
     setMulti('fStatus', f.status);
     setMulti('fFreq', f.freq);
     // 自定义日期输入框
@@ -4079,11 +4279,18 @@ function syncFilterPanelFromState() {
     document.getElementById('latestTo').value = f.latestTo || '';
     // 选「自定义」才展开日期输入区
     document.getElementById('filterRange').classList.toggle('hidden', f.latest !== 'custom');
+    renderAuthorMatch();
 }
 
 // 从面板当前勾选读出一份 filters（不关闭面板）
 function readFilterPanel() {
-    const f = { sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '', level: [], cover: '', status: [], freq: [], match: 'and' };
+    const f = {
+        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        level: [], cover: [], status: [], freq: [],
+        // 圆钮状态不是从勾选框读的，沿用当前这份（点圆钮时 already 改过了）
+        matchMap: Object.assign({ level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+            (state.filters || {}).matchMap || {}),
+    };
     const val = (name) => {
         let r = '';
         document.querySelectorAll(`input[name="${name}"]`).forEach((i) => { if (i.checked) r = i.value; });
@@ -4099,12 +4306,11 @@ function readFilterPanel() {
     f.starred = val('fStar');
     f.latest = val('fLatest');
     f.level = valMulti('fLevel');
-    f.cover = val('fCover');
+    f.cover = valMulti('fCover');
     f.status = valMulti('fStatus');
     f.freq = valMulti('fFreq');
     f.latestFrom = document.getElementById('latestFrom').value || '';
     f.latestTo = document.getElementById('latestTo').value || '';
-    f.match = val('fMatch') || 'and';
     return f;
 }
 
@@ -4123,27 +4329,122 @@ function clearLatestRange() {
     applyFilters();
 }
 
+// ===== 「全部作者」页筛选面板：每行一个 ＋/－ 圆钮（2026-11-05，和导出页同一套口径） =====
+// ＋ = 包含（勾中的是我要的）/ － = 排除（勾中的去掉）。不同 ＋ 行取并集，－ 行全部剔除。
+function renderAuthorMatch() {
+    const mm = (state.filters && state.filters.matchMap) || {};
+    document.querySelectorAll('#filterPanel .export-match').forEach((box) => {
+        const key = box.dataset.key;
+        const mode = mm[key] === 'not' ? 'not' : 'or';
+        const isNot = mode === 'not';
+        box.dataset.mode = mode;
+        box.innerHTML = `<button type="button" class="em-btn ${mode}" data-mode="${mode}"`
+            + ` title="${isNot ? '－ 排除：勾中的这些要去掉（点一下改回 ＋ 包含）'
+                              : '＋ 包含：勾中的这些是我要的（点一下改成 － 排除）'}"`
+            + ` aria-label="${isNot ? '排除' : '包含'}" onclick="toggleAuthorMatch('${key}')">`
+            + (isNot ? '－' : '＋') + '</button>';
+    });
+}
+
+function toggleAuthorMatch(key) {
+    const cur = readFilterPanel();
+    if (!cur.matchMap) cur.matchMap = {};
+    cur.matchMap[key] = (cur.matchMap[key] === 'not') ? 'or' : 'not';
+    state.filters = cur;
+    renderAuthorMatch();
+    updateFilterDot();
+    refreshAuthorSentence();
+    applyFilters();
+}
+
+// 行尾「全选」：全勾上再点一次全不选（先全选再取消几个，比一个个点快）
+const F_ROW_KEY = { fLevel: 'level', fStatus: 'status', fFreq: 'freq', fCover: 'cover' };
+
+function authorRowAll(name) {
+    if (!F_ROW_KEY[name]) return;
+    const inputs = [...document.querySelectorAll(`input[name="${name}"]`)];
+    const allOn = inputs.length > 0 && inputs.every((i) => i.checked);
+    inputs.forEach((i) => { i.checked = !allOn; });
+    state.filters = readFilterPanel();
+    updateFilterDot();
+    refreshAuthorSentence();
+    applyFilters();
+}
+
+const AUTHOR_LATEST_TEXT = {
+    '3d': '3天内', '7d': '1周内', '14d': '2周内',
+    '30d': '1个月内', '60d': '2个月内', '365d': '1年内',
+};
+
+// 一句话说清当前筛的是什么（显示在筛选面板**外面**）
+function authorSentence() {
+    const f = state.filters || {};
+    const mm = f.matchMap || {};
+    const inc = [], exc = [];
+    const add = (key, text) => { if (text) (mm[key] === 'not' ? exc : inc).push(text); };
+    const lv = (f.level || []).map((v) => (v === '__unset' ? '未设置' : v));
+    add('level', lv.length ? '等级：' + lv.join('、') : '');
+    const st = (f.status || []).map((v) => (v === '__unset' ? '未设置' : v));
+    add('status', st.length ? '状态：' + st.join('、') : '');
+    const fr = (f.freq || []).map((v) => (v === '__unset' ? '未设置' : v));
+    add('freq', fr.length ? '频率：' + fr.join('、') : '');
+    const cv = (f.cover || []).map((v) => (v === 'has' ? '有封面' : '无封面'));
+    add('cover', cv.length ? cv.join('、') : '');
+    if (f.latest === 'custom') {
+        if (f.latestFrom || f.latestTo) {
+            add('latest', '最后下载：' + (f.latestFrom || '不限') + ' 至 ' + (f.latestTo || '不限'));
+        }
+    } else if (f.latest) {
+        add('latest', '最后下载：' + (AUTHOR_LATEST_TEXT[f.latest] || f.latest));
+    }
+    // SEC_UID / 星标 是「有 / 没」二选一，不分 ＋－，直接并进包含段
+    if (f.sec_uid === 'has') inc.push('有 SEC_UID');
+    if (f.sec_uid === 'none') inc.push('没有 SEC_UID');
+    if (f.starred === 'yes') inc.push('已星标');
+    if (f.starred === 'no') inc.push('未星标');
+
+    let s = inc.length ? inc.join(' 或 ') : '全部作者';
+    if (exc.length) s += '，去掉 ' + exc.join('、');
+    return s;
+}
+
+function refreshAuthorSentence() {
+    const el = document.getElementById('authorFilterSentence');
+    if (!el) return;
+    const s = authorSentence();
+    el.innerHTML = `<b>筛选结果：</b>${escapeHtml(s)}`;
+    el.classList.toggle('hidden', s === '全部作者');
+}
+
 // 触发式应用：点选后立刻生效
 function applyFilterPanel() {
     state.filters = readFilterPanel();
     updateFilterDot();
     updateExportBtn();
+    refreshAuthorSentence();
     applyFilters();
 }
 
 // 重置：恢复全部筛选为默认值（不限），并立即应用
 function resetFilterPanel() {
-    state.filters = { sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '', level: [], cover: '', status: [], freq: [], match: 'and' };
+    state.filters = {
+        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        level: [], cover: [], status: [], freq: [],
+        matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+    };
     syncFilterPanelFromState();
     updateFilterDot();
     updateExportBtn();
+    refreshAuthorSentence();
     applyFilters();
 }
 
 // 筛选面板有生效条件时，筛选按钮上亮一个小圆点
 function updateFilterDot() {
     const f = state.filters || {};
-    const active = !!(f.sec_uid || f.starred || f.latest || (f.level && f.level.length) || f.cover || (f.status && f.status.length) || (f.freq && f.freq.length) || f.match === 'or');
+    const active = !!(f.sec_uid || f.starred || f.latest
+        || (f.level && f.level.length) || (f.cover && f.cover.length)
+        || (f.status && f.status.length) || (f.freq && f.freq.length));
     const dot = document.getElementById('filterDot');
     if (dot) dot.classList.toggle('hidden', !active);
 }
@@ -6165,11 +6466,13 @@ async function addFavoriteToBlacklist(btn) {
 
 // ===== 导出作者信息（左：选作者 / 右：DouK 参数 + 导出格式） =====
 const exportState = {
-    level: [], tag: [], status: [], freq: [],
+    level: [], tag: [], status: [], freq: [], cover: [],
     latest: '', latestFrom: '', latestTo: '',
-    // 每行右侧的 ＋ / －：or = 并集（命中任一，默认）/ and = 交集（必须同时满足）。
-    // 2026-11-02 用户要求取消「属性之间」那个全局单选，改成每个属性各带一个开关。
-    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' },
+    // 每行左侧的圆钮（2026-11-05 用户口径）：
+    //   or  = ＋ 包含：这一行勾中的值属于「我要的」
+    //   not = － 排除：这一行勾中的值属于「我要去掉的」
+    // 全是 ＋ 就是纯并集；全都不勾 = 全部作品。
+    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', cover: 'or', latest: 'or' },
     uids: null, previewed: false,
     stale: false,            // 预览之后又改了筛选 → 旧名单作废，但提示要留着
     // 2026-11-01：导出对象有两个来源 ——
@@ -6489,16 +6792,24 @@ async function openExportView() {
     refreshQueue();
     // 标签列表来自 meta
     const tags = Object.keys((state.meta && state.meta.tags) || {}).sort();
-    document.getElementById('exportLevelRadios').innerHTML =
-        ['夯', '顶级', '一般', '拉', '__unset'].map((v) =>
-            `<label><input type="checkbox" name="expLevel" value="${v}" ${exportState.level.includes(v) ? 'checked' : ''} onchange="exportState.level = collectExport('expLevel')"> ${v === '__unset' ? '未设置' : v}</label>`).join('');
-    document.getElementById('exportTagRadios').innerHTML =
-        tags.map((t) => `<label><input type="checkbox" name="expTag" value="${escapeHtml(t)}" ${exportState.tag.includes(t) ? 'checked' : ''} onchange="exportState.tag = collectExport('expTag')"> ${escapeHtml(t)}</label>`).join('');
-    document.getElementById('exportStatusRadios').innerHTML =
-        EXPORT_STATUS_LIST.map((s) => `<label><input type="checkbox" name="expStatus" value="${s}" ${exportState.status.includes(s) ? 'checked' : ''} onchange="exportState.status = collectExport('expStatus')"> ${s}</label>`).join('');
-    document.getElementById('exportFreqRadios').innerHTML =
-        ['day', '3天', '周', '月', '__unset'].map((v) =>
-            `<label><input type="checkbox" name="expFreq" value="${v}" ${exportState.freq.includes(v) ? 'checked' : ''} onchange="exportState.freq = collectExport('expFreq')"> ${v === '__unset' ? '未设置' : v}</label>`).join('');
+    // 「未设置 / 没有标签」这类兜底项统一排在该行最前（用户 2026-11-05 要求）
+    const rows = [
+        ['exportLevelRadios', 'expLevel', 'level',
+            [['__unset', '未设置'], ['夯', '夯'], ['顶级', '顶级'], ['一般', '一般'], ['拉', '拉']], exportState.level],
+        ['exportTagRadios', 'expTag', 'tag',
+            [['__notag', '没有标签']].concat(tags.map((t) => [t, t])), exportState.tag],
+        ['exportStatusRadios', 'expStatus', 'status',
+            [['__unset', '未设置']].concat(EXPORT_STATUS_LIST.map((s) => [s, s])), exportState.status],
+        ['exportFreqRadios', 'expFreq', 'freq',
+            [['__unset', '未设置'], ['day', 'day'], ['3天', '3天'], ['周', '周'], ['月', '月']], exportState.freq],
+        ['exportCoverRadios', 'expCover', 'cover',
+            [['has', '有封面'], ['none', '无封面']], exportState.cover],
+    ];
+    rows.forEach(([boxId, name, _key, items, sel]) => {
+        const box = document.getElementById(boxId);
+        if (!box) return;
+        box.innerHTML = items.map(([v, t]) => expCheckHtml(name, v, t, sel.includes(v))).join('');
+    });
     // 已下载作品最后时间：单选取一个区间（单选语义，跟「更新频率」的多选不一样）
     document.getElementById('exportLatestRadios').innerHTML =
         EXPORT_LATEST_LIST.map(([v, label]) =>
@@ -6514,13 +6825,15 @@ async function openExportView() {
             const t = e.target;
             if (!t) return;
             const n = t.name || '';
-            if (/^exp(Level|Tag|Status|Freq|Latest)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
+            if (/^exp(Level|Tag|Status|Freq|Cover|Latest)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
                 markExportDirty();
+                refreshExportSentence();
             }
         });
     }
     onExportFormatChange();
     restoreExportUI();
+    refreshExportSentence();
     loadDoukConfig();
 }
 
@@ -6569,9 +6882,10 @@ function restoreExportUI() {
 // 「清空」：把选作者的条件、预览列表、已选名单一次性清掉（只有点它才清）
 function clearExportAll() {
     exportState.level = []; exportState.tag = []; exportState.status = []; exportState.freq = [];
+    exportState.cover = [];
     exportState.latest = ''; exportState.latestFrom = ''; exportState.latestTo = '';
-    // 每行的 ＋/－ 回到默认：全 ＋（并集）
-    exportState.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' };
+    // 每行的 ＋/－ 回到默认：全 ＋（包含）
+    exportState.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', cover: 'or', latest: 'or' };
     exportState.uids = null; exportState.previewed = false; exportState.stale = false;
     exportState.source = 'filter'; exportState.secUids = [];
     exportPreviewHtml = '';
@@ -6593,6 +6907,7 @@ function clearExportAll() {
     if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
     const sub = document.getElementById('exportCountSub');
     if (sub) sub.textContent = '';
+    refreshExportSentence();
     showToast('已清空筛选条件和预览');
 }
 
@@ -6602,28 +6917,118 @@ function resetExportFilters() {
     clearExportAll();
 }
 
-// 每行左边一个圆钮：＋ = 并集（命中任一，默认），－ = 交集（必须同时满足）。点一下切换。
-// 语义（后端同款）：所有 － 行必须全满足；所有 ＋ 行至少命中一个（只有 ＋ 行时就是并集）。
+// 每行左边一个圆钮（2026-11-05 用户口径）：
+//   ＋ = 包含：勾中的值属于「我要的」（默认）
+//   － = 排除：勾中的值属于「我要去掉的」
+// 点一下切换。行内勾多个值始终是「命中任一」；不同行之间，＋ 行取并集，－ 行全部剔除。
 function renderExportMatch() {
     if (!exportState.matchMap) exportState.matchMap = {};
     document.querySelectorAll('#exportView .export-match').forEach((box) => {
         const key = box.dataset.key;
-        const mode = exportState.matchMap[key] === 'and' ? 'and' : 'or';
-        const isAnd = mode === 'and';
-        const tip = isAnd
-            ? '交集：这一项必须和其它 － 项同时满足（点一下改回并集）'
-            : '并集：这一项和其它 ＋ 项命中任一即可（点一下改成交集）';
+        const mode = exportState.matchMap[key] === 'not' ? 'not' : 'or';
+        const isNot = mode === 'not';
+        const tip = isNot
+            ? '－ 排除：勾中的这些要去掉（点一下改回 ＋ 包含）'
+            : '＋ 包含：勾中的这些是我要的（点一下改成 － 排除）';
         box.innerHTML = `<button type="button" class="em-btn ${mode}" data-mode="${mode}" title="${tip}"`
-            + ` aria-label="${isAnd ? '交集' : '并集'}" onclick="toggleExportMatch('${key}')">`
-            + (isAnd ? '－' : '＋') + '</button>';
+            + ` aria-label="${isNot ? '排除' : '包含'}" onclick="toggleExportMatch('${key}')">`
+            + (isNot ? '－' : '＋') + '</button>';
     });
 }
 
 function toggleExportMatch(key) {
     if (!exportState.matchMap) exportState.matchMap = {};
-    exportState.matchMap[key] = (exportState.matchMap[key] === 'and') ? 'or' : 'and';
+    exportState.matchMap[key] = (exportState.matchMap[key] === 'not') ? 'or' : 'not';
     renderExportMatch();
     markExportDirty();
+    refreshExportSentence();
+}
+
+// ===== 「① 选作者」的一行：勾选框 + 全选 + 一句人话描述（用户 2026-11-05 要求） =====
+const EXP_CHECK_STATE = {
+    expLevel: 'level', expTag: 'tag', expStatus: 'status', expFreq: 'freq', expCover: 'cover',
+};
+
+function expCheckHtml(name, value, label, checked) {
+    return `<label><input type="checkbox" name="${name}" value="${escapeHtml(value)}"`
+        + `${checked ? ' checked' : ''} onchange="onExportCheckChange('${name}')"> ${escapeHtml(label)}</label>`;
+}
+
+function onExportCheckChange(name) {
+    const key = EXP_CHECK_STATE[name];
+    if (!key) return;
+    exportState[key] = collectExport(name);
+    markExportDirty();
+    refreshExportSentence();
+}
+
+// 「作者等级」旁边那颗「全选」：全勾上再点一次就是全不选（方便「只排除某几个」的场景）
+function exportRowAll(name) {
+    const key = EXP_CHECK_STATE[name];
+    if (!key) return;
+    const inputs = document.querySelectorAll(`input[name="${name}"]`);
+    const allOn = [...inputs].length > 0 && [...inputs].every((i) => i.checked);
+    inputs.forEach((i) => { i.checked = !allOn; });
+    exportState[key] = collectExport(name);
+    markExportDirty();
+    refreshExportSentence();
+}
+
+const EXP_ROW_LABEL = {
+    level: '等级', tag: '标签', status: '账号状态', freq: '更新频率',
+    cover: '封面', latest: '最后下载时间',
+};
+
+function expValText(key, v) {
+    if (v === '__unset') return '未设置';
+    if (v === '__notag') return '没有标签';
+    if (key === 'cover') return v === 'has' ? '有封面' : '无封面';
+    return v;
+}
+
+// 一行的描述片段：+ 行 → 「等级：夯、顶级」；- 行 → 「纹身标签」
+function expRowText(key) {
+    if (key === 'latest') {
+        if (!exportState.latest) return '';
+        if (exportState.latest === 'custom') {
+            const f = (document.getElementById('exportLatestFrom') || {}).value || '';
+            const t = (document.getElementById('exportLatestTo') || {}).value || '';
+            if (!f && !t) return '';
+            return '最后下载：' + (f || '不限') + ' 至 ' + (t || '不限');
+        }
+        const hit = EXPORT_LATEST_LIST.find(([v]) => v === exportState.latest);
+        return '最后下载：' + (hit ? hit[1] : exportState.latest);
+    }
+    const arr = exportState[key] || [];
+    if (!arr.length) return '';
+    const vals = arr.map((v) => expValText(key, v)).join('、');
+    if (key === 'level') return '等级：' + vals;
+    if (key === 'status') return '状态：' + vals;
+    if (key === 'tag') return vals + '标签';
+    if (key === 'freq') return '频率：' + vals;
+    return vals;
+}
+
+// 拼成一句给用户看的话：「全部作品，去掉 纹身标签」/「等级是 夯，去掉 注销」
+function exportSentence() {
+    const inc = [], exc = [];
+    ['level', 'tag', 'status', 'freq', 'cover', 'latest'].forEach((key) => {
+        const t = expRowText(key);
+        if (!t) return;
+        const isNot = (exportState.matchMap || {})[key] === 'not';
+        (isNot ? exc : inc).push(t);
+    });
+    let s = inc.length ? inc.join(' 或 ') : '全部作品';
+    if (exc.length) s += '，去掉 ' + exc.join('、');
+    return s;
+}
+
+function refreshExportSentence() {
+    const el = document.getElementById('exportSentence');
+    if (!el) return;
+    const s = exportSentence();
+    el.innerHTML = `<b>筛选结果：</b>${escapeHtml(s)}`;
+    el.classList.toggle('empty', s === '全部作品');
 }
 
 // 收集某一组勾选框当前选中的值（导出界面的多选用）
@@ -6642,6 +7047,8 @@ function exportIsoDaysAgo(days) {
 function onExportLatestChange(val) {
     exportState.latest = val;
     document.getElementById('exportLatestRange').classList.toggle('hidden', val !== 'custom');
+    markExportDirty();
+    refreshExportSentence();
 }
 
 // 「最新日期往前提 N 天」：写进 JSON 的 earliest = 每位作者自己的已下载最新作品日期 − N 天。
@@ -6665,9 +7072,10 @@ function exportFilterParams() {
     if (exportState.tag.length) params.set('tag', exportState.tag.join(','));
     if (exportState.status.length) params.set('status', exportState.status.join(','));
     if (exportState.freq.length) params.set('freq', exportState.freq.join(','));
-    // 每个属性各自的组合方式：match_level=and 之类；没传 = 并集（默认）
+    if (exportState.cover && exportState.cover.length) params.set('cover', exportState.cover.join(','));
+    // 每行自己的开关：match_x=not 表示这一行是「排除」；不传 = 包含（默认）
     Object.keys(exportState.matchMap || {}).forEach((k) => {
-        if (exportState.matchMap[k] === 'and') params.set('match_' + k, 'and');
+        if (exportState.matchMap[k] === 'not') params.set('match_' + k, 'not');
     });
     if (exportState.latest === 'custom') {
         const f = document.getElementById('exportLatestFrom').value;
@@ -7217,12 +7625,14 @@ function renderNdFilter() {
         escapeHtml(v) + '" ' + (arr.indexOf(v) >= 0 ? 'checked' : '') +
         ' onchange="ndFilterChange()"> ' + escapeHtml(label) + '</label>';
 
-    box('ndLevelOpts', ['夯', '顶级', '一般', '拉', '__unset']
+    // 「未设置 / 没有标签」这类兜底项统一排在该行最前（2026-11-05 用户要求）
+    box('ndLevelOpts', ['__unset', '夯', '顶级', '一般', '拉']
         .map((v) => ck('ndLevel', v, ndFilter.level, v === '__unset' ? '未设置' : v)).join(''));
-    box('ndTagOpts', tags.map((t) => ck('ndTag', t, ndFilter.tag, t)).join('')
-        || '<span class="tag-hint">还没有标签</span>');
-    box('ndStatusOpts', EXPORT_STATUS_LIST.map((s) => ck('ndStatus', s, ndFilter.status, s)).join(''));
-    box('ndFreqOpts', ['day', '3天', '周', '月', '__unset']
+    box('ndTagOpts', [['__notag', '没有标签']].concat(tags.map((t) => [t, t]))
+        .map(([v, t]) => ck('ndTag', v, ndFilter.tag, t)).join(''));
+    box('ndStatusOpts', [['__unset', '未设置']].concat(EXPORT_STATUS_LIST.map((s) => [s, s]))
+        .map(([v, t]) => ck('ndStatus', v, ndFilter.status, t)).join(''));
+    box('ndFreqOpts', ['__unset', 'day', '3天', '周', '月']
         .map((v) => ck('ndFreq', v, ndFilter.freq, v === '__unset' ? '未设置' : v)).join(''));
     box('ndLatestOpts', EXPORT_LATEST_LIST.filter(([v]) => v !== 'custom')
         .map(([v, label]) => '<label><input type="radio" name="ndLatest" value="' + v + '" ' +
@@ -7231,12 +7641,12 @@ function renderNdFilter() {
 
     document.querySelectorAll('#ndFilterPanel .ndf-match').forEach((el) => {
         const key = el.dataset.key;
-        const mode = ndFilter.matchMap[key] === 'and' ? 'and' : 'or';
-        const tip = mode === 'and'
-            ? '交集：这一项必须和其它 － 项同时满足（点一下改回并集）'
-            : '并集：这一项和其它 ＋ 项命中任一即可（点一下改成交集）';
+        const mode = ndFilter.matchMap[key] === 'not' ? 'not' : 'or';
+        const tip = mode === 'not'
+            ? '－ 排除：勾中的这些要去掉（点一下改回 ＋ 包含）'
+            : '＋ 包含：勾中的这些是我要的（点一下改成 － 排除）';
         el.innerHTML = '<button type="button" class="em-btn ' + mode + '" title="' + tip + '"' +
-            ' onclick="ndToggleMatch(\'' + key + '\')">' + (mode === 'and' ? '－' : '＋') + '</button>';
+            ' onclick="ndToggleMatch(\'' + key + '\')">' + (mode === 'not' ? '－' : '＋') + '</button>';
     });
     const sub = document.getElementById('ndfSub');
     if (sub) sub.textContent = ndFilterActive() ? '筛完再列作品' : '不筛 = 全部作者';
@@ -7258,7 +7668,7 @@ function ndFilterChange() {
 }
 
 function ndToggleMatch(key) {
-    ndFilter.matchMap[key] = ndFilter.matchMap[key] === 'and' ? 'or' : 'and';
+    ndFilter.matchMap[key] = ndFilter.matchMap[key] === 'not' ? 'or' : 'not';
     renderNdFilter();
     if (ndFilterActive()) refreshNewDownloads(true);
 }
@@ -7279,7 +7689,7 @@ function ndFilterParams() {
     if (ndFilter.status.length) p.set('status', ndFilter.status.join(','));
     if (ndFilter.freq.length) p.set('freq', ndFilter.freq.join(','));
     Object.keys(ndFilter.matchMap || {}).forEach((k) => {
-        if (ndFilter.matchMap[k] === 'and') p.set('match_' + k, 'and');
+        if (ndFilter.matchMap[k] === 'not') p.set('match_' + k, 'not');
     });
     // 「最后下载」只留预设档：这一页本来就按下载时间切范围，再给自选日期纯属添乱
     if (ndFilter.latest && ndFilter.latest !== 'custom') {
@@ -7641,8 +8051,9 @@ function ndCard(it, nick, gi, ii) {
     return `<div class="nd-card" data-gi="${gi}" data-ii="${ii}" onclick="ndOpenCard(this)" title="${escapeHtml(tip)}">
         <div class="nd-thumb">
             <img data-src="${src}" alt="" onerror="thumbError(this)">
-            ${it.is_video ? '' : '<span class="nd-kind">图文</span>'}
-            ${n > 1 ? `<span class="nd-multi">${n}</span>` : ''}
+            ${it.is_video
+                ? (n > 1 ? `<span class="nd-multi">${n}</span>` : '')
+                : `<span class="nd-multi">${n}</span>`}
         </div>
         <div class="nd-time"><i class="nd-time-k">发布</i>${escapeHtml(it.date || '日期未知')}</div>
     </div>`;

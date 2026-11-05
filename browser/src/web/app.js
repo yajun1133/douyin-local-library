@@ -134,6 +134,13 @@ const state = {
         try { return localStorage.getItem('authorLayout') === 'rows' ? 'rows' : 'grid'; }
         catch (e) { return 'grid'; }
     })(),
+    // 详情页视频放完之后怎么办：stop=放完就停（默认）/ next=继续下一个 / repeat=单曲重复 / shuffle=随机
+    playMode: (function () {
+        try {
+            const v = localStorage.getItem('playMode') || '';
+            return (v === 'next' || v === 'repeat' || v === 'shuffle') ? v : 'stop';
+        } catch (e) { return 'stop'; }
+    })(),
     // 不能设置更新频率的账号状态（来自设置：注销/禁言/封号/卖号等）
     updateFreqDisabledStatus: [],
 };
@@ -2113,6 +2120,7 @@ function playWork(idx) {
     detailState.imgIndex = 0;
     detailState.vidIndex = 0;                          // 换作品永远从第 1 段开始
     detailState.token = (detailState.token || 0) + 1;   // 防止转码回来时覆盖了后点的作品
+    bindPlayerEnded();                                  // 幂等：保证「放完怎么办」的委托已挂上
     markRailActive();
     // 帖子里有图 → 按序号逐张看（静图是图、动图直接当视频播）；纯视频作品才走编码检测/转码那条路
     const items = mediaItemsOf(w);
@@ -2129,15 +2137,152 @@ function playerNavHtml() {
         <button class="btn btn-nav" title="下一个" ${pos < 0 || pos >= detailState.list.length - 1 ? 'disabled' : ''} onclick="stepWork(1)">›</button>`;
 }
 
-function stageFootHtml(w, rel, extra) {
+function stageFootHtml(w, rel, extra, showMode) {
     return `
         <div class="player-foot">
             ${playerNavHtml()}
             <div class="player-title" title="${escapeHtml(w.desc || '')}">${w.date || ''} · ${escapeHtml(w.desc || '')}</div>
             ${extra || ''}
+            ${showMode ? playModeBtnHtml() : ''}
             <button class="btn" data-rel="${escapeHtml(rel)}" onclick="setHomeCover(this.dataset.rel)">🖼 设为封面</button>
         </div>
         <div class="player-hint" id="playerHint"></div>`;
+}
+
+// ---------- 视频放完之后的行为（2026-11-05 用户要求） ----------
+// 四种模式，默认「放完就停」= 保持原来的行为不变：
+//   stop    放完就停（默认）
+//   next    继续播放下一个（列表顺序，走到最后一个就停）
+//   repeat  重复播放（当前这段单曲循环）
+//   shuffle 随机播放（随机跳到另一个有视频的作品）
+// 选择存在 localStorage 的 playMode，刷新不丢。
+const PLAY_MODES = [
+    { k: 'stop',    icon: '⏹', short: '放完停',   label: '放完就停',
+      hint: '播完停在最后一帧，什么都不做（默认）' },
+    { k: 'next',    icon: '⏭', short: '下一个',   label: '继续播放下一个',
+      hint: '播完自动看下一个作品；已经是最后一个就停住' },
+    { k: 'repeat',  icon: '🔁', short: '重复',     label: '重复播放',
+      hint: '当前这段播完从头再放（单曲循环）' },
+    { k: 'shuffle', icon: '🔀', short: '随机',     label: '随机播放',
+      hint: '播完随机跳到另一个有视频的作品' },
+];
+
+function playModeDef(k) {
+    return PLAY_MODES.find((m) => m.k === k) || PLAY_MODES[0];
+}
+
+function playModeBtnHtml() {
+    const m = playModeDef(state.playMode);
+    const on = state.playMode === 'stop' ? '' : ' on';
+    return `<button class="btn play-mode-btn${on}" id="playModeBtn" onclick="togglePlayModeMenu(event)"
+        title="视频放完之后：${m.label}（${m.hint}）｜点这里切换">${m.icon} ${m.short}</button>`;
+}
+
+function refreshPlayModeBtn() {
+    const b = document.getElementById('playModeBtn');
+    if (!b) return;
+    const m = playModeDef(state.playMode);
+    b.innerHTML = `${m.icon} ${m.short}`;
+    b.classList.toggle('on', state.playMode !== 'stop');
+    b.title = `视频放完之后：${m.label}（${m.hint}）｜点这里切换`;
+}
+
+function closePlayModeMenu() {
+    const el = document.getElementById('playModeMenu');
+    if (el) el.remove();
+    document.removeEventListener('keydown', onPlayModeEsc);
+}
+
+function onPlayModeEsc(e) {
+    if (e.key === 'Escape') closePlayModeMenu();
+}
+
+// 菜单挂在 body 上、fixed 定位：播放器底部那一行是 flex-wrap，overflow 会把它裁掉
+function togglePlayModeMenu(ev) {
+    if (ev) ev.stopPropagation();
+    if (document.getElementById('playModeMenu')) { closePlayModeMenu(); return; }
+    const btn = document.getElementById('playModeBtn');
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const el = document.createElement('div');
+    el.className = 'pm-menu';
+    el.id = 'playModeMenu';
+    el.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 232)) + 'px';
+    el.innerHTML = PLAY_MODES.map((m) => `
+        <div class="pm-item${m.k === state.playMode ? ' on' : ''}" data-k="${m.k}" onclick="setPlayMode('${m.k}', event)">
+            <span class="pm-ico">${m.icon}</span>
+            <span class="pm-txt"><b>${m.label}</b><i>${m.hint}</i></span>
+        </div>`).join('');
+    document.body.appendChild(el);
+    // 按钮就贴在窗口底部，往下弹会被切掉 —— 先量高度，放不下就翻到按钮上方
+    const mh = el.offsetHeight;
+    let top = r.bottom + 4;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+    el.style.top = top + 'px';
+    // 点别处关掉（延到下一轮再绑，否则这次点击自己就把它关了）
+    setTimeout(() => {
+        document.addEventListener('click', closePlayModeMenu, { once: true });
+        document.addEventListener('keydown', onPlayModeEsc);
+    }, 0);
+}
+
+function setPlayMode(k, ev) {
+    if (ev) ev.stopPropagation();
+    if (!PLAY_MODES.some((m) => m.k === k)) return;
+    state.playMode = k;
+    try { localStorage.setItem('playMode', k); } catch (e) { /* 隐私模式忽略 */ }
+    closePlayModeMenu();
+    refreshPlayModeBtn();
+    showToast('视频放完：' + playModeDef(k).label);
+}
+
+// <video> 的 ended 不冒泡，所以在 playerStage 上挂捕获阶段的委托，绑一次管所有新渲染出来的播放器
+function bindPlayerEnded() {
+    const stage = document.getElementById('playerStage');
+    if (!stage || stage.dataset.endedBound === '1') return;
+    stage.dataset.endedBound = '1';
+    stage.addEventListener('ended', onPlayerVideoEnded, true);
+}
+
+function workHasVideo(w) {
+    return !!(w && videoFilesOf(w).length);
+}
+
+function onPlayerVideoEnded(ev) {
+    const v = ev.target;
+    if (!v || v.tagName !== 'VIDEO') return;
+    if (v.loop) return;                    // 图文里那张动图自己循环，不参与这套规则
+    const mode = state.playMode || 'stop';
+    if (mode === 'stop') return;           // 默认：什么都不做
+    const a = detailState.author;
+    const w = a && (a.works || [])[detailState.index];
+    if (!w) return;
+    if (mode === 'repeat') {
+        try { v.currentTime = 0; v.play().catch(() => {}); } catch (e) { /* 忽略 */ }
+        return;
+    }
+    // 一个作品下成 _1.mp4 + _2.mp4 时，先把段看完，最后一段放完再决定要不要换作品
+    const segs = videoFilesOf(w).length;
+    if (segs > 1 && (detailState.vidIndex || 0) < segs - 1) { stepVideo(1); return; }
+    if (mode === 'next') { stepWork(1); return; }
+    if (mode === 'shuffle') playRandomWork();
+}
+
+function playRandomWork() {
+    const a = detailState.author;
+    const list = detailState.list || [];
+    if (!a || list.length < 2) return;
+    const works = a.works || [];
+    // 优先只在「确实有视频」的作品里随机，否则连续撞上图文会像卡住了
+    let pool = list.filter((i) => workHasVideo(works[i]));
+    if (pool.length < 2) pool = list;
+    const pool2 = pool.filter((i) => i !== detailState.index);
+    const from = pool2.length ? pool2 : pool;
+    const pick = from[Math.floor(Math.random() * from.length)];
+    if (pick == null || pick === detailState.index) return;
+    playWork(pick);
+    const cur = document.querySelector('#workRail .wall-card.active');
+    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
 }
 
 // 填满模式：视频/图片裁切铺满整块媒体区（会切掉超出部分），适应模式：等比缩放留黑边。
@@ -2247,7 +2392,7 @@ async function renderVideoStage(w, token) {
     const stage = document.getElementById('playerStage');
     stage.innerHTML = `
         <div class="player-box"><div class="player-empty">正在检测视频编码…</div></div>
-        ${stageFootHtml(w, rel, segNav)}`;
+        ${stageFootHtml(w, rel, segNav, true)}`;
 
     const info = await probeVideo(rel);
     if (token !== detailState.token) return;   // 用户已点了别的作品
@@ -2290,7 +2435,7 @@ async function renderVideoStage(w, token) {
                    poster="${posterUrl(w, rel)}"
                    src="${src}" onerror="onPlayerError()"></video>
         </div>
-        ${stageFootHtml(w, rel, (info.codec ? `<span class="tag-hint">${escapeHtml(info.codec.toUpperCase())}</span>` : '') + segNav)}`;
+        ${stageFootHtml(w, rel, (info.codec ? `<span class="tag-hint">${escapeHtml(info.codec.toUpperCase())}</span>` : '') + segNav, true)}`;
     applyFillMode();
 
     if (playedNative) {
@@ -2331,7 +2476,7 @@ async function retryWithTranscode(w, rel, token, codec) {
                 <video id="playerVideo" controls autoplay playsinline
                        src="${t.url}" onerror="onPlayerError()"></video>
             </div>
-            ${stageFootHtml(w, rel, codecTag + segNav)}`;
+            ${stageFootHtml(w, rel, codecTag + segNav, true)}`;
         applyFillMode();
     } else {
         stage.innerHTML = `

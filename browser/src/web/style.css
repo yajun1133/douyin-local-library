@@ -461,6 +461,26 @@ img.author-cover { display: block; width: 100%; aspect-ratio: 3/4; object-fit: c
 .player-hint { font-size: 12px; color: #b45309; padding: 0 12px 8px; flex-shrink: 0; }
 .player-hint:empty { display: none; }
 
+/* ===== 视频放完之后的行为切换（放完就停 / 继续下一个 / 重复 / 随机） ===== */
+/* 按钮塞在播放器底部那一行里，跟「设为封面」并排；菜单挂 body 上 fixed 定位 */
+.play-mode-btn { flex-shrink: 0; }
+.play-mode-btn.on { border-color: var(--primary); color: var(--primary); }
+.pm-menu {
+    position: fixed; z-index: 2000; min-width: 220px;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(16, 24, 40, .16);
+    padding: 4px; font-size: 12.5px;
+}
+.pm-item { display: flex; gap: 8px; align-items: flex-start; padding: 7px 9px; border-radius: 8px; cursor: pointer; }
+.pm-item:hover { background: rgba(16, 24, 40, .05); }
+.pm-item.on { background: #fff0f3; }
+.pm-item.on b { color: var(--primary); }
+.pm-ico { width: 16px; text-align: center; line-height: 17px; flex: none; }
+.pm-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pm-txt b { font-weight: 600; }
+.pm-txt i { font-style: normal; color: var(--text-muted); font-size: 11px; line-height: 1.35; }
+
 /* 填满模式：裁切铺满整块媒体区（画面会超出被切掉），适应模式：等比缩放留黑边 */
 .player-stage.fill-mode .player-box video,
 .player-stage.fill-mode .player-box img {
@@ -4157,7 +4177,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261031c106';
+    content: 'v20261105c126';
     position: fixed;
     right: 6px;
     bottom: 3px;

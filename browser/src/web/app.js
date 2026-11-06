@@ -1918,12 +1918,24 @@ function appendGalleryChunk() {
         const tag = it.n > 1 ? `<i class="gallery-n">${it.k + 1}/${it.n}</i>` : '';
         html += `<figure class="gallery-item" onclick="openGalleryLb(${i})" title="${escapeHtml(it.work.date || '')} ${escapeHtml(it.work.desc || '')}">`
             + `<img src="${mediaUrl(it.rel)}" alt="" decoding="async"`
-            + ` onload="galleryImgLoaded()" onerror="this.parentNode.classList.add('bad')">`
+            + ` onload="galleryImgFit(this)" onerror="this.parentNode.classList.add('bad')">`
             + tag
             + `</figure>`;
     }
     body.insertAdjacentHTML('beforeend', html);
     galleryState.shown = to;
+}
+
+// 图片加载完 → 先把 3:4 的占位比例换成照片自己的真实比例，墙再变高。
+// 不换会怎样：aspect-ratio 的优先级高于图片固有比例，height:auto 从 3:4 算出来，
+// 于是 9:16 的竖图被压扁、方图被拉长（用户反馈的「图片被压缩」就是这个）。
+function galleryImgFit(img) {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (w > 0 && h > 0) {
+        const want = w + ' / ' + h;
+        if (img.style.aspectRatio !== want) img.style.aspectRatio = want;
+    }
+    galleryImgLoaded();
 }
 
 // 图片加载完 → 墙变高了 → 再看要不要继续铺。

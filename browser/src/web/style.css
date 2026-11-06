@@ -4202,7 +4202,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261105c138';
+    content: 'v20261105c139';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -6398,8 +6398,16 @@ body.gallery-open { overflow: hidden; }
 }
 /* aspect-ratio 只是**占位**：图还没到之前撑出 3:4 的高度，否则整面墙高度是 0，
    浏览器的 loading=lazy 会认为「都在视口里但没尺寸」而不去加载，滚动条也不出现，
-   于是永远加载不出来（第一版就是这么翻车的）。图到了以后按真实比例显示。 */
-.gallery-item img { width: 100%; height: auto; aspect-ratio: 3 / 4; display: block; }
+   于是永远加载不出来（第一版就是这么翻车的）。
+   ⚠️ 但它**不会**自动让位给真实比例：aspect-ratio 会盖过图片的固有比例，
+   height:auto 从它算出高度，而 object-fit 默认 fill → 图片被拉伸变形
+   （9:16 的竖图被压扁成 3:4，方图被拉长）。所以 onload 里必须用
+   galleryImgFit() 把它换成 naturalWidth/naturalHeight 的真实比例。
+   object-fit: contain 是兜底：万一比例没写上，宁可留黑边也绝不拉伸。 */
+.gallery-item img {
+    width: 100%; height: auto; aspect-ratio: 3 / 4;
+    object-fit: contain; background: #151518; display: block;
+}
 .gallery-item:hover img { filter: brightness(1.07); }
 .gallery-item.bad { display: none; }
 .gallery-n {

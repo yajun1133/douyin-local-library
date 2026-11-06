@@ -63,6 +63,23 @@ th { font-size: 12px; color: var(--muted); font-weight: 500; background: #fafbfc
 tr:last-child td { border-bottom: none; }
 tr.disabled td { opacity: .45; }
 
+/* 名单整行可点：点哪儿都能进这位作者的详情页（作品库那边）。
+   「不在库」的行没有主页可跳，hover 不高亮、光标不留手，点了给一句说明。 */
+tr.row-link { cursor: pointer; }
+tr.row-link:hover td { background: #fafbfd; }
+tr.row-link:hover td:first-child b { color: var(--primary); }
+tr.row-link .nm {
+    color: inherit; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 5px;
+}
+tr.row-link .nm b { transition: color .15s; }
+tr.row-link .nm .go { font-style: normal; font-size: 11px; color: var(--primary); opacity: 0; transition: opacity .15s; }
+tr.row-link:hover .nm .go { opacity: 1; }
+tr.row-link:focus-within td { background: #fafbfd; }
+tr.row-link .nm:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+tr.no-lib { cursor: default; }
+tr.no-lib:hover td { background: none; }
+tr.no-lib:hover td:first-child b { color: inherit; }
 .tag { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 11px; }
 .tag.hot { background: rgba(254,44,85,.1); color: var(--primary); }
 .tag.warm { background: rgba(250,173,20,.14); color: #b45309; }
@@ -310,7 +327,8 @@ function render() {
     });
     var tb = document.getElementById('tbody');
     document.getElementById('tblHint').textContent =
-        '共 ' + (d.authors || []).length + ' 位' + (rows.length !== (d.authors || []).length ? ('，筛出 ' + rows.length + ' 位') : '');
+        '共 ' + (d.authors || []).length + ' 位' + (rows.length !== (d.authors || []).length ? ('，筛出 ' + rows.length + ' 位') : '') +
+        ' · 点一行进作者主页';
 
     if (!rows.length) {
         tb.innerHTML = '<tr><td colspan="7" class="empty">' +
@@ -327,9 +345,21 @@ function render() {
             var st = '<span class="tag ' + t[2] + '" title="' + t[1] + '">' + t[0] + '档</span>';
             if (!r.enabled) st = '<span class="tag off">已停用</span>';
             var extra = r.fails ? ' <span class="tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
-            var dis = r.enabled ? '' : ' class="disabled"';
-            return '<tr' + dis + '>' +
-                '<td><b>' + esc(r.nickname) + '</b>' + (r.in_lib ? '' : ' <span class="tag off">不在库</span>') + '</td>' +
+            // 整行可点：点哪儿都跳这位作者的主页（作品库详情页 /#author=<uid>）。
+            // 名字那一格额外包成 <a>，这样中键/右键“在新标签打开”也能用；
+            // 「不在库」的作者没有主页，包成 span，点了只给提示不跳转。
+            var cls = 'row-link' + (r.enabled ? '' : ' disabled') + (r.in_lib ? '' : ' no-lib');
+            var href = '/#author=' + encodeURIComponent(r.uid);
+            var nm = r.in_lib
+                ? '<a class="nm" href="' + href + '" title="打开「' + esc(r.nickname) + '」的主页"'
+                    + ' onclick="event.stopPropagation()">'
+                : '<span class="nm" title="还不在本地作品库里，暂时没有主页可跳">';
+            var nmEnd = r.in_lib ? '</a>' : '</span>';
+            // 箭头只给能跳的行，别让「不在库」那颗也吊着个 ↗
+            var arrow = r.in_lib ? '<i class="go">↗</i>' : '';
+            return '<tr class="' + cls + '" data-uid="' + esc(r.uid) + '">' +
+                '<td>' + nm + '<b>' + esc(r.nickname) + '</b>' + arrow + nmEnd +
+                    (r.in_lib ? '' : ' <span class="tag off">不在库</span>') + '</td>' +
                 '<td>' + r.works + '</td>' +
                 '<td>' + (r.downloads || '—') + '</td>' +
                 '<td>' + esc(r.last_scan || '—') + '</td>' +
@@ -495,15 +525,31 @@ document.getElementById('accBody').addEventListener('click', function (e) {
 
 document.getElementById('tbody').addEventListener('click', function (e) {
     var btn = e.target.closest('button[data-act]');
-    if (!btn) return;
-    var uid = btn.getAttribute('data-uid');
-    var act = btn.getAttribute('data-act');
-    if (act === 'toggle') post({ action: 'toggle', uid: uid }, '已切换');
-    if (act === 'remove') {
-        var row = (state.data.authors || []).filter(function (r) { return r.uid === uid; })[0];
-        if (!confirm('把「' + (row ? row.nickname : uid) + '」移出追更名单？\n（已经下载的文件不受影响）')) return;
-        post({ action: 'remove', uids: [uid] }, '已移出');
+    if (btn) {
+        var uid = btn.getAttribute('data-uid');
+        var act = btn.getAttribute('data-act');
+        if (act === 'toggle') post({ action: 'toggle', uid: uid }, '已切换');
+        if (act === 'remove') {
+            var row = (state.data.authors || []).filter(function (r) { return r.uid === uid; })[0];
+            if (!confirm('把「' + (row ? row.nickname : uid) + '」移出追更名单？\n（已经下载的文件不受影响）')) return;
+            post({ action: 'remove', uids: [uid] }, '已移出');
+        }
+        return;
     }
+    // 名字那根 <a>：交给浏览器默认行为，这样 Ctrl+点击、中键「新标签打开」都正常
+    if (e.target.closest('a.nm')) return;
+
+    var tr = e.target.closest('tr[data-uid]');
+    if (!tr) return;
+    var tuid = tr.getAttribute('data-uid');
+    var who = (state.data.authors || []).filter(function (r) { return r.uid === tuid; })[0];
+    if (who && who.in_lib === false) {
+        toast('「' + who.nickname + '」还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来', true);
+        return;
+    }
+    var url = '/#author=' + encodeURIComponent(tuid);
+    if (e.metaKey || e.ctrlKey || e.shiftKey) window.open(url, '_blank');
+    else location.href = url;
 });
 
 document.querySelectorAll('.tabs button').forEach(function (b) {

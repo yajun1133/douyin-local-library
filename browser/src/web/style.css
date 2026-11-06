@@ -4202,7 +4202,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261105c139';
+    content: 'v20261105c140';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -6359,7 +6359,7 @@ body.gallery-open { overflow: hidden; }
 .gallery-view {
     position: fixed; inset: 0; z-index: 900;
     display: flex; flex-direction: column;
-    background: #0a0a0c;
+    background: #000;
 }
 .gallery-view.hidden { display: none; }
 
@@ -6421,7 +6421,9 @@ body.gallery-open { overflow: hidden; }
 .gallery-lb {
     position: fixed; inset: 0; z-index: 960;
     display: flex; align-items: center; justify-content: center;
-    background: rgba(0, 0, 0, .96);
+    /* 必须纯黑不透：原来 .96 会漏 4% 的底，墙上照片亮的时候整块背景泛起灰雾，
+       看着像图片被蒙了一层遮罩（2026-11-06 用户反馈「有时候点击图片有遮罩」）。 */
+    background: #000;
 }
 .gallery-lb.hidden { display: none; }
 .gallery-lb img {

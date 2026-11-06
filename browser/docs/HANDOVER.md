@@ -43,6 +43,7 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 - 作者数 / 星标 / 标签云 都在这个接口；口径说明见 `PROJECT.md` 第一章
 - 2026-11-04 核对：作者 **1961** · 星标 **119** · 前端 **c124** · `node --check`（node v26.13.0，已在 PATH）与 `py_compile` 均通过
 - 2026-11-04 的改动集中在：新下载筛选（c124）、G 盘老作品并入（15,298 个文件）、封面指针修复（202 位）、身份字段补齐。细节见 `PROJECT.md` 附录 A 前几条
+- **2026-11-06 新增「📡 自动追更」**（前端 c143）：不经过 DouK，按作者轮询抖音、发现新作品自己下。**入口只有两处，改的是同一份 `data/watch.json`** —— ① 作者详情页信息卡下面那条横栏（开关 + 间隔 chips）；② 顶栏「📡 追更」面板（`/watch`），名单**每一行都能点，点了跳 `/#author=<uid>` 的详情页**（`in_lib=false` 的作者只提示不跳）。核心在 `src/watch_core.py` + `src/web/watch.html`，接口 `/api/watch`、`/api/watch/status`。改了前端记得 `bump_version`；`watch.html` 是内联脚本，html 走 `no-cache`，不用管版本号。详见 `PROJECT.md` 七.6 和 `CONFIG.md` 3.5
 - **没有阻塞性缺陷**，剩下的都是体验优化
 - 缺 sec_uid、转码 job 丢失、死代码等已知项见 `PROJECT.md` 第五章末尾
 

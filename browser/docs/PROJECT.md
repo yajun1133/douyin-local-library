@@ -14,7 +14,7 @@
 | 四 | 数据模型相关代码位置 + 同步清单 | 加字段 |
 | 五 | 改动前必读清单 + 已知问题 | **动手前** |
 | 六 | 关键设计决策（为什么这么做） | 想改设计时 |
-| 七 | 界面现状：主列表 / 详情页 / 新下载 / 导出 / 标注台 | 改界面 |
+| 七 | 界面现状：主列表 / 详情页 / 新下载 / 导出 / 标注台 / 追更 | 改界面 |
 | 八 | 踩坑要点（一条一句，不展开过程） | 出 bug 时先扫一眼 |
 | 九 | 本地验证：语法 / 接口 / 截图量尺寸 | 改完自测 |
 | 附录 | 最近改动 + 归档位置 | 想追历史 |
@@ -35,8 +35,11 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── paths.py       # **唯一**的路径定义（代码/data/cache/backup/export 都从这里取）
 │   ├── profile_helper.py         # 常驻子进程（3.12）：登录态查资料，一行一 JSON
 │   ├── query_uid_by_secuid.py    # 子进程助手（3.12）：批量 sec_uid→uid
+│   ├── watch_core.py   # 📡 追更核心：按作者轮询 → 判重 → 下载 → 落状态（无 UI、可单独 import）
+│   ├── watch.py        # 追更 CLI / 常驻进程（--scan / --daemon / --status）
 │   └── web/           # 前端（服务端按白名单托管）
 │       ├── index.html / app.js / style.css   # 主界面三件套
+│       ├── watch.html   # 📡 追更面板（/watch）：启动·停止、名单、账号池、节奏设置、日志
 │       └── annotate.html / annotate.js       # 标注台（/annotate.html，选元素写意见给我）
 ├── tools/              # 日常会用到的独立脚本
 │   ├── fill_secuid_from_export.py  # **扫完补 sec_uid**：读 export/*.csv 按 UID 匹配，纯本地不联网
@@ -52,6 +55,8 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── user_data.json      # 账号标注：标签/星标/大小号/状态/等级/别名/历史/封面
 │   ├── data.json           # 扫描产物（≈72MB，作者 + 作品索引，可随时重生成）
 │   ├── count_cache.json    # 「抖音当前作品数」缓存
+│   ├── watch.json          # 📡 追更**名单 + 节奏设置**（唯一真源：详情页开关和追更面板读写同一份）
+│   ├── watch_state.json    # 📡 追更**运行状态**（每位作者的 seen/last_ts/next_check/fails/downloads，可重生成）
 │   ├── secuid_check.json   # sec_uid 联网核查结果缓存（重跑可跳过已确认的）
 │   ├── uid_secuid_对照表.csv
 │   ├── 黑名单_不下载.csv
@@ -225,6 +230,8 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | `/api/work_count` | GET | `uid` | 读抖音当前公开作品数 → `{ok, count, source:public\|login, at}`（单次 1 个请求） |
 | `/api/count_refresh` | POST | `{action:start\|stop, limit}` | 后台批量刷作品数（`count_worker`，1.6s 间隔、≤400/轮、连续 20 失败熔断） |
 | `/api/count_status` | GET | — | `{running, done, total, succeeded, failed, error, cached}` |
+| `/api/watch` | POST | `{action}`：`mark`（**作者详情页那条横栏用的**，带 `uid`/`enabled`/`sec_uid`/`nickname`/`interval`，`interval` 不传=不改、0=自动分级）/ `add`（`token` 或 `tokens[]`，宁可粘贴主页链接/昵称，需能查到 SEC_UID）/ `add_batch`（`items[]`，批量加完直接开跑，**前端已无调用方，留给以后**）/ `remove`(`uids[]`) / `toggle`(`uid`,`enabled?`) / `settings`(`settings{}`,`auto_start?`) / `reset`(`uid`=重设基线) / `start` / `stop` / `account_add`(`label`,`cookie`) / `account_remove`(`id`) / `account_toggle`(`id`,`enabled`) / `account_sync`（从下载器 cookie 导入） | 各自 `{ok, ...}`；名单写操作统一 `{ok, watching, added?, count}`。**六个写名单的入口共用 `_WATCH_WLOCK` 一把锁**（都是「读整个 watch.json → 改一处 → 写回」，详情页和追更面板同时点会后写覆盖先写） |
+| `/api/watch/status` | GET | — | `{running, pid, heartbeat, count, hot, req_today, req_budget, est_daily, total_downloads, cool_left, settings, accounts[], authors[], logs[]}`；`authors[]` 每行 `{uid,nickname,sec_uid,enabled,works,in_lib,downloads,last_scan,next_check,is_hot,tier,interval,fails,last_post,last_ts}` —— **追更面板的整张名单就靠它**，`in_lib=false` 表示这位作者还不在本地库（点行不跳转） |
 | `/api/latest_work` | GET | `uid` | 联网查这位作者**最新一条作品的发布时间**（登录态 + a_bogus 签名打 `aweme/post`，3.12 子进程 `latest_helper.py`）→ `{ok, uid, latest:"YYYY-MM-DD HH:MM", at}`；查不到时 `{ok:false, empty, error}`，`empty:true` = 对方根本没有公开作品（不是失败）。结果落 `data/latest_work.json` |
 | `/api/latest_refresh` | POST | `{action:start\|stop, limit, force?}` | 后台批量查发布时间（`latest_worker`：3.5s±jitter、≤100/轮、**每 25 个停 30 秒**、连续 8 个失败熔断、7 天内查过的跳过；`force:true` 忽略 TTL 全量重查） |
 | `/api/latest_status` | GET | — | `{running, done, total, succeeded, failed, empty, dead, skipped, pausing, error, last_error, cached, ttl_days}`；`empty` = 无公开作品、`dead` = SEC_UID 已失效（两者都不计失败、不进熔断），`pausing` = 正在那 30 秒空档里，`last_error` = 最近一个真失败账号的「昵称：原因」 |
@@ -473,6 +480,26 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 - 保存 → `data/annotations/界面意见_YYYYMMDD-HHMMSS.md`，我直接读这份清单改代码
 - 实现要点：画布/徽标层是**运行时注入 iframe 文档**的（`app.js`/`style.css` 零改动）；绘制模式下 capture 阶段 `preventDefault + stopImmediatePropagation` 抢占事件；坐标存「页面坐标（client + scroll）」，滚动时 rAF 重绘
 
+### 6. 📡 追更（`/watch`，2026-11-06，c143）
+
+不经过 DouK：按作者轮询抖音 `aweme/post`（复用 `fetch_favorites.py` 的 `a_bogus` 签名），发现新作品直连 CDN 下载，命名规则与下载器一致（`日期-昵称-描述[_序号].ext`），所以**下一轮扫描会自动收进库**。
+
+**入口只有两个，改的却是同一份名单**（`data/watch.json` 的 `authors`）：
+
+1. **作者详情页信息卡下面那条横栏**（`#watchBar`）—— 开关 `未追更 / 追更中 / 已暂停` + 间隔 chips（自动/15 分钟/30 分钟/1 小时）+ 状态行（`约 8 分钟后检查 · 已自动下载 3 个`）。整条随状态变色（`.watch-bar.on/.paused`）。**只换这一条（`paintWatchBar()`），绝不整块重绘 `detailTop`** —— 重绘会把滚动位置、正在播的视频、展开的历史浮层全冲掉。
+   - 状态**不进 `user_data.json`**：`/api/author` 每次一并返回 `watching / watch_enabled / watch_interval / watch_next / watch_last / watch_downloads`，所以刷新页面、从列表/大小号/收藏换条路点进来都是对的，前端也不用另问一次。
+   - 未追更时 4 个 chip 置灰（先开追更才能设间隔）；没 SEC_UID 的作者按钮可点但明确拒绝（加进名单也下载不了）。
+2. **顶栏「📡 追更」→ 名单面板**（`/watch`）—— 启停、账号池、节奏设置、日志，以及**整张名单**。
+
+**名单每一行都可点，点了跳到该作者的详情页**（`/#author=<uid>`，就是作品库那边的作者页）：
+
+- 作者名那一格是 `<a class="nm" href="/#author=<uid>">`，点名字走浏览器默认行为 → **Ctrl+点击 / 中键「在新标签打开」都正常**；`<td>` 上挂了 `onclick="event.stopPropagation()"`，免得再被整行的委托处理器跳第二次。
+- 点这一行的**任何其他位置**（数字、空白）由 `#tbody` 的委托处理器接管：`location.href = '/#author=' + uid`；按下 Ctrl/Cmd/Shift 时改 `window.open(url,'_blank')`。
+- 命中顺序写死为 **按钮 → `a.nm` → `tr[data-uid]`**：`button[data-act]`（停用/移出）先返回，所以点按钮绝不会顺带跳页。
+- `in_lib === false`（`/api/watch/status` 里的「不在库」，这类作者是直接贴主页链接加进来的、库里还没有他的目录）：行上多 `no-lib` 类，hover 不高亮、不带 `↗`、光标不留手，**点了只弹一句提示**「还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来」。真跳过去只会看到空详情页。
+- 已停用（`enabled:false`）的行**照样能点**，只是整行半透明。
+- 全部写在 `src/web/watch.html` 一个文件里（内联 CSS + 内联 JS，无构建）：样式 `tr.row-link/.nm/.go/.no-lib`，行渲染在 `render()` 的 `authors.map()`，点击分支在文件末尾 `#tbody` 的 `addEventListener`。**无需改服务端、无需改任何配置**。
+
 ---
 
 ## 八、踩坑要点（一条一句；完整过程见归档）
@@ -608,6 +635,11 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
+
+- **2026-11-06 c142→c143 📡 自动追更落地 + 前后改了三版**（现在只看「📍 七.6 追更」那段，下面是过程）：
+  ① 先在详情页动作栏塞了一颗 `📡 追更` 小按钮（c142，三态 + 失败回滚）；② 用户要求**「自动追更不要放在导出页上，要放在作者详情页」** → 把导出页整块「④ 自动追更」删干净（`#watchExportSub`/`#exportWatchFreq`/`#watchExportNote`/`confirmExportToWatch`/`refreshWatchExportNote` 全删，`_watch_add_batch` 后端保留但前端已无调用方），改成详情页信息卡下面**一整条横栏**（开关 + 间隔 chips + 实况行，c143，`interval` 一并开放到 `mark` 接口）；③ 追更面板名单**整行可点跳作者主页**（`/#author=<uid>`，`in_lib=false` 的只提示不跳）。
+  顺手补的两个洞：**六个写名单的入口共用 `_WATCH_WLOCK` 一把锁**（详情页点追更 + 面板改设置会互相覆盖，症状是刚点亮的追更几秒后自己消失）；**`deleteAuthor` 成功后自动 `action:"remove"` 退出追更名单**（人都删了，留着只会让守护进程白查）。
+  ⚠️ 改前端一律 `python tools/bump_version.py`（浏览器缓存），`watch.html` 自带内联脚本/样式、服务对 html 发 `no-cache`，不用管版本号。
 
 - **2026-11-05 c138 作者详情页「纯净赏图」**：筛选栏加了一颗「🖼 赏图 N」，点开是全屏照片墙——这位作者**所有图文作品的所有图片**（不跟当前分类走），图片按原比例铺开、不裁切，除了顶部一条 46px 细栏什么都没有（刻意固定深色底，不跟明暗主题）。点任意一张进大图，←/→ 或两侧按钮翻页、Esc 逐层退出（先关大图再关墙）。分页渲染：每次 120 张，滚到底或图片加载完自动追加。实现要点：① HTML 是 `.gallery-body`（滚动）+ `.gallery-cols`（`columns`）两层——**`columns` 不能直接挂在固定高度的滚动容器上**，否则多列内容横向溢出被 `overflow-x` 裁掉，既不滚也看不见；② 图片先给 `aspect-ratio: 3/4` 占位，否则加载前高度是 0，`loading=lazy` 判定不可见就永远不加载（死锁）；③ 实测本机原图 280KB 平均 260ms（多数是磁盘缓存命中），比现用 ffmpeg 生成缩略图（4~6 秒/张）快得多，所以**墙直接用原图**；④ `scroll` 事件在无头环境不派发，另加 700ms 定时兜底。
   顺手修了 `/thumb` 对图片返回 500 的 bug：`_thumb_ffmpeg()` 里的 `-ss 1` 会把单帧的 jpg 直接越过结尾，图片必须不 seek（`seek = []`）。

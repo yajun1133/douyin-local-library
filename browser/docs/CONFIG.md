@@ -101,6 +101,30 @@ browser/
 - `fav_latest_mode` 只接受三个枚举，其它值忽略；
 - `paths.*` 只接受字符串，自动 `strip()`；不校验路径是否真实存在。
 
+### 3.5 `data/watch.json` —— 📡 追更的名单与节奏（**不在 settings.json 里**）
+
+两份文件分工明确，别放错：
+
+| 文件 | 内容 | 丢了会怎样 |
+|---|---|---|
+| `data/watch.json` | `authors[]`（`uid` / `sec_uid` / `nickname` / `enabled` / `interval` / `added_at`）、`settings{}`、号池 `accounts[]` | **丢名单**——得重新一个一个加。详情页那条横栏和 `/watch` 面板读写的是**同一份** |
+| `data/watch_state.json` | 每位作者的 `seen[]`（判重用）/ `last_ts` / `next_check` / `tier` / `fails` / `downloads` / `last_scan` | 只是进度：会从「本地最新作品」重建基线，最多把已有的当新作品查一遍（不会重下，下载前按文件名判重） |
+
+`watch.json.settings` 默认值（`watch_core.DEFAULT_CFG`，面板上都能改）：
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `interval_hot/warm/cold/idle` | 900 / 3600 / 10800 / 86400 秒 | 热/温/冷/静四档间隔，`interval:0`（自动）时按这位作者多久没发过作品自动挑档 |
+| `hot_days` | 2 | 几天内发过就算「热档」 |
+| `gap` / `gap_jitter` | 2.0 秒 / 0.3 | 每个作者之间的间隔与抖动（防风控，别低于 2） |
+| `daily_budget` | 20000 × 号数 | 每日请求总上限，到了当天就停 |
+| `rest_every` / `rest_secs` | 100 / 20 | 每查 N 位歇 N 秒 |
+| `break_fails` / `break_cool` | 5 / 600 | 连续失败几次进冷却、冷却多久 |
+| `backfill_pages` / `max_per_round` | 4 / 40 | 关机期间漏的往回翻几页、单轮最多下几条 |
+| `desc_len` / `fail_limit` / `seen_keep` | 64 / 3 / 400 | 文件名描述截断长度（与下载器一致）/ 连续失败几次先放弃 / 每位作者记住多少条已见作品 |
+
+⚠️ 名单里**认人只认 `sec_uid` 和 `uid`，昵称不参与判定**（同名号太多、还会改名换号）。加人时查不到 SEC_UID 会被直接拒绝——加进去也下载不了。
+
 ---
 
 ## 四、环境变量
@@ -159,6 +183,8 @@ browser/
 | `latest_helper.py` | 查「最新一条作品发布时间」 | ✅ 需 3.12 |
 | `fetch_favorites.py` | 抓收藏 / 喜欢列表 | ✅ 需 3.12 |
 | `query_uid_by_secuid.py` | sec_uid → uid / 昵称 / 抖音号 | ✅ 需 3.12 |
+| `watch_core.py` | 📡 追更核心：轮询 `aweme/post` → 判重 → 直连 CDN 下载 → 落 `data/watch_state.json`；另含号池（`pool_*`）、节奏分档、额度/熔断 | 被 server / watch.py import |
+| `watch.py` | 追更的 CLI 与常驻进程（`--list / --add-top / --scan / --dry / --status / --daemon`） | ✅ `python src/watch.py --status`（需 3.13） |
 
 ### `browser/tools/`（独立小脚本，不起服务也能跑）
 

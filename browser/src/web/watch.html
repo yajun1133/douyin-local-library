@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>追更 · 抖音本地作品库</title>
+<style>
+:root {
+    --bg: #f5f6f8; --panel: #fff; --border: #e5e7eb;
+    --text: #1f2937; --muted: #6b7280;
+    --primary: #fe2c55; --primary-hover: #e0254b;
+    --ok: #10b981; --warn: #f59e0b; --danger: #ef4444;
+    --radius: 12px; --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.06);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--text); font-size: 14px;
+    padding: 0 0 40px;
+}
+.topbar {
+    height: 56px; background: var(--panel); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 14px; padding: 0 20px;
+    position: sticky; top: 0; z-index: 10;
+}
+.brand { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #cbd5e1; flex-shrink: 0; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(16,185,129,.18); }
+.dot.off { background: #cbd5e1; }
+.spacer { flex: 1; }
+button {
+    font-family: inherit; font-size: 13px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text);
+    padding: 8px 14px; transition: .15s;
+}
+button:hover { border-color: #d1d5db; background: #fafafa; }
+button.primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+button.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+button.ghost { border: none; background: transparent; color: var(--muted); padding: 6px 8px; }
+button.ghost:hover { color: var(--primary); background: transparent; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+.wrap { max-width: 1180px; margin: 20px auto; padding: 0 20px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.card .k { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.card .v { font-size: 22px; font-weight: 700; }
+.card .v small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 3px; }
+.guard { background: #fff7e6; border: 1px solid #ffd591; color: #874d00; border-radius: var(--radius); padding: 11px 14px; margin-bottom: 16px; font-size: 13px; line-height: 1.6; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 16px; overflow: hidden; }
+.panel-hd { padding: 13px 16px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 10px; }
+.panel-hd .hint { font-weight: 400; font-size: 12px; color: var(--muted); }
+.panel-bd { padding: 14px 16px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+input[type=text], input[type=number] {
+    font-family: inherit; font-size: 13px; padding: 9px 12px;
+    border: 1px solid var(--border); border-radius: 8px; outline: none; color: var(--text);
+    background: var(--panel);
+}
+input[type=text]:focus, input[type=number]:focus { border-color: var(--primary); }
+.grow { flex: 1; min-width: 220px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f1f2f4; }
+th { font-size: 12px; color: var(--muted); font-weight: 500; background: #fafbfc; position: sticky; top: 0; }
+tr:last-child td { border-bottom: none; }
+tr.disabled td { opacity: .45; }
+
+.tag { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 11px; }
+.tag.hot { background: rgba(254,44,85,.1); color: var(--primary); }
+.tag.warm { background: rgba(250,173,20,.14); color: #b45309; }
+.tag.cold { background: #f1f5f9; color: var(--muted); }
+.tag.off { background: #f1f5f9; color: #94a3b8; }
+.log {
+    background: #0f1724; color: #cbd5e1; font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 12px; line-height: 1.75; padding: 12px 14px; border-radius: 8px;
+    height: 260px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}
+.log .t { color: #64748b; }
+.log .dl { color: #4ade80; }
+.log .new { color: #fbbf24; }
+.log .err { color: #f87171; }
+.empty { text-align: center; color: var(--muted); padding: 26px 0; font-size: 13px; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { padding: 6px 10px; font-size: 12px; }
+.tabs button.act { background: var(--primary); color: #fff; border-color: var(--primary); }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
+.field { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; }
+.field label { width: 150px; color: var(--muted); }
+.field input { width: 110px; }
+.field .unit { color: var(--muted); font-size: 12px; }
+.toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%);
+    background: #1f2937; color: #fff; padding: 11px 20px; border-radius: 9px;
+    font-size: 13px; opacity: 0; transition: .25s; pointer-events: none; z-index: 99; max-width: 80vw;
+}
+.toast.show { opacity: 1; }
+.toast.err { background: var(--danger); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+    <div class="brand"><span class="dot off" id="dot"></span>追更</div>
+    <span id="runText" style="font-size:13px;color:var(--muted)">未启动</span>
+    <div class="spacer"></div>
+    <button id="btnStart" class="primary">开始追更</button>
+    <button id="btnStop">停止</button>
+    <button class="ghost" onclick="location.href='/'">← 回作品库</button>
+</div>
+
+<div class="wrap">
+    <div class="cards">
+        <div class="card"><div class="k">名单</div><div class="v" id="cCount">0<small>位</small></div></div>
+        <div class="card"><div class="k">热号（2 天内发过）</div><div class="v" id="cHot">0<small>位</small></div></div>
+        <div class="card"><div class="k">今日已用请求</div><div class="v" id="cReq">0<small>次</small></div></div>
+        <div class="card"><div class="k">按当前档位估算/天</div><div class="v" id="cEst">0<small>次</small></div></div>
+        <div class="card"><div class="k">累计追更下载</div><div class="v" id="cDl">0<small>条</small></div></div>
+        <div class="card"><div class="k">上次动作</div><div class="v" id="cBeat" style="font-size:15px">—</div></div>
+    </div>
+
+    <div id="guardBar" class="guard" style="display:none"></div>
+
+    <div class="panel">
+        <div class="panel-hd">加作者<span class="hint">uid / SEC_UID / 主页链接 / 库里唯一的昵称都行，可用逗号或换行分隔</span></div>
+        <div class="panel-bd">
+            <div class="row">
+                <input type="text" id="addInput" class="grow" placeholder="例：MS4wLjABAAAA...  或  https://www.douyin.com/user/MS4wLjAB...">
+                <button class="primary" id="btnAdd">加入名单</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-hd">账号池<span class="hint">查询用哪个号的登录态。一个号被限流就自动换下一个，不在同一个号上反复试</span>
+            <div class="spacer"></div>
+            <button class="ghost" id="btnAccSync" title="把下载器（DouK）当前登录的那个号同步进账号池 —— 你在 DouK 里换了号就点一下">同步下载器</button>
+            <button class="ghost" id="btnAccAdd">添加账号</button>
+        </div>
+        <div class="panel-bd" id="accBody" style="padding:0">
+            <div class="empty" style="padding:16px">读取中…</div>
+        </div>
+        <div class="panel-bd" id="accForm" style="display:none;border-top:1px solid var(--line)">
+            <div class="row">
+                <input type="text" id="accLabel" placeholder="备注（例：小号1）" style="width:180px">
+            </div>
+            <div class="row" style="margin-top:8px">
+                <textarea id="accCookie" class="grow" rows="3"
+                          placeholder="把这个号的 cookie 整段粘进来：sessionid=xxx; ttwid=xxx; ...&#10;（浏览器 F12 → Network → 任意 douyin.com 请求 → 复制 Cookie 整行）"></textarea>
+            </div>
+            <div class="row" style="margin-top:8px">
+                <span style="font-size:12px;color:var(--muted)">至少要有 sessionid，否则不算登录态</span>
+                <div class="spacer"></div>
+                <button id="btnAccCancel">取消</button>
+                <button class="primary" id="btnAccSave">存进账号池</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-hd">名单<span class="hint" id="tblHint"></span>
+            <div class="spacer"></div>
+            <div class="tabs">
+                <button class="act" data-filter="all">全部</button>
+                <button data-filter="hot">热号</button>
+                <button data-filter="down">有下载</button>
+            </div>
+        </div>
+        <div class="panel-bd" style="padding:0">
+            <table>
+                <thead><tr>
+                    <th style="width:26%">作者</th>
+                    <th>本地作品</th>
+                    <th>追更下载</th>
+                    <th>上次检查</th>
+                    <th>下次</th>
+                    <th>状态</th>
+                    <th style="width:120px"></th>
+                </tr></thead>
+                <tbody id="tbody"><tr><td colspan="7" class="empty">名单是空的，先在上面加几位</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-bd">
+            <details>
+                <summary>节奏与安全设置（改完立刻生效，正在跑的进程下一轮就会读到）</summary>
+                <div class="field"><label>热档间隔</label><input type="number" id="sHot" min="60" step="60"><span class="unit">秒 · 2 天内发过作品的作者</span></div>
+                <div class="field"><label>温档间隔</label><input type="number" id="sWarm" min="300" step="300"><span class="unit">秒 · 7 天内发过</span></div>
+                <div class="field"><label>冷档间隔</label><input type="number" id="sCold" min="600" step="600"><span class="unit">秒 · 30 天内发过</span></div>
+                <div class="field"><label>静档间隔</label><input type="number" id="sIdle" min="3600" step="3600"><span class="unit">秒 · 更久没动静，一天查一次就够</span></div>
+                <div class="field"><label>每个作者间隔</label><input type="number" id="sGap" min="1" step="0.5"><span class="unit">秒（2 秒 ≈ 一个人连着刷主页；号多可以更快，号少别低于 2）</span></div>
+                <div class="field"><label>每日请求上限</label><input type="number" id="sBudget" min="100" step="500"><span class="unit">次（全部号合计，到了当天就停）</span></div>
+                <div class="field"><label>单轮下载上限</label><input type="number" id="sMax" min="1" step="1"><span class="unit">条（防一次性爆量）</span></div>
+                <div class="field"><label>服务启动就自动追更</label><input type="checkbox" id="sAuto" style="width:auto"><span class="unit">开机打开界面就自己补漏，不用再点「开始」</span></div>
+                <div class="field"><button id="btnSaveCfg">保存</button></div>
+                <div style="margin-top:10px;font-size:12px;color:var(--muted);line-height:1.7">
+                    查询失败时<b>先换号再试一次</b>；单个号连续 2 次不成，它自己歇 5 分钟（再犯翻倍），其它号照常跑。<br>
+                    所有号都不行、连续 5 位作者都查不动，才整体暂停 10 分钟 —— 这时是真被限流了，停下来才安全。
+                </div>
+            </details>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="panel-hd">运行日志<span class="hint">最近 60 行</span>
+            <div class="spacer"></div>
+            <button class="ghost" id="btnRefresh">刷新</button>
+        </div>
+        <div class="panel-bd"><div class="log" id="log">（还没有日志）</div></div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var state = { data: null, filter: 'all' };
+
+function toast(msg, isErr) {
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast show' + (isErr ? ' err' : '');
+    clearTimeout(el._t);
+    el._t = setTimeout(function () { el.className = 'toast'; }, 2600);
+}
+
+function ago(ts) {
+    if (!ts) return '—';
+    var d = ts * 1000 - Date.now();
+    var s = Math.abs(d) / 1000;
+    var txt;
+    if (s < 60) txt = Math.round(s) + ' 秒';
+    else if (s < 3600) txt = Math.round(s / 60) + ' 分钟';
+    else if (s < 86400) txt = (s / 3600).toFixed(1) + ' 小时';
+    else txt = (s / 86400).toFixed(1) + ' 天';
+    return d >= 0 ? txt + '后' : txt + '前';
+}
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+}
+
+function render() {
+    var d = state.data;
+    if (!d) return;
+
+    var dot = document.getElementById('dot');
+    dot.className = 'dot ' + (d.running ? 'on' : 'off');
+    var rt = document.getElementById('runText');
+    if (d.running) {
+        rt.textContent = '运行中 · 心跳 ' + ago(d.heartbeat);
+        rt.style.color = 'var(--ok)';
+    } else {
+        rt.textContent = d.heartbeat ? ('已停止 · 最后心跳 ' + ago(d.heartbeat)) : '未启动';
+        rt.style.color = 'var(--muted)';
+    }
+    document.getElementById('btnStart').disabled = !!d.running;
+    document.getElementById('btnStop').disabled = !d.running;
+
+    document.getElementById('cCount').innerHTML = d.count + '<small>位</small>';
+    document.getElementById('cHot').innerHTML = d.hot + '<small>位</small>';
+    document.getElementById('cReq').innerHTML = (d.req_today || 0) +
+        (d.req_budget ? '<small>/' + d.req_budget + ' 次</small>' : '<small>次</small>');
+    var est = d.est_daily || 0;
+    document.getElementById('cEst').innerHTML = est + '<small>次</small>';
+    document.getElementById('cEst').parentNode.style.color =
+        (d.req_budget && est > d.req_budget) ? 'var(--primary)' : '';
+    document.getElementById('cDl').innerHTML = d.total_downloads + '<small>条</small>';
+    document.getElementById('cBeat').textContent = d.heartbeat ? ago(d.heartbeat) : '—';
+
+    // 风控提示条：冷却中 / 额度用尽 / 估算超上限，都在这里说清楚
+    var gb = document.getElementById('guardBar');
+    var msgs = [];
+    if (d.cool_left > 0) {
+        msgs.push('抖音那边连续失败，已自动暂停 <b>' + Math.ceil(d.cool_left / 60) +
+                  ' 分钟</b>。这是保护动作 —— 被限流时继续打才会真出事，停下来等没事。');
+    }
+    if (d.req_budget && d.req_today >= d.req_budget) {
+        msgs.push('今日请求额度已用完（' + d.req_budget + ' 次），明天自动继续。想多查就调高「每日请求上限」。');
+    }
+    if (d.req_budget && est > d.req_budget) {
+        msgs.push('按当前档位估算每天要发 <b>' + est + '</b> 次，超过上限 ' + d.req_budget +
+                  ' 次。实际会先撞上限停下 —— 想全天不停就把档位调宽，或调高上限。');
+    }
+    if (msgs.length) { gb.innerHTML = msgs.join('<br>'); gb.style.display = 'block'; }
+    else { gb.style.display = 'none'; }
+
+    var s = d.settings || {};
+    // 只要用户正在改任意一个设置项，就不要回填 —— 否则改「温档」时「热档」没被聚焦，
+    // 每 5 秒轮询一次会把整组输入框重置掉，用户输到一半的数字就没了。
+    var CFG_IDS = ['sHot', 'sWarm', 'sCold', 'sIdle', 'sGap', 'sBudget', 'sMax', 'sAuto'];
+    var editing = CFG_IDS.some(function (id) {
+        return document.activeElement === document.getElementById(id);
+    });
+    if (!editing) {
+        document.getElementById('sHot').value = s.interval_hot;
+        document.getElementById('sWarm').value = s.interval_warm;
+        document.getElementById('sCold').value = s.interval_cold;
+        document.getElementById('sIdle').value = s.interval_idle;
+        document.getElementById('sMax').value = s.max_per_round;
+        document.getElementById('sGap').value = s.gap;
+        document.getElementById('sBudget').value = s.daily_budget;
+        document.getElementById('sAuto').checked = !!d.auto_start;
+    }
+
+    var rows = (d.authors || []).filter(function (r) {
+        if (state.filter === 'hot') return r.is_hot;
+        if (state.filter === 'down') return r.downloads > 0;
+        return true;
+    });
+    var tb = document.getElementById('tbody');
+    document.getElementById('tblHint').textContent =
+        '共 ' + (d.authors || []).length + ' 位' + (rows.length !== (d.authors || []).length ? ('，筛出 ' + rows.length + ' 位') : '');
+
+    if (!rows.length) {
+        tb.innerHTML = '<tr><td colspan="7" class="empty">' +
+            ((d.authors || []).length ? '当前筛选没有匹配的' : '名单是空的，先在上面加几位') + '</td></tr>';
+    } else {
+        tb.innerHTML = rows.map(function (r) {
+            var TIER = { hot: ['热', '2 天内发过', 'hot'], warm: ['温', '7 天内发过', 'warm'],
+                         cold: ['冷', '30 天内发过', 'cold'], idle: ['静', '更久没动静', 'cold'],
+                         fixed: ['定', '导出时指定的频率', 'hot'] };
+            var t = TIER[r.tier] || TIER.idle;
+            if (r.tier === 'fixed' && r.interval) {
+                t = ['定', '每 ' + Math.round(r.interval / 60) + ' 分钟查一次', 'hot'];
+            }
+            var st = '<span class="tag ' + t[2] + '" title="' + t[1] + '">' + t[0] + '档</span>';
+            if (!r.enabled) st = '<span class="tag off">已停用</span>';
+            var extra = r.fails ? ' <span class="tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
+            var dis = r.enabled ? '' : ' class="disabled"';
+            return '<tr' + dis + '>' +
+                '<td><b>' + esc(r.nickname) + '</b>' + (r.in_lib ? '' : ' <span class="tag off">不在库</span>') + '</td>' +
+                '<td>' + r.works + '</td>' +
+                '<td>' + (r.downloads || '—') + '</td>' +
+                '<td>' + esc(r.last_scan || '—') + '</td>' +
+                '<td>' + (r.next_check ? ago(r.next_check) : '—') + '</td>' +
+                '<td>' + st + extra + '</td>' +
+                '<td style="text-align:right">' +
+                    '<button class="ghost" data-act="toggle" data-uid="' + esc(r.uid) + '">' + (r.enabled ? '停用' : '启用') + '</button>' +
+                    '<button class="ghost" data-act="remove" data-uid="' + esc(r.uid) + '">移出</button>' +
+                '</td></tr>';
+        }).join('');
+    }
+
+    renderAccounts(d);
+
+    var box = document.getElementById('log');    var nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = (d.logs || []).map(function (ln) {
+        var cls = '';
+        if (/↓/.test(ln)) cls = 'dl';
+        else if (/★/.test(ln)) cls = 'new';
+        else if (/✗|×/.test(ln)) cls = 'err';
+        return '<div class="' + cls + '">' + esc(ln) + '</div>';
+    }).join('') || '（还没有日志）';
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+function renderAccounts(d) {
+    var box = document.getElementById('accBody');
+    if (!box) return;
+    var list = d.accounts || [];
+    if (!list.length) {
+        box.innerHTML = '<div class="empty" style="padding:16px">账号池是空的 —— 点右上「添加账号」，' +
+            '把某个抖音号的 cookie 粘进来（只有 sessionid 也行不通，要整段）</div>';
+        return;
+    }
+    box.innerHTML = '<table><thead><tr>' +
+        '<th style="width:30%">账号</th><th>今日请求</th><th>成功 / 失败</th><th>状态</th>' +
+        '<th style="width:120px"></th></tr></thead><tbody>' +
+        list.map(function (a) {
+            var st;
+            if (!a.logged_in) st = '<span class="tag off">没有登录态</span>';
+            else if (!a.enabled) st = '<span class="tag off">已停用</span>';
+            else if (a.cool_left > 0) {
+                st = '<span class="tag off" title="' + esc(a.last_error || '') + '">歇 ' +
+                     Math.ceil(a.cool_left / 60) + ' 分钟</span>';
+            } else st = '<span class="tag hot">可用</span>';
+            return '<tr' + (a.enabled ? '' : ' class="disabled"') + '>' +
+                '<td><b>' + esc(a.label || a.id) + '</b>' +
+                    (a.sid_tail ? ' <span class="tag cold" title="sessionid 末 6 位">…' +
+                                  esc(a.sid_tail) + '</span>' : '') + '</td>' +
+                '<td>' + (a.req_today || 0) + '</td>' +
+                '<td>' + (a.ok || 0) + ' / ' + (a.fail || 0) + '</td>' +
+                '<td>' + st + '</td>' +
+                '<td style="text-align:right">' +
+                    '<button class="ghost" data-aact="toggle" data-aid="' + esc(a.id) + '">' +
+                        (a.enabled ? '停用' : '启用') + '</button>' +
+                    '<button class="ghost" data-aact="remove" data-aid="' + esc(a.id) + '">移出</button>' +
+                '</td></tr>';
+        }).join('') + '</tbody></table>';
+}
+
+function pull() {
+    fetch('/api/watch/status', { cache: 'no-store' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) { state.data = j; render(); })
+        .catch(function () { });
+}
+
+function post(body, okMsg) {
+    return fetch('/api/watch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+        if (!j.ok) { toast(j.error || '操作失败', true); return j; }
+        if (okMsg) toast(okMsg);
+        pull();
+        return j;
+    }).catch(function (e) { toast('请求失败：' + e, true); });
+}
+
+document.getElementById('btnStart').onclick = function () {
+    var b = this; b.disabled = true; b.textContent = '启动中…';
+    post({ action: 'start' }, '追更已启动').finally(function () {
+        b.textContent = '开始追更';
+    });
+};
+document.getElementById('btnStop').onclick = function () {
+    if (!confirm('停止后就不再看新作品了，确定？')) return;
+    post({ action: 'stop' }, '已停止');
+};
+document.getElementById('btnAdd').onclick = function () {
+    var v = document.getElementById('addInput').value.trim();
+    if (!v) return;
+    post({ action: 'add', token: v }).then(function (j) {
+        if (j && j.ok) {
+            var n = (j.added || []).length;
+            var msg = n ? ('加入 ' + n + ' 位') : '没有新增';
+            if ((j.skipped || []).length) msg += '，' + j.skipped.length + ' 位已在名单';
+            if ((j.errors || []).length) msg += '；' + j.errors[0];
+            toast(msg, !n && (j.errors || []).length > 0);
+            if (n) document.getElementById('addInput').value = '';
+            pull();
+        }
+    });
+};
+document.getElementById('addInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') document.getElementById('btnAdd').click();
+});
+document.getElementById('btnSaveCfg').onclick = function () {
+    post({
+        action: 'settings',
+        auto_start: document.getElementById('sAuto').checked,
+        settings: {
+            interval_hot: +document.getElementById('sHot').value,
+            interval_warm: +document.getElementById('sWarm').value,
+            interval_cold: +document.getElementById('sCold').value,
+            interval_idle: +document.getElementById('sIdle').value,
+            max_per_round: +document.getElementById('sMax').value,
+            gap: +document.getElementById('sGap').value,
+            daily_budget: +document.getElementById('sBudget').value
+        }
+    }, '已保存');
+};
+document.getElementById('btnRefresh').onclick = pull;
+
+// ===== 账号池 =====
+document.getElementById('btnAccSync').onclick = function () {
+    post({ action: 'account_sync' }, '已同步下载器当前的号');
+};
+document.getElementById('btnAccAdd').onclick = function () {
+    var f = document.getElementById('accForm');
+    f.style.display = (f.style.display === 'none' || !f.style.display) ? 'block' : 'none';
+};
+document.getElementById('btnAccCancel').onclick = function () {
+    document.getElementById('accForm').style.display = 'none';
+};
+document.getElementById('btnAccSave').onclick = function () {
+    var label = document.getElementById('accLabel').value.trim();
+    var ck = document.getElementById('accCookie').value.trim();
+    if (!ck) { toast('先把 cookie 粘进来', true); return; }
+    post({ action: 'account_add', label: label, cookie: ck }).then(function (j) {
+        if (j && j.ok) {
+            toast('已加入账号池');
+            document.getElementById('accCookie').value = '';
+            document.getElementById('accLabel').value = '';
+            document.getElementById('accForm').style.display = 'none';
+        }
+    });
+};
+document.getElementById('accBody').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-aact]');
+    if (!btn) return;
+    var id = btn.getAttribute('data-aid');
+    var act = btn.getAttribute('data-aact');
+    if (act === 'toggle') {
+        post({ action: 'account_toggle', id: id, enabled: btn.textContent === '停用' }, '已切换');
+    }
+    if (act === 'remove') {
+        if (!confirm('把这个号从账号池移出？\n（只是不再用它查询，已下载的作品不受影响）')) return;
+        post({ action: 'account_remove', id: id }, '已移出');
+    }
+});
+
+document.getElementById('tbody').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    var uid = btn.getAttribute('data-uid');
+    var act = btn.getAttribute('data-act');
+    if (act === 'toggle') post({ action: 'toggle', uid: uid }, '已切换');
+    if (act === 'remove') {
+        var row = (state.data.authors || []).filter(function (r) { return r.uid === uid; })[0];
+        if (!confirm('把「' + (row ? row.nickname : uid) + '」移出追更名单？\n（已经下载的文件不受影响）')) return;
+        post({ action: 'remove', uids: [uid] }, '已移出');
+    }
+});
+
+document.querySelectorAll('.tabs button').forEach(function (b) {
+    b.onclick = function () {
+        document.querySelectorAll('.tabs button').forEach(function (x) { x.classList.remove('act'); });
+        b.classList.add('act');
+        state.filter = b.getAttribute('data-filter');
+        render();
+    };
+});
+
+pull();
+setInterval(pull, 5000);
+</script>
+</body>
+</html>

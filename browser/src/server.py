@@ -15,6 +15,7 @@ import sys
 import json
 import hashlib
 import subprocess
+import functools
 import threading
 import time
 import glob
@@ -164,6 +165,8 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 import blacklist as _BL  # noqa: E402
 import download_db  # noqa: E402  下载记录库（作者最后一次下载时间 / 文件数）
+import watch_core as WC  # noqa: E402  追更：名单/状态的读写（纯 JSON，3.13 也能 import；
+                         # 真正联网扫描的部分在 watch.py，必须由 3.12 子进程跑）
 
 BASE_DIR = paths.MEDIA_BASE
 SCAN_ROOT = paths.SCAN_ROOT
@@ -3381,6 +3384,512 @@ def safe_media_path(rel):
     return full
 
 
+# ===========================================================================
+# 追更（watch）：盯住一批重点作者，发现新作品就下
+#
+# 分工要清楚：
+#   · 名单和状态是**纯 JSON**，3.13 这边直接读写，随时能看；
+#   · 真正联网查抖音、下文件的是 watch.py，必须跑在 3.12（curl_cffi / ABogus 是
+#     3.12 编译的），所以这里只负责「起进程 / 杀进程 / 读状态」。
+#   · 「跑没跑」不靠内存里的句柄（server 一重启就丢），靠 watch.py 每分钟写的
+#     心跳时间戳 —— 超过 3 分钟没更新就当它停了。
+# ===========================================================================
+
+WATCH_PID_FILE = os.path.join(paths.DATA_DIR, "watch.pid")
+WATCH_HEARTBEAT_LIMIT = 180     # 秒：超过这么久没心跳就算没在跑
+
+
+def _watch_pid():
+    try:
+        with open(WATCH_PID_FILE, encoding="utf-8") as f:
+            return int((f.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _watch_alive(pid):
+    """Windows 上判断 PID 还在不在（os.kill 在 Windows 语义不一样，别用）。"""
+    if not pid:
+        return False
+    try:
+        p = subprocess.run(["tasklist", "/FI", "PID eq %d" % pid],
+                           capture_output=True, timeout=8)
+        out = (p.stdout or b"").decode("mbcs", "ignore")
+        return str(pid) in out
+    except Exception:
+        return False
+
+
+def _watch_status():
+    watch = WC.load_watch()
+    state = WC.load_state()
+    hb = float(state.get("heartbeat") or 0)
+    pid = _watch_pid()
+    running = bool(hb) and (time.time() - hb) < WATCH_HEARTBEAT_LIMIT and _watch_alive(pid)
+    cfg = watch["settings"]
+    if not CACHE.get("accounts"):
+        # 索引还没建（比如刚启动就点进追更页）：补一次，不然「作品数」全是 0
+        try:
+            load_data()
+        except Exception:
+            pass
+    accounts = CACHE.get("accounts") or {}
+
+    rows = []
+    total_dl = 0
+    for a in watch.get("authors") or []:
+        uid = str(a.get("uid") or "")
+        s = (state.get("authors") or {}).get(uid) or {}
+        acc = accounts.get(uid) or {}
+        total_dl += int(s.get("downloads") or 0)
+        rows.append({
+            "uid": uid,
+            "nickname": a.get("nickname") or acc.get("nickname") or uid,
+            "sec_uid": a.get("sec_uid") or "",
+            "enabled": bool(a.get("enabled", True)),
+            "works": len(acc.get("works") or []),
+            "in_lib": bool(acc),
+            "downloads": int(s.get("downloads") or 0),
+            "last_scan": s.get("last_scan") or "",
+            "next_check": float(s.get("next_check") or 0),
+            "is_hot": bool(s.get("is_hot")),
+            # 老状态里没有 tier 字段：现算一遍，别让升级前的作者全显示成"静档"
+            "tier": s.get("tier") or WC.tier_of(s, cfg)[0],
+            "last_post": int(s.get("last_post") or 0),
+            "last_ts": int(s.get("last_ts") or 0),
+            "interval": int(a.get("interval") or 0),
+            "fails": len(s.get("fails") or {}),
+        })
+    rows.sort(key=lambda r: (-r["downloads"], r["nickname"]))
+
+    logs = []
+    try:
+        if os.path.exists(WC.LOG_FILE):
+            with open(WC.LOG_FILE, encoding="utf-8", errors="replace") as f:
+                logs = [ln.rstrip() for ln in f.readlines()[-60:]]
+    except OSError:
+        pass
+
+    # 风控相关：今日已用额度、冷却剩余、按当前档位估算的日请求量
+    day = time.strftime("%Y-%m-%d")
+    req_today = int(state.get("req_today") or 0) if state.get("req_day") == day else 0
+    cool_left = max(0.0, float(state.get("cool_until") or 0) - time.time())
+    try:
+        acc_rows = WC.pool_summary()
+    except Exception:
+        acc_rows = []
+    n_acc = len([a for a in acc_rows if a.get("enabled")]) or 1
+    try:
+        est_daily = WC.estimate_daily(watch, state)
+    except Exception:
+        est_daily = 0
+    tiers = {}
+    for r in rows:
+        t = r.get("tier") or ("hot" if r.get("is_hot") else "idle")
+        tiers[t] = tiers.get(t, 0) + 1
+
+    return {
+        "ok": True,
+        "running": running,
+        "pid": pid if running else 0,
+        "heartbeat": hb,
+        "heartbeat_age": (time.time() - hb) if hb else None,
+        "settings": cfg,
+        "count": len(rows),
+        "hot": tiers.get("hot", 0),
+        "tiers": tiers,
+        "total_downloads": total_dl,
+        "req_today": req_today,
+        "req_budget": int(cfg.get("daily_budget") or 0) * n_acc,
+        "req_budget_one": int(cfg.get("daily_budget") or 0),
+        "account_count": n_acc,
+        "est_daily": est_daily,
+        "cool_left": int(cool_left),
+        "cool_level": int(state.get("cool_level") or 0),
+        "consec_fail": int(state.get("consec_fail") or 0),
+        "authors": rows,
+        "logs": logs,
+        "auto_start": bool(watch.get("auto_start", True)),
+        "accounts": acc_rows,
+        "log_file": WC.LOG_FILE,
+        "python312": paths.PYTHON312,
+        "python312_ok": os.path.exists(paths.PYTHON312),
+    }
+
+
+def _watch_start():
+    st = _watch_status()
+    if st.get("running"):
+        return {"ok": False, "error": "追更已经在跑了"}
+    if not st.get("python312_ok"):
+        return {"ok": False,
+                "error": "找不到 Python 3.12：%s（下载器的签名组件只能在 3.12 里跑）"
+                         % paths.PYTHON312}
+    if not (WC.load_watch().get("authors") or []):
+        return {"ok": False, "error": "名单是空的，先加几位作者"}
+    script = os.path.join(paths.SRC_DIR, "watch.py")
+    if not os.path.isfile(script):
+        return {"ok": False, "error": "找不到 %s" % script}
+    try:
+        # 输出不另存：watch.py 自己会写 data/watch.log，再存一份只会分叉
+        subprocess.Popen([paths.PYTHON312, "-u", script, "--loop"],
+                         cwd=paths.APP_ROOT,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        return {"ok": False, "error": "启动失败：%s: %s" % (type(e).__name__, e)}
+    # 等它把心跳写出来（最多 8 秒），否则网页会立刻显示「没在跑」，像失败了一样
+    for _ in range(16):
+        time.sleep(0.5)
+        if _watch_status().get("running"):
+            break
+    return {"ok": True, "status": _watch_status()}
+
+
+def _watch_stop():
+    pid = _watch_pid()
+    if not pid or not _watch_alive(pid):
+        return {"ok": False, "error": "没找到正在跑的追更进程"}
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True, timeout=15,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        return {"ok": False, "error": "停止失败：%s" % e}
+    try:
+        os.remove(WATCH_PID_FILE)
+    except OSError:
+        pass
+    # 心跳清零，免得网页还显示在跑
+    try:
+        state = WC.load_state()
+        state["heartbeat"] = 0
+        WC.save_state(state)
+    except Exception:
+        pass
+    return {"ok": True}
+
+
+_WATCH_WLOCK = threading.RLock()
+
+
+def _watch_locked(fn):
+    """所有写 watch.json 的操作都过这把锁。
+
+    每个入口都是「读整个文件 → 改一处 → 整个写回」。详情页点追更、
+    另一个标签页开着追更面板改设置，两边撞在一起就会后写覆盖先写
+    （典型症状：刚点亮的追更，几秒后那个人自己从名单里消失了）。
+    锁只要进程内有效——写这个文件的只有本服务。
+    """
+    @functools.wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with _WATCH_WLOCK:
+            return fn(*args, **kwargs)
+    return _wrapped
+
+
+@_watch_locked
+def _watch_add(tokens):
+    """加作者：uid / sec_uid / 主页链接 / 库里唯一的昵称。逻辑跟 watch.py --add 一致。"""
+    watch = WC.load_watch()
+    accounts = CACHE.get("accounts") or {}
+    have = {str(a.get("uid")) for a in watch.get("authors") or []}
+    by_sec = {str(a.get("sec_uid")): (uid, a) for uid, a in accounts.items() if a.get("sec_uid")}
+    added, skipped, errors = [], [], []
+    sec_re = re.compile(r"(MS4wLjAB[\w\-]{16,})")
+    for token in tokens or []:
+        t = str(token or "").strip()
+        if not t:
+            continue
+        m = sec_re.search(t)
+        sec = m.group(1) if m else ""
+        uid, a = None, None
+        if sec and sec in by_sec:
+            uid, a = by_sec[sec]
+        elif t.isdigit() and t in accounts:
+            uid, a = t, accounts[t]
+        elif not t.isdigit() and not sec:
+            hits = [(u, x) for u, x in accounts.items()
+                    if t.lower() in str(x.get("nickname") or "").lower()]
+            if len(hits) == 1:
+                uid, a = hits[0]
+            elif len(hits) > 1:
+                errors.append("「%s」匹配到 %d 位，请改用 uid" % (t, len(hits)))
+                continue
+        if not uid or not a:
+            errors.append("认不出「%s」：库里没有它" % t)
+            continue
+        if str(uid) in have:
+            skipped.append(a.get("nickname") or str(uid))
+            continue
+        watch["authors"].append({
+            "uid": str(uid), "sec_uid": a.get("sec_uid") or "",
+            "nickname": a.get("nickname") or "", "added_at": WC.now_str(),
+            "enabled": True,
+        })
+        have.add(str(uid))
+        added.append({"uid": str(uid), "nickname": a.get("nickname") or ""})
+    if added:
+        WC.save_watch(watch)
+    return {"ok": True, "added": added, "skipped": skipped, "errors": errors}
+
+
+@_watch_locked
+def _watch_add_batch(data):
+    """导出页「🤖 自动追更」：把选中的作者一次性加进追更名单。
+
+    参数：
+      uids     —— 作者 uid 列表（导出预览里选的那些）
+      sec_uids —— 只有 SEC_UID 的（待下载区推来的还没建档的作者）
+      interval —— 更新频率（秒）。0 / 空 = 跟着活跃度自动分级（热 15 分钟、冷 3 小时）
+      start    —— 加完是否立刻开始跑（默认 True）
+    """
+    watch = WC.load_watch()
+    accounts = CACHE.get("accounts") or {}
+    by_sec = {}
+    for u, a in accounts.items():
+        s = str(a.get("sec_uid") or "").strip()
+        if s and s not in by_sec:
+            by_sec[s] = u
+
+    interval = 0
+    try:
+        interval = int(float(data.get("interval") or 0))
+    except (TypeError, ValueError):
+        interval = 0
+    if interval and interval < 60:
+        interval = 60
+    if interval > 7 * 86400:
+        interval = 7 * 86400
+
+    want = []            # 去重后的目标 uid，按传入顺序
+    unknown = 0
+    for u in (data.get("uids") or []):
+        u = str(u or "").strip()
+        if not u:
+            continue
+        if u in accounts:
+            want.append(u)
+        else:
+            unknown += 1
+    for s in (data.get("sec_uids") or []):
+        s = norm_sec_uid(s)
+        if not s:
+            continue
+        u = by_sec.get(s)
+        if u:
+            want.append(u)
+        else:
+            unknown += 1        # 库里没有 SEC_UID 对照，加进来也下不了，如实告诉用户
+
+    seen = set()
+    targets = []
+    for u in want:
+        if u not in seen:
+            seen.add(u)
+            targets.append(u)
+
+    have = {str(a.get("uid")): a for a in (watch.get("authors") or [])}
+    added = updated = 0
+    for u in targets:
+        a = accounts.get(u) or {}
+        item = have.get(u)
+        if item is not None:
+            item["enabled"] = True
+            if interval:
+                item["interval"] = interval
+            else:
+                item.pop("interval", None)
+            if not item.get("sec_uid"):
+                item["sec_uid"] = a.get("sec_uid") or ""
+            updated += 1
+        else:
+            nw = {
+                "uid": u, "sec_uid": a.get("sec_uid") or "",
+                "nickname": a.get("nickname") or "", "added_at": WC.now_str(),
+                "enabled": True,
+            }
+            if interval:
+                nw["interval"] = interval
+            watch["authors"].append(nw)
+            added += 1
+    if added or updated:
+        WC.save_watch(watch)
+
+    started, err = False, ""
+    if data.get("start", True) and (added or updated):
+        st = _watch_status()
+        if st.get("running"):
+            started = True
+        else:
+            r = _watch_start()
+            started = bool(r.get("ok"))
+            err = "" if started else (r.get("error") or "")
+    return {"ok": True, "added": added, "updated": updated,
+            "unknown": unknown, "interval": interval,
+            "running": started, "error": err,
+            "count": len(watch.get("authors") or [])}
+
+
+@_watch_locked
+def _watch_remove(uids):
+    watch = WC.load_watch()
+    drop = {str(u) for u in (uids or [])}
+    before = len(watch.get("authors") or [])
+    watch["authors"] = [a for a in watch.get("authors") or [] if str(a.get("uid")) not in drop]
+    WC.save_watch(watch)
+    return {"ok": True, "removed": before - len(watch["authors"])}
+
+
+@_watch_locked
+def _watch_toggle(uid, enabled=None):
+    watch = WC.load_watch()
+    hit = None
+    for a in watch.get("authors") or []:
+        if str(a.get("uid")) == str(uid):
+            a["enabled"] = (not a.get("enabled", True)) if enabled is None else bool(enabled)
+            hit = a
+            break
+    if not hit:
+        return {"ok": False, "error": "名单里没有这个 uid"}
+    WC.save_watch(watch)
+    return {"ok": True, "enabled": bool(hit.get("enabled"))}
+
+
+def watch_of(uid):
+    """这位作者在追更名单里的那一条（不在名单里返回 None）。
+
+    watch.json 只有几百条、几 KB，每次详情页请求读一遍不心疼；
+    换来的是「刷新页面后状态一定是对的」，不用在内存里再维护一份副本。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return None
+    for a in WC.load_watch().get("authors") or []:
+        if str(a.get("uid")) == uid:
+            return a
+    return None
+
+
+@_watch_locked
+def _watch_mark(uid, enabled=True, sec_uid="", nickname="", interval=None):
+    """作者详情页的「自动追更」开关 / 改检查间隔：点亮就进名单，再点就退出。
+
+    和 /api/watch 的 add 不同，这里按 uid 直接加，不靠昵称反查
+    （详情页的作者一定在库里，也就不存在「同名匹配到多位」的歧义）。
+    缺 SEC_UID 时明确拒绝——加进名单也下载不了，不如当场让用户先去填。
+
+    interval：检查间隔（秒）。0 = 跟着活跃度自动分级；None = 不改动现有的值。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return {"ok": False, "error": "缺少 uid"}
+    # 间隔先归一化：小于 1 分钟按「自动」，超过 7 天按 7 天（和 add_batch 一个口径）
+    iv = None
+    if interval is not None:
+        try:
+            iv = int(float(interval))
+            iv = 0 if iv < 60 else min(iv, 7 * 86400)
+        except (TypeError, ValueError):
+            iv = None
+    if enabled and not (CACHE.get("accounts") or {}):
+        # 服务刚起来、索引还没建时也可能有人点这颗按钮：
+        # 不补这一步的话查不到 SEC_UID，会误报「这位作者还没有 SEC_UID」
+        try:
+            load_data()
+        except Exception:
+            pass
+    watch = WC.load_watch()
+    authors = watch.get("authors") or []
+    hit = next((a for a in authors if str(a.get("uid")) == uid), None)
+
+    if enabled:
+        acc = (CACHE.get("accounts") or {}).get(uid) or {}
+        sec = (sec_uid or "").strip() or acc.get("sec_uid") or (hit or {}).get("sec_uid") or ""
+        if not sec:
+            return {"ok": False, "error": "这位作者还没有 SEC_UID，先填上才能追更"}
+        nick = (nickname or "").strip() or acc.get("nickname") or (hit or {}).get("nickname") or ""
+        if hit:
+            # 已经在名单里但被暂停过：点一下就恢复，别当成"新加"再追加一条
+            hit["enabled"] = True
+            hit["sec_uid"] = sec
+            if nick:
+                hit["nickname"] = nick
+            if iv is not None:
+                hit["interval"] = iv
+        else:
+            authors.append({
+                "uid": uid, "sec_uid": sec, "nickname": nick,
+                "added_at": WC.now_str(), "enabled": True,
+                "interval": iv or 0,
+            })
+        watch["authors"] = authors
+        WC.save_watch(watch)
+        return {"ok": True, "watching": True, "added": hit is None,
+                "interval": iv if iv is not None else int((hit or {}).get("interval") or 0),
+                "count": len(authors)}
+
+    if not hit:
+        return {"ok": True, "watching": False, "already": True, "count": len(authors)}
+    watch["authors"] = [a for a in authors if str(a.get("uid")) != uid]
+    WC.save_watch(watch)
+    return {"ok": True, "watching": False, "count": len(watch["authors"])}
+
+
+@_watch_locked
+def _watch_settings(patch, auto_start=None):
+    watch = WC.load_watch()
+    cfg = watch["settings"]
+    if auto_start is not None:
+        watch["auto_start"] = bool(auto_start)
+    for k, v in (patch or {}).items():
+        if k not in WC.DEFAULT_CFG:
+            continue
+        try:
+            cfg[k] = type(WC.DEFAULT_CFG[k])(v)
+        except (TypeError, ValueError):
+            continue
+    WC.save_watch(watch)
+    return {"ok": True, "settings": cfg}
+
+
+def _watch_autostart():
+    """服务起来后，如果名单不为空且开着 auto_start，就把追更常驻进程拉起来。
+
+    为什么放在服务里而不是开机启动项：用户可能双击 start-all.bat、也可能只开
+    start-browser.bat，路径五花八门。挂在服务上就只有一条规则 —— **服务活着，
+    追更就在跑**，不用管他是怎么把服务打开的。
+    """
+    try:
+        w = WC.load_watch()
+        if not w.get("auto_start"):
+            return
+        n = len(w.get("authors") or [])
+        if not n:
+            return
+        time.sleep(6)       # 等端口和索引就绪，别跟启动抢资源
+        r = _watch_start()
+        if r.get("ok"):
+            print("[追更] 已自动开始（名单 %d 位）" % n, flush=True)
+        else:
+            print("[追更] 自动开始失败：%s" % r.get("error"), flush=True)
+    except Exception as e:
+        print("[追更] 自动开始异常：%s" % e, flush=True)
+
+
+def _watch_reset_baseline(uid):
+    """让某个作者下次扫描时重新建基线（换了号、或想重新对齐时间才用）。"""
+    state = WC.load_state()
+    st = (state.get("authors") or {}).get(str(uid))
+    if st is None:
+        return {"ok": False, "error": "没有这个作者的记录"}
+    st["last_ts"] = 0
+    st["seen"] = []
+    st["fails"] = {}
+    WC.save_state(state)
+    return {"ok": True}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # 静默日志，避免刷屏
@@ -3602,6 +4111,11 @@ class Handler(BaseHTTPRequestHandler):
         # 网页文件（只发白名单里的三个，src/web 下）
         if path == "/" or path == "/index.html":
             self._send_file(os.path.join(WEB_DIR, "index.html"))
+            return
+
+        # 追更面板：单独一页，不挤进主界面（主界面已经够满了）
+        if path == "/watch" or path == "/watch.html":
+            self._send_file(os.path.join(WEB_DIR, "watch.html"))
             return
 
         static_name = path.lstrip("/")
@@ -3875,6 +4389,25 @@ class Handler(BaseHTTPRequestHandler):
                 if rc:
                     acc["remote_count"] = rc.get("count")
                     acc["remote_at"] = rc.get("at") or ""
+                # 追更标记：详情页那条「自动追更」横栏的全部状态。放在这里一起返回，
+                # 刷新页面 / 换一条路点进作者时都不用再单独问一次，状态不会错。
+                _w = watch_of(uid)
+                acc["watching"] = bool(_w)
+                acc["watch_enabled"] = bool(_w.get("enabled", True)) if _w else False
+                acc["watch_interval"] = int((_w or {}).get("interval") or 0)
+                if _w:
+                    # watch_state.json 只有几 KB，读一次 0.2ms，顺手把「下次检查 / 已自动下几个」带上
+                    try:
+                        _st = (WC.load_state().get("authors") or {}).get(uid) or {}
+                    except Exception:
+                        _st = {}
+                    acc["watch_next"] = float(_st.get("next_check") or 0)
+                    acc["watch_last"] = _st.get("last_scan") or ""
+                    acc["watch_downloads"] = int(_st.get("downloads") or 0)
+                else:
+                    acc["watch_next"] = 0
+                    acc["watch_last"] = ""
+                    acc["watch_downloads"] = 0
                 self._send_json(acc)
             else:
                 self._send_json({"error": "not found"}, 404)
@@ -4088,6 +4621,11 @@ class Handler(BaseHTTPRequestHandler):
             st["cached"] = len(_LATEST_CACHE)
             st["ttl_days"] = LATEST_TTL_DAYS
             self._send_json(st)
+            return
+
+        # 追更：状态（名单 + 每个作者进度 + 最近日志）
+        if path == "/api/watch/status":
+            self._send_json(_watch_status())
             return
 
         # 数据体检：账号数 / 封面数 / 最近保存 / 自动备份（用户最怕「数据被弄丢」）
@@ -5282,6 +5820,57 @@ class Handler(BaseHTTPRequestHandler):
                                  "interval": COUNT_INTERVAL})
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
+            return
+
+        # 追更：启停 / 加人 / 移除 / 改参数（一个入口，body 里带 action）
+        if path == "/api/watch":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                data = json.loads(body) if body else {}
+                act = (data.get("action") or "").strip()
+                if act == "start":
+                    self._send_json(_watch_start())
+                elif act == "stop":
+                    self._send_json(_watch_stop())
+                elif act == "add":
+                    toks = data.get("tokens")
+                    if not toks:
+                        one = data.get("token") or ""
+                        toks = [x for x in re.split(r"[\s,，;；]+", one) if x]
+                    self._send_json(_watch_add(toks))
+                elif act == "add_batch":
+                    # 导出页「🤖 自动追更」：选中多少位就加多少位，加完直接开跑
+                    self._send_json(_watch_add_batch(data))
+                elif act == "account_add":
+                    self._send_json(WC.pool_add(data.get("label"), data.get("cookie")))
+                elif act == "account_remove":
+                    self._send_json(WC.pool_remove(data.get("id")))
+                elif act == "account_toggle":
+                    self._send_json(WC.pool_toggle(data.get("id"), data.get("enabled", True)))
+                elif act == "account_sync":
+                    self._send_json(WC.pool_sync_downloader())
+                elif act == "remove":
+                    self._send_json(_watch_remove(data.get("uids") or []))
+                elif act == "toggle":
+                    self._send_json(_watch_toggle(data.get("uid"), data.get("enabled")))
+                elif act == "mark":
+                    # 作者详情页的「自动追更」：enabled=true 进名单，false 退名单，
+                    # interval 改检查间隔（0=自动分级，不传=不改）
+                    self._send_json(_watch_mark(data.get("uid"), data.get("enabled", True),
+                                                data.get("sec_uid") or "",
+                                                data.get("nickname") or "",
+                                                data.get("interval")))
+                elif act == "settings":
+                    av = data.get("auto_start")
+                    self._send_json(_watch_settings(data.get("settings") or {}, av))
+                elif act == "reset":
+                    self._send_json(_watch_reset_baseline(data.get("uid")))
+                else:
+                    self._send_json({"ok": False, "error": "不认识的 action：%s" % act})
+            except Exception as e:
+                self._send_json({"ok": False,
+                                 "error": "%s: %s" % (type(e).__name__, e)})
             return
 
         # 启动 / 停止「批量联网查最新作品发布时间」的后台任务
@@ -6479,6 +7068,7 @@ def main():
     else:
         threading.Thread(target=auto_scan_loop, daemon=True).start()
     threading.Timer(0.8, open_browser).start()
+    threading.Thread(target=_watch_autostart, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -6,6 +6,7 @@ cd /d "%~dp0"
 
 set PY=C:\Users\Administrator\.workbuddy\binaries\python\versions\3.13.12\python.exe
 
+
 rem Some launchers inject PYTHONPATH with a "safe delete" shim that aborts the
 rem process when more than 50 files are removed in one run. This app removes
 rem thousands of duplicate files on purpose (user clicks the button), so clear
@@ -21,12 +22,22 @@ rem finish, and the service "disappears". Keep localhost out of the proxy.
 set "NO_PROXY=127.0.0.1,localhost"
 set "no_proxy=127.0.0.1,localhost"
 
-if not exist "%PY%" (
-    echo [ERROR] Python not found: %PY%
-    echo         Fix the PY path above. See docs in the doc folder.
+rem The absolute path above dies when the client upgrades (the version folder
+rem changes). Fall back to whatever python.exe is on PATH instead of refusing
+rem to start. Note: "where" does NOT accept a quoted absolute path, so the
+rem existence check must use "if exist" + goto.
+set "PYPATH=%PY%"
+if exist "%PY%" goto py_ok
+set "PY=python"
+where python >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python not found: %PYPATH%
+    echo         Fix the PY path above, or put python.exe on PATH.
+    echo         See browser\docs\CONFIG.md section 2.
     pause
     exit /b 1
 )
+:py_ok
 
 rem ---------------------------------------------------------------------------
 rem Already running? Then just open the browser and leave. Do NOT start a second

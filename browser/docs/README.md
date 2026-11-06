@@ -4,10 +4,14 @@
 技术栈 = Python `ThreadingHTTPServer` + 原生 HTML/CSS/JS，**无框架、无构建、无数据库、无 AI 依赖**。
 
 - 地址：`http://127.0.0.1:8723`
-- 数据源：`E:/dyyyyyyyyyyyyydownload/.../downnnnnnnn`（只读）
+- 数据源：`E:/dyyyyyyyyyyyyydownload/.../downnnnnnnn`
+  —— **不是只读的**：删除作品（进回收站）、文件夹改名、重复文件清理都会真的动这里的文件
 - 不可再生的数据只有一个：`data\user_data.json`（你的标注），其余都能重建
 
 ## 快速开始
+
+> 第一次在新机器上跑，先看 [`CONFIG.md`](CONFIG.md) 第二节：`paths.py` 里要改 Python / ffmpeg /
+> 下载目录三段路径，`browser/start-browser.bat` 里还有一份 Python 路径要跟着改。
 
 双击 **`start-browser.bat`** 即可：
 1. 若还没有 `data.json`，先全量扫描 `downnnnnnnn` 目录（约 1700 个文件夹，20 分钟上下；按钮上会显示进度）；已有则直接加载

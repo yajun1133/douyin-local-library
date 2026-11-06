@@ -486,20 +486,36 @@ def merge_accounts(existing, new):
         existing["folders"].append(new["folder"])
     # 合并作品
     existing["works"] = existing.get("works", []) + new["works"]
-    # 去重作品（按日期+描述）
+
+    def _merge_key(w):
+        """判断「两条作品记录是不是同一条」。
+
+        2026-11-06 修：原来用 (date, desc) 当键，会把「同一天、同描述、但 aweme_id 不同」的
+        两条真作品合成一条 —— 其中一条的文件从索引里消失（磁盘上还在，界面里看不到）。
+        改按**去掉目录前缀的文件名集合**：同一个 uid 的两个文件夹（改名留下的）里，同一条作品的
+        文件名是一样的，所以重复副本仍能正确合并；不同作品的文件名（带作品 ID / 图序）不会相同。
+        """
+        names = tuple(sorted(os.path.basename(str(f.get("rel") or ""))
+                             for f in (w.get("files") or [])))
+        if any(names):
+            return ("files", names)
+        return ("dd", w.get("date") or "", w.get("desc") or "")
+
+    # 去重作品（同一条作品在两个文件夹里各存了一份）
     seen = set()
     dedup = []
     for w in existing["works"]:
-        key = (w["date"], w["desc"])
+        key = _merge_key(w)
         if key not in seen:
             seen.add(key)
             dedup.append(w)
     existing["works"] = dedup
-    existing["works"].sort(key=lambda w: w["date"], reverse=True)
-    # 重新统计
-    vc = sum(1 for w in existing["works"] if w["media_type"] == "video")
-    ic = sum(1 for w in existing["works"] if w["media_type"] in ("image_single", "image_multi"))
-    dates = [w["date"] for w in existing["works"] if w["date"]]
+    existing["works"].sort(key=lambda w: w.get("date") or "", reverse=True)
+    # 重新统计（字段可能缺失：外部工具补进 user_data 的条目不一定带 media_type）
+    vc = sum(1 for w in existing["works"] if w.get("media_type") == "video")
+    ic = sum(1 for w in existing["works"]
+             if w.get("media_type") in ("image_single", "image_multi"))
+    dates = [w.get("date") or "" for w in existing["works"] if w.get("date")]
     existing["stats"] = {
         "video_count": vc,
         "image_count": ic,
@@ -688,6 +704,7 @@ def main():
     accounts = {}
     reuse = 0
     rescan = 0
+    sec_changed = 0        # xlsx 里补到了新的 sec_uid（即使文件夹 mtime 没变，data.json 也得重写）
     progress(0, total)
     for i, name in enumerate(names, 1):
         old = by_folder.get(name)
@@ -710,7 +727,12 @@ def main():
                 except Exception as e:
                     log(f"[下载记录] {name} 写入失败（不影响索引）: {e}")
             if acc.get("uid") in uid_to_sec:
-                acc["sec_uid"] = uid_to_sec[acc["uid"]]
+                _new_sec = uid_to_sec[acc["uid"]]
+                # 复用的文件夹也要走这里：下载器新抓的 xlsx 可能补上了 sec_uid，
+                # 不记下来就会「内存里改了、data.json 没写」，界面一直是旧的（2026-11-06 修）
+                if (_new_sec or "").strip() and acc.get("sec_uid") != _new_sec:
+                    acc["sec_uid"] = _new_sec
+                    sec_changed += 1
             uid = acc["uid"]
             if uid in accounts:
                 # 同一 UID 出现在多个文件夹 = 账号改过昵称，合并并记录昵称历史
@@ -741,7 +763,8 @@ def main():
     }
 
     # 没有变化就不重写 73MB 的 data.json（写一次要一两秒，纯属浪费）
-    changed = bool(full or rescan or dropped or not os.path.exists(OUTPUT_JSON))
+    # sec_changed 也算变化：它只来自 xlsx，跟文件夹 mtime 无关
+    changed = bool(full or rescan or dropped or sec_changed or not os.path.exists(OUTPUT_JSON))
     if changed:
         _write_data_json(data)
     else:

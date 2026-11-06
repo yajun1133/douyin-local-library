@@ -135,8 +135,9 @@ def merge_folder(child_folder, main_folder, dup_ok=True):
                         (child_folder, main_folder, off))
                     gone = cur.rowcount
                 cur = c.execute(
-                    "UPDATE file SET folder=?, rel=? || substr(rel, ?) WHERE rel LIKE ?",
-                    (main_folder, main_folder + "/", off, pre + "%"))
+                    "UPDATE file SET folder=(:main), rel=(:main || '/' || substr(rel, :off)) "
+                    "WHERE substr(rel, 1, :plen) = :pre",
+                    {"main": main_folder, "off": off, "plen": len(pre), "pre": pre})
                 n = cur.rowcount
                 c.execute("UPDATE author SET folder=? WHERE folder=?",
                           (main_folder, child_folder))
@@ -156,13 +157,15 @@ def rename_folder(old_folder, new_folder):
     if not old_folder or not new_folder or old_folder == new_folder:
         return 0
     pre = old_folder + "/"
+    off = len(pre) + 1          # substr 从 1 开始计数：跳过 "folder/" 这一段
     with _LOCK:
         c = _connect()
         try:
             with c:
                 cur = c.execute(
-                    "UPDATE file SET folder=?, rel=? || substr(rel, ?) WHERE rel LIKE ?",
-                    (new_folder, new_folder + "/", len(pre) + 1, pre + "%"))
+                    "UPDATE file SET folder=(:new), rel=(:new || '/' || substr(rel, :off)) "
+                    "WHERE substr(rel, 1, :plen) = :pre",
+                    {"new": new_folder, "off": off, "plen": len(pre), "pre": pre})
                 n = cur.rowcount
                 c.execute("UPDATE author SET folder=? WHERE folder=?", (new_folder, old_folder))
             return n

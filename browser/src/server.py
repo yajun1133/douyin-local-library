@@ -23,6 +23,7 @@ import shutil
 import queue
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import re
+import traceback
 import urllib.parse
 import urllib.request
 from urllib.parse import urlparse, unquote, parse_qs
@@ -719,7 +720,7 @@ def _sync_cache_after_change(uid, stats, acc=None):
 
 
 def _recycle_load():
-    """读 data/recycle-bin.json；结构：{"batches": [{id, time, uid, nickname, works, idx, items, size}]}"""
+    """读 data/回收站.json（RECYCLE_JSON）；结构：{"batches": [{id, time, uid, nickname, works, idx, items, size}]}"""
     try:
         with open(RECYCLE_JSON, "r", encoding="utf-8") as fp:
             d = json.load(fp)
@@ -731,37 +732,62 @@ def _recycle_load():
 
 
 def _recycle_save(d):
+    """写回收站记录。返回是否成功。
+
+    2026-11-06：以前失败只 print 就返回，调用方（删除作品）已经把所有文件搬进了
+    recycle-bin/，结果「文件在、记录没了」—— 界面上看不到这批，既不能恢复也不能彻底删，
+    只能自己去翻目录。现在返回布尔值，调用方据此整体回滚。
+    """
     try:
         os.makedirs(os.path.dirname(RECYCLE_JSON), exist_ok=True)
         tmp = RECYCLE_JSON + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fp:
             json.dump(d, fp, ensure_ascii=False)
         os.replace(tmp, RECYCLE_JSON)
+        return True
     except OSError as e:
-        print("[recycle] 记录写盘失败:", e)
+        print("[recycle] 记录写盘失败:", e, flush=True)
+        return False
 
 
 def _recycle_put(batch_id, rel, full):
     """把 full 搬进 recycle-bin/<batch_id>/<rel>，返回 (绝对路径, 批次内相对路径)。
 
     回收站内部也保留「作者文件夹/文件名」的结构，恢复时能一一对回去。
-    同名（理论上不会）加 _1 后缀，返回的相对路径跟着改。
+
+    ⚠️ 2026-11-06 改：**不再自动加 `_1` 后缀**。批次 ID 现在带随机尾巴（见
+    `_works_delete_inner`），目录一定是新建的，同名只可能是同一作品里重复的 rel ——
+    那是数据异常，宁可报错也绝不改名，否则记录里的 `rec` 和磁盘上的文件名对不上，
+    恢复时就会「文件不见了」。
     """
     parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    if not parts:
+        raise OSError("非法的相对路径：%r" % (rel,))
     base_dir = os.path.join(RECYCLE_DIR, batch_id)
     dst = os.path.join(base_dir, *parts)
-    stem, ext = os.path.splitext(dst)
-    n = 1
-    while os.path.exists(dst):
-        dst = "%s_%d%s" % (stem, n, ext)
-        n += 1
+    if os.path.exists(dst):
+        raise OSError("回收站里已经有同名文件：%s" % dst)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
+    # 同盘改名瞬时完成；跨盘（项目在 D:、媒体在 E:）时 shutil.move 会退化成
+    # 复制 + 删除，这一步**必须在 _CACHE_LOCK 外做**，否则整个服务跟着卡住。
     shutil.move(full, dst)
     return dst, os.path.relpath(dst, base_dir).replace("\\", "/")
 
 
+_BATCH_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_-]{0,63}$")
+
+
 def _recycle_batch_dir(batch_id):
-    """批次目录（只接受记录里存在的 id，杜绝传 ../.. 穿越）。"""
+    """批次目录。id 必须自己校验（2026-11-06 补）。
+
+    原注释写着「只接受记录里存在的 id，杜绝传 ../.. 穿越」，但函数体只有一句 join ——
+    校验全靠调用点先查记录。而 `data/回收站.json` 是普通文件，被别的脚本改出一个
+    `"id": "../../.."` 就会让 rmtree 删到项目外。这里把口径落实到函数自己身上。
+    非法 id 返回空串，调用点必须判空。
+    """
+    batch_id = str(batch_id or "").strip()
+    if not batch_id or ".." in batch_id or not _BATCH_ID_RE.match(batch_id):
+        return ""
     return os.path.join(RECYCLE_DIR, batch_id)
 
 
@@ -783,7 +809,69 @@ def _works_delete(uid, idxs, permanent=False):
         return {"ok": False, "error": "删除失败：%s" % e}
 
 
+def _recycle_put_back(batch_id, items):
+    """把已经搬进回收站的文件搬回原位（某个作品中途失败时的回滚）。返回搬回个数。
+
+    跨盘时同样是复制 + 删除，但这条路只在「搬文件中途出错」时才走，属于罕见分支。
+    """
+    if not batch_id or not items:
+        return 0
+    base = os.path.join(RECYCLE_DIR, batch_id)
+    n = 0
+    for it in items:
+        rec = str(it.get("rec") or "").replace("\\", "/")
+        parts = [p for p in rec.split("/") if p not in ("", ".", "..")]
+        dst = safe_media_path(it.get("rel") or "")
+        if not parts or not dst:
+            continue
+        src = os.path.join(base, *parts)
+        if not os.path.isfile(src):
+            continue
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            if not os.path.exists(dst):
+                shutil.move(src, dst)
+                n += 1
+        except OSError as e:
+            print("[delete] 回滚失败 %s: %s" % (it.get("rel"), e), flush=True)
+    return n
+
+
+def _recycle_drop_empty(batch_id):
+    """批次目录空了就把空壳删掉（回滚后 / 全部失败时不留空目录）。"""
+    if not batch_id:
+        return
+    d = os.path.join(RECYCLE_DIR, batch_id)
+    if not os.path.isdir(d):
+        return
+    try:
+        for root, _dirs, files in os.walk(d, topdown=False):
+            if not files:
+                try:
+                    os.rmdir(root)
+                except OSError:
+                    pass
+    except OSError:
+        pass
+
+
 def _works_delete_inner(uid, idxs, permanent=False):
+    """删除某位作者的一批作品（按作品在 works 里的下标）。
+
+    默认 **移入回收站**（可恢复）：文件搬到 recycle-bin/<批次ID>/ 下、作品条目从索引里摘掉、
+    stats 跟着减，另写 data/删除记录.jsonl 留痕。
+    permanent=True 才是真删（用户在回收站里点「彻底删除」走的是 _recycle_purge）。
+
+    2026-11-06 重构成三阶段（原来整段都在 _CACHE_LOCK 里）：
+      ① 持锁只读：校验下标，把要删的作品 + 文件清单拷成「计划」，随即释放锁；
+      ② 锁外搬文件：回收站在项目盘、媒体在 E:，跨盘时 shutil.move 是**真复制**，
+         一批 15 GB 要几十秒 —— 这段时间以前会把所有 /api/* 全堵住（都要同一把锁）；
+      ③ 重新持锁：按「文件名集合」把作品摘出索引、改 stats、写 data.json。
+
+    另外两条不变式（原来没有）：
+      · **作品是原子单位**：一个作品只要有任一文件搬不动，整条保留，并把它已经搬走的文件搬回原位；
+      · **回收站记录先落盘再改索引**：记录写不进去就整体撤销，绝不留「文件在回收站、记录没了」的孤儿。
+    """
     uid = str(uid or "").strip()
     if not isinstance(idxs, (list, tuple)) or not idxs:
         return {"ok": False, "error": "没有选中作品"}
@@ -795,15 +883,8 @@ def _works_delete_inner(uid, idxs, permanent=False):
         return {"ok": False, "error": "一次最多删 5000 个作品"}
 
     t0 = time.time()
-    batch_id = time.strftime("%Y%m%d-%H%M%S") + "-" + (uid[-6:] or "0")
-    removed_rels = []      # 真删模式下要清缩略图缓存的文件
-    moved = []             # 回收站模式：{rel, rec, size}
-    failed = []
-    removed = []
-    cover_new = None       # 封面指向的文件被删掉时，这里存改后的新路径
-    picked = []            # [(原下标, work 深拷贝)]，恢复时按它插回去
-    freed = 0
-    v_del = i_del = 0
+
+    # ---------- ① 持锁只读：做计划 ----------
     with _CACHE_LOCK:
         data = CACHE.get("data")
         if not isinstance(data, dict):
@@ -816,60 +897,148 @@ def _works_delete_inner(uid, idxs, permanent=False):
         if bad:
             return {"ok": False, "error": "作品序号越界：%s" % bad[:3]}
 
+        plan = []
         for i in want:
             w = works[i]
-            picked.append((i, json.loads(json.dumps(w, ensure_ascii=False))))
-            has_video = False
+            files = []
             for f in (w.get("files") or []):
                 rel = f.get("rel") or ""
-                full = safe_media_path(rel)
-                if not full:
-                    failed.append({"rel": rel, "error": "路径不合法"})
-                    continue
-                try:
-                    if os.path.isfile(full):
-                        sz = os.path.getsize(full)
-                        if permanent:
-                            os.remove(full)
-                            removed_rels.append(rel)
-                        else:
-                            _dst, rec = _recycle_put(batch_id, rel, full)
-                            moved.append({"rel": rel, "rec": rec, "size": sz})
-                        freed += sz
-                except OSError as e:
-                    failed.append({"rel": rel, "error": str(e)})
-                if os.path.splitext(rel)[1].lower() in RECYCLE_VIDEO_EXT:
-                    has_video = True
-            if has_video:
-                v_del += 1
-            else:
-                i_del += 1
-            removed.append({
-                "date": w.get("date") or "",
-                "desc": (w.get("desc") or "")[:80],
-                "files": len(w.get("files") or []),
+                files.append({"rel": rel, "full": safe_media_path(rel)})
+            plan.append({
+                "idx": i,
+                "work": json.loads(json.dumps(w, ensure_ascii=False)),
+                # 作品指纹：文件名（rel）集合。阶段③用它重新定位作品，
+                # 期间即使重扫过、下标全变了也能对上。
+                "key": frozenset(x["rel"] for x in files),
+                "files": files,
             })
+        nickname = acc.get("nickname") or ""
 
-        # 从后往前删，下标不会错位
-        for i in want:
-            del works[i]
-        acc["works"] = works
+    batch_id = ""
+    if not permanent:
+        import uuid
+        # 秒级时间戳 + uid 后 6 位**不够唯一**：同一账号同一秒删两次会撞成同一批次，
+        # 恢复第一批时 rmtree 会把第二批还在回收站里的文件一起删掉（2026-11-06 修）。
+        batch_id = (time.strftime("%Y%m%d-%H%M%S") + "-" + (uid[-6:] or "0")
+                    + "-" + uuid.uuid4().hex[:4])
+
+    # ---------- ② 锁外搬文件（可能很慢） ----------
+    failed = []
+    results = []
+    for p in plan:
+        ok = True
+        mv, rm, freed_this = [], [], 0
+        for f in p["files"]:
+            rel, full = f["rel"], f["full"]
+            if not rel or not full:
+                ok = False
+                failed.append({"rel": rel, "error": "路径不合法"})
+                continue
+            try:
+                if not os.path.isfile(full):
+                    # 文件本来就不在了（上次删了一半 / 手工删的）：不算失败，
+                    # 正好把这条僵尸作品从索引里清掉。
+                    continue
+                sz = os.path.getsize(full)
+                if permanent:
+                    os.remove(full)
+                    rm.append(rel)
+                else:
+                    _dst, rec = _recycle_put(batch_id, rel, full)
+                    mv.append({"rel": rel, "rec": rec, "size": sz})
+                freed_this += sz
+            except OSError as e:
+                ok = False
+                failed.append({"rel": rel, "error": str(e)})
+        results.append({"plan": p, "ok": ok, "moved": mv,
+                        "removed": rm, "freed": freed_this})
+
+    # 回收站模式：单条作品失败 → 把它已搬走的文件搬回去，整条作品原样保留。
+    # （真删模式删掉的文件没法回滚，只能把条目一起删掉并记进 failed）
+    if not permanent:
+        for r in results:
+            if r["ok"] or not r["moved"]:
+                continue
+            back = _recycle_put_back(batch_id, r["moved"])
+            print("[delete] 作品 %s 有文件搬不动，已回滚 %d 个文件"
+                  % (r["plan"]["work"].get("desc") or "", back), flush=True)
+            r["moved"] = []
+            r["freed"] = 0
+
+    done = results if permanent else [r for r in results if r["ok"]]
+    if not done:
+        if not permanent:
+            _recycle_drop_empty(batch_id)
+        return {"ok": False, "works": 0, "files": 0, "freed": 0, "failed": failed,
+                "error": "选中的作品都有文件被占用，本次没有删除任何内容"}
+
+    # ---------- ③ 记录先落盘，再改索引 ----------
+    if not permanent:
+        rec = _recycle_load()
+        rec["batches"].insert(0, {
+            "id": batch_id,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "uid": uid,
+            "nickname": nickname,
+            "works": [r["plan"]["work"] for r in done],
+            "idx": [r["plan"]["idx"] for r in done],
+            "items": [it for r in done for it in r["moved"]],
+            "size": sum(it["size"] for r in done for it in r["moved"]),
+        })
+        if not _recycle_save(rec):
+            # 记录写不进去 = 这批文件将来无法从界面恢复。整体撤销，一个文件都不删。
+            back = 0
+            for r in done:
+                back += _recycle_put_back(batch_id, r["moved"])
+            _recycle_drop_empty(batch_id)
+            return {"ok": False, "works": 0, "files": 0, "freed": 0, "failed": failed,
+                    "error": "回收站记录写入失败，本次删除已撤销（已把 %d 个文件搬回原位）" % back}
+
+    # ---------- ④ 持锁改索引 ----------
+    removed = []            # 留痕用
+    v_del = i_del = 0
+    with _CACHE_LOCK:
+        data = CACHE.get("data")
+        acc = (data.get("accounts") or {}).get(uid) if isinstance(data, dict) else None
+        if not isinstance(acc, dict):
+            return {"ok": False, "error": "账号已不在索引里（可能刚被重扫掉），"
+                                          "文件已处理，请点「⟳ 重新扫描」重建索引"}
+        del_keys = {r["plan"]["key"] for r in done}
+        works = acc.get("works") or []
+        keep = []
+        for w in works:
+            key = frozenset((f.get("rel") or "") for f in (w.get("files") or []))
+            if key in del_keys:
+                removed.append({
+                    "date": w.get("date") or "",
+                    "desc": (w.get("desc") or "")[:80],
+                    "files": len(w.get("files") or []),
+                })
+                if any(os.path.splitext((f.get("rel") or ""))[1].lower() in RECYCLE_VIDEO_EXT
+                       for f in (w.get("files") or [])):
+                    v_del += 1
+                else:
+                    i_del += 1
+                continue
+            keep.append(w)
+        acc["works"] = keep
         stats = acc.get("stats") or {}
-        stats["work_count"] = max(0, int(stats.get("work_count") or 0) - len(want))
+        stats["work_count"] = max(0, int(stats.get("work_count") or 0) - len(removed))
         stats["video_count"] = max(0, int(stats.get("video_count") or 0) - v_del)
         stats["image_count"] = max(0, int(stats.get("image_count") or 0) - i_del)
         acc["stats"] = stats
-        nickname = acc.get("nickname") or ""
 
         # 删掉的正好是「封面用的那个文件」→ 封面会 404，列表里变深色空块。
         # 顺手改指向他剩下的最新一条作品（文件还在的那种），别让删作品把别人的脸也删了。
+        cover_new = None
+        gone = {it["rel"] for r in results for it in r["moved"]}
+        gone |= {rel for r in results for rel in r["removed"]}
         cov = acc.get("cover")
         if isinstance(cov, dict):
             wf = (cov.get("workFile") or "").replace("\\", "/")
-            gone = {it["rel"].replace("\\", "/") for it in moved} | set(removed_rels)
             if wf and wf in gone:
                 new_wf = ""
-                for w in works:
+                for w in keep:
                     for f in (w.get("files") or []):
                         cand = f.get("rel") or ""
                         full2 = safe_media_path(cand) if cand else None
@@ -887,7 +1056,10 @@ def _works_delete_inner(uid, idxs, permanent=False):
                 json.dump(_index_only(data), fp, ensure_ascii=False)
             os.replace(tmp, DATA_JSON)
         except OSError as e:
-            return {"ok": False, "deleted": len(removed), "files": len(moved) + len(removed_rels),
+            return {"ok": False, "deleted": len(removed),
+                    "files": sum(len(r["moved"]) + len(r["removed"]) for r in done),
+                    "works": len(removed), "freed": sum(r["freed"] for r in done),
+                    "failed": failed, "batch": "" if permanent else batch_id,
                     "error": "文件已处理，但索引写盘失败（%s）。请点「⟳ 重新扫描」重建。" % e}
 
     # data.json 改好了，用户标注里那份 cover 也要跟上（否则刷新后旧路径被叠回来）
@@ -895,24 +1067,10 @@ def _works_delete_inner(uid, idxs, permanent=False):
         try:
             merge_save_user_data({"accounts": {uid: {"cover": cover_new}}})
         except Exception as e:
-            print("[delete] 用户标注里的封面没同步:", e)
-
-    # 回收站模式：把这一批写进记录，恢复时照着搬回去
-    if not permanent and moved:
-        d = _recycle_load()
-        d["batches"].insert(0, {
-            "id": batch_id,
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "uid": uid,
-            "nickname": nickname,
-            "works": [w for _i, w in picked],
-            "idx": [i for i, _w in picked],
-            "items": moved,
-            "size": sum(it["size"] for it in moved),
-        })
-        _recycle_save(d)
+            print("[delete] 用户标注里的封面没同步:", e, flush=True)
 
     # 真删模式才清缩略图缓存（按 rel 的 md5 命名）；回收站模式留着，恢复后直接能用
+    removed_rels = [rel for r in results for rel in r["removed"]]
     for rel in removed_rels:
         try:
             tc = os.path.join(THUMB_CACHE, hashlib.md5(rel.encode("utf-8")).hexdigest() + ".jpg")
@@ -937,10 +1095,12 @@ def _works_delete_inner(uid, idxs, permanent=False):
         pass
 
     _sync_cache_after_change(uid, stats, acc)
+    freed = sum(r["freed"] for r in done)
+    files_n = sum(len(r["moved"]) + len(r["removed"]) for r in done)
     print("[delete] uid=%s works=%d files=%d freed=%.1fMB mode=%s %.2fs"
-          % (uid, len(removed), len(moved) + len(removed_rels), freed / 1048576.0,
-             "permanent" if permanent else "recycle", time.time() - t0))
-    return {"ok": True, "works": len(removed), "files": len(moved) + len(removed_rels),
+          % (uid, len(removed), files_n, freed / 1048576.0,
+             "permanent" if permanent else "recycle", time.time() - t0), flush=True)
+    return {"ok": True, "works": len(removed), "files": files_n,
             "freed": freed, "failed": failed, "batch": "" if permanent else batch_id,
             "mode": "permanent" if permanent else "recycle",
             "videos": v_del, "images": i_del}
@@ -1035,6 +1195,8 @@ def _recycle_restore(batch_id):
 
     uid = b.get("uid") or ""
     bdir = _recycle_batch_dir(batch_id)
+    if not bdir:
+        return {"ok": False, "error": "批次 ID 不合法：%s" % batch_id}
     restored = 0
     failed = []
     for it in (b.get("items") or []):
@@ -1106,13 +1268,15 @@ def _recycle_restore(batch_id):
             return {"ok": False, "error": "文件已搬回，但索引写盘失败（%s）。请点「⟳ 重新扫描」" % e}
 
     d["batches"] = [x for x in (d.get("batches") or []) if x.get("id") != batch_id]
-    _recycle_save(d)
-    try:
-        shutil.rmtree(bdir, ignore_errors=True)
-    except OSError:
-        pass
+    saved = _recycle_save(d)
+    # 目录里可能还剩「没搬回去」的文件（failed 里的那些）——只删空目录，绝不 rmtree。
+    # 之前这里是无条件 rmtree：恢复失败 = 文件被永久删掉，而界面上只提示「文件不见了」。
+    _recycle_drop_empty(batch_id)
     _sync_cache_after_change(uid, stats, acc)
-    return {"ok": True, "works": len(ws), "files": restored, "failed": failed}
+    res = {"ok": True, "works": len(ws), "files": restored, "failed": failed}
+    if not saved:
+        res["warning"] = "回收站记录写入失败，这一批可能仍显示在列表里（文件已搬回原位）"
+    return res
 
 
 def _recycle_purge(batch_id):
@@ -1127,6 +1291,8 @@ def _recycle_purge(batch_id):
     if not b:
         return {"ok": False, "error": "回收站里没有这一批：%s" % batch_id}
     bdir = _recycle_batch_dir(batch_id)
+    if not bdir:
+        return {"ok": False, "error": "批次 ID 不合法：%s" % batch_id}
     size = int(b.get("size") or 0)
     try:
         if os.path.isdir(bdir):
@@ -1298,7 +1464,11 @@ def _work_desc(fn, nick):
 
 
 def _safe_subdir(root, name):
-    """在 root 下取一层子目录的绝对路径；名字非法/越界返回 None。"""
+    """在 root 下取一层子目录的绝对路径；名字非法/越界返回 None。
+
+    越界判断用 realpath（不是 abspath）：目录里有 junction / 符号链接指向外部时，
+    字符串前缀看起来「还在里面」，实际读写的是外面（2026-11-06 与 safe_media_path 口径统一）。
+    """
     if not isinstance(name, str) or not name.strip():
         return None
     name = name.strip()
@@ -1306,7 +1476,11 @@ def _safe_subdir(root, name):
         return None
     root_abs = os.path.abspath(root)
     p = os.path.abspath(os.path.join(root_abs, name))
-    if not p.startswith(root_abs + os.sep):
+    try:
+        root_real = os.path.realpath(root_abs)
+        if os.path.commonpath([root_real, os.path.realpath(p)]) != root_real:
+            return None
+    except (OSError, ValueError):
         return None
     return p
 
@@ -1656,7 +1830,12 @@ def _files_dup_delete(names=None, delete_all=False, group=None, files=None):
             if not isinstance(fn, str) or not fn.strip():
                 return {"ok": False, "error": "文件名不合法"}
             fp = os.path.abspath(os.path.join(gdir, fn.strip()))
-            if not fp.startswith(gdir + os.sep):
+            try:
+                inside = (os.path.commonpath([os.path.realpath(gdir), os.path.realpath(fp)])
+                          == os.path.realpath(gdir))
+            except (OSError, ValueError):
+                inside = False
+            if not inside:
                 return {"ok": False, "error": "越界路径，已中止"}
             if not os.path.isfile(fp):
                 continue
@@ -1690,7 +1869,12 @@ def _files_dup_delete(names=None, delete_all=False, group=None, files=None):
     failed = []
     for n in targets:
         p = os.path.abspath(os.path.join(root_abs, n))
-        if not p.startswith(root_abs + os.sep):
+        try:
+            inside = (os.path.commonpath([os.path.realpath(root_abs), os.path.realpath(p)])
+                      == os.path.realpath(root_abs))
+        except (OSError, ValueError):
+            inside = False
+        if not inside:
             return {"ok": False, "error": "越界路径，已中止"}
         if not os.path.isdir(p):
             continue
@@ -2408,9 +2592,14 @@ def _load_user_data_locked(force=False):
     # 用户删掉某个标注字段时，要把它从内存里撤掉，否则旧值会一直残留
     for uid, old in (CACHE.get("user_applied") or {}).items():
         acc = accounts.get(uid)
-        if not isinstance(acc, dict):
+        if not isinstance(acc, dict) or not isinstance(old, dict):
+            # 非 dict 的历史快照（user_data 里某条被写成 null / 数字）没法表达
+            # 「哪些字段被删过」，跳过即可；不加这个判断会 `for k in None` 抛 TypeError，
+            # 整个列表接口变成空响应（2026-11-06）
             continue
-        cur = new_acc.get(uid) or {}
+        cur = new_acc.get(uid)
+        if not isinstance(cur, dict):
+            cur = {}
         for k in old:
             if k not in cur:
                 acc.pop(k, None)
@@ -2458,7 +2647,9 @@ def _load_user_data_locked(force=False):
     CACHE["list_index"] = list_index
     CACHE["synthetic_uids"] = synthetic
     CACHE["user_mtime"] = mtime
-    CACHE["user_applied"] = new_acc
+    # 存一份浅拷贝，别把磁盘 JSON 的 dict 直接挂进缓存：那份会被 acc.update() 之后
+    # 的原地修改带上（删字段的比较基准就不准了）
+    CACHE["user_applied"] = {u: dict(v) for u, v in new_acc.items() if isinstance(v, dict)}
     return True
 
 
@@ -3219,25 +3410,38 @@ class Handler(BaseHTTPRequestHandler):
     def _send_file(self, path):
         # 先 open 再 fstat：缓存淘汰线程随时会删文件，先 getsize 后 open 会有窗口期
         try:
-            with open(path, "rb") as fp:
-                data = fp.read()
+            fp = open(path, "rb")
         except OSError:
             self._send_json({"error": "not found"}, 404)
             return
-        ext = os.path.splitext(path)[1].lower()
-        mime = MIME.get(ext, "application/octet-stream")
-        # 网页/JSON 必须每次回源，否则改了 app.js 浏览器还在用缓存里的旧版本
-        cache = "no-cache" if ext in NO_CACHE_EXTS else "public, max-age=31536000, immutable"
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Accept-Ranges", "bytes")
-            self.send_header("Cache-Control", cache)
-            self.end_headers()
-            self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
+        with fp:
+            try:
+                size = os.fstat(fp.fileno()).st_size
+            except OSError:
+                self._send_json({"error": "not found"}, 404)
+                return
+            ext = os.path.splitext(path)[1].lower()
+            mime = MIME.get(ext, "application/octet-stream")
+            # 网页/JSON 必须每次回源，否则改了 app.js 浏览器还在用缓存里的旧版本
+            cache = "no-cache" if ext in NO_CACHE_EXTS else "public, max-age=31536000, immutable"
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Cache-Control", cache)
+                self.end_headers()
+                # 分块写，不把整个文件读进内存（原来 fp.read()：静态白名单里现在都是小文件，
+                # 但一旦有人往里加个大文件，就会整份吃掉内存 —— 2026-11-06）
+                remaining = size
+                while remaining > 0:
+                    chunk = fp.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
     @staticmethod
     def _parse_range(header, size):
@@ -3350,6 +3554,23 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._client_ok():
             return
+        # 统一兜底（2026-11-06）：GET 侧原来一个 try 都没有，接口里任何一处
+        # KeyError / TypeError / OSError 都会穿透到 socketserver —— 连接被直接关掉、
+        # 响应为空，前端 resp.json() 抛 SyntaxError，只显示「列表加载失败」，
+        # 真实原因只留在服务端控制台，极难自查。POST 侧一直是每个分支各自 try，这里补上。
+        try:
+            self._dispatch_get()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as e:      # noqa: BLE001
+            traceback.print_exc()
+            try:
+                self._send_json({"ok": False,
+                                 "error": "%s: %s" % (type(e).__name__, e)}, 500)
+            except Exception:
+                pass
+
+    def _dispatch_get(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
@@ -4008,15 +4229,20 @@ class Handler(BaseHTTPRequestHandler):
         year_count = {}
         starred = 0
         for uid, a in CACHE["accounts"].items():
+            if not isinstance(a, dict):
+                continue
             if a.get("starred"):
                 starred += 1
             for t in (a.get("tags") or []):
                 tag_count[t] = tag_count.get(t, 0) + 1
             for w in (a.get("works") or []):
-                if w.get("date"):
+                if isinstance(w, dict) and w.get("date"):
                     y = w["date"][:4]
                     year_count[y] = year_count.get(y, 0) + 1
         self._send_json({
+            # 固定标识：_instance_alive() 用它确认「8723 上跑的是本程序」，
+            # 不再依赖 total_authors 排在第几个字节（2026-11-06）
+            "app": "douyin-local-library",
             "total_authors": len(CACHE["accounts"]),
             "starred": starred,
             "tags": tag_count,
@@ -4083,7 +4309,8 @@ class Handler(BaseHTTPRequestHandler):
             # 「是否有封面」已经在 _build_attr_tests 里当成一行处理了（支持 ＋/－ 圆钮），
             # 这里不再单独判一次 —— 否则用户在封面行点成 － 会和这里的「必须满足」打架。
             if q_year:
-                if not (a and any(w.get("date", "").startswith(q_year) for w in (a.get("works") or []))):
+                if not (a and any(isinstance(w, dict) and (w.get("date") or "").startswith(q_year)
+                                  for w in (a.get("works") or []))):
                     continue
             if q_search:
                 matched = False
@@ -4103,7 +4330,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not matched and q_scope in ("", "all", "works"):
                     # 作品：搜每个作品的标题/简介（desc）
                     for w in (a or {}).get("works") or []:
-                        if q_search in (w.get("desc") or "").lower():
+                        if isinstance(w, dict) and q_search in (w.get("desc") or "").lower():
                             matched = True
                             break
                 if not matched:
@@ -4122,8 +4349,12 @@ class Handler(BaseHTTPRequestHandler):
 
         # 排序：字段 + 方向（dir 缺省时按字段各自的习惯方向，见 SORT_DEFAULT_DIR）
         def sort_key(x):
+            # 昵称一律走 .get + or ""：user_data 里若有 null（外部脚本/手工编辑造成），
+            # 直接下标取值会让整个 sort 抛 "str 和 NoneType 不能比较"，
+            # 进而把 /api/authors 变成空响应（2026-11-06）
+            nick = x.get("nickname") or ""
             if q_sort == "uid":
-                return x["uid"]
+                return x.get("uid") or ""
             if q_sort == "work_count":
                 return x.get("work_count") or 0
             if q_sort == "video_count":
@@ -4131,19 +4362,19 @@ class Handler(BaseHTTPRequestHandler):
             if q_sort == "image_count":
                 return x.get("image_count") or 0
             if q_sort == "latest":
-                return (x.get("latest") or "", x["nickname"])
+                return (x.get("latest") or "", nick)
             if q_sort == "earliest":
-                return (x.get("earliest") or "", x["nickname"])
+                return (x.get("earliest") or "", nick)
             if q_sort == "added":
                 # 添加顺序：作者文件夹创建时间（ctime），同时间再按 uid 稳定
-                return (x.get("added_at") or 0, x["uid"])
+                return (x.get("added_at") or 0, x.get("uid") or "")
             if q_sort == "download":
                 # 最后下载时间：文件写入时间（= 这条作品什么时候被下下来的）
-                return (x.get("last_download") or 0, x["uid"])
+                return (x.get("last_download") or 0, x.get("uid") or "")
             if q_sort == "level":
                 # 夯 > 顶级 > 一般 > 拉 > 未设置
-                return (LEVEL_RANK.get(x.get("level") or "", 0), x["nickname"])
-            return x["nickname"]
+                return (LEVEL_RANK.get(x.get("level") or "", 0), nick)
+            return nick
 
         if q_dir in ("asc", "desc"):
             reverse = (q_dir == "desc")
@@ -4162,8 +4393,12 @@ class Handler(BaseHTTPRequestHandler):
             offset = 0
         try:
             limit = int((q.get("limit") or ["60"])[0])
-        except ValueError:
+        except (TypeError, ValueError):
             limit = 60
+        # 边界夹紧（2026-11-06）：负 offset 会走 Python 负切片（result[-10:-10+60]），
+        # limit 不设上限时 `?limit=1000000` 会先构造一个巨大的切片再序列化。
+        offset = max(0, offset)
+        limit = max(1, min(limit, 20000))
         page = result[offset:offset + limit]
         # 联网查到的最新发布时间（比列表构建时新，直接贴到返回项上）
         for it in page:
@@ -4933,6 +5168,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._client_ok():
             return
+        try:
+            self._dispatch_post()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as e:      # noqa: BLE001
+            traceback.print_exc()
+            try:
+                self._send_json({"ok": False,
+                                 "error": "%s: %s" % (type(e).__name__, e)}, 500)
+            except Exception:
+                pass
+
+    def _dispatch_post(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
@@ -6076,8 +6324,11 @@ def _instance_alive():
         # 本机自检，绝不能经过任何代理
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open("http://127.0.0.1:%d/api/meta" % PORT, timeout=2) as r:
-            body = r.read(200).decode("utf-8", "replace")
-            return '"total_authors"' in body
+            # 读全量而不是前 200 字节：以前靠「前 200 字节里有没有 total_authors」判断，
+            # 一旦 /api/meta 的键顺序变了（或前面多塞了统计字段）就会误判成「没在跑」，
+            # 于是又起一个实例去抢端口（2026-11-06 改成认固定标识 app）
+            body = r.read().decode("utf-8", "replace")
+            return '"douyin-local-library"' in body or '"total_authors"' in body
     except Exception:
         return False
 
@@ -6154,7 +6405,13 @@ def main():
     # 检查 data.json 是否存在，不存在则先扫描
     if not os.path.exists(DATA_JSON):
         say("首次运行，先扫描目录生成 data.json...（约 20 分钟）")
-        subprocess.run([PYTHON, SCANNER_PY], cwd=SCRIPT_DIR)
+        try:
+            subprocess.run([PYTHON, SCANNER_PY], cwd=SCRIPT_DIR)
+        except OSError as e:
+            # 双击 bat 时窗口一闪而过最常就是这个原因（PYTHON 路径写错/换机器没改）
+            say("[错误] 扫描进程起不来：%s" % e)
+            say("       检查 src/paths.py 里的 PYTHON 和 SCANNER_PY 是否存在。")
+            say("       服务仍会启动（页面里是 0 位作者），改好后点「⟳ 重新扫描」。")
 
     # 先探测：端口上已经有本程序在跑吗？
     # Windows 的 SO_REUSEADDR 允许重复 bind，「try 一下失败就说明被占用」在这里是错的：

@@ -28,6 +28,9 @@ from pathlib import Path
 
 VERSION = "1.3.9"
 BASE = Path(__file__).resolve().parent
+# 浏览器扩展的请求来源前缀（MV3 service worker 里 fetch 127.0.0.1 时带的就是它）。
+# 只认这一类来源；普通网页（https://任意站）一律拒绝，见 Handler._client_ok。
+EXT_ORIGIN_PREFIX = "chrome-extension://"
 AWEME_RE = re.compile(r"(?<!\d)(\d{18,20})(?!\d)")
 DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-?")
 EXT_RE = re.compile(r"\.(mp4|mov|webm|jpe?g|png|webp|gif|heic)$", re.I)
@@ -80,6 +83,17 @@ def norm_name(s: str) -> str:
     return (s or "").strip().casefold()
 
 
+def _to_int(v, default=0) -> int:
+    """宽容地把请求里的值转成整数：`"12"` / `12.0` / `None` / `"abc"` 都不抛异常。
+
+    这些值来自扩展（也来自任何能访问 8790 的东西），不能假设类型。
+    """
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
 def desc_key(desc: str) -> str:
     """文案归一化后取前 20 字，用来和文件名里的 desc 段对齐。"""
     return STRIP_RE.sub("", desc or "")[:20].lower()
@@ -126,7 +140,8 @@ class AuthorIndex:
         self.by_nick: dict[str, list[str]] = {}  # 规范化昵称 -> [uid]
         self.aweme: dict[str, tuple[str, int, int]] = {}  # 作品ID -> (uid, mtime, size)
         self.folders: dict[str, str] = {}      # uid -> 文件夹名（用于按前缀扫文件）
-        self.remote: dict[str, dict] = {}      # uid -> {pub, crawl} 抖音上最新发布
+        self.remote: dict[str, dict] = {}      # uid -> {pub, crawl} 抖音上最新发布（下载器作品表快照）
+        self.live: dict[str, dict] = {}        # uid -> {latest, at}   联网查到的真实发布时间（优先）
         self._ufiles: "OrderedDict[str, list]" = OrderedDict()  # 作者文件清单缓存(LRU)
         self._uf_lock = threading.RLock()
         self.indexed_at = 0.0
@@ -287,6 +302,23 @@ class AuthorIndex:
             except Exception as e:
                 log("remote_latest.json 读取失败：", e)
         self.remote = remote
+
+        # 4b) 联网查到的「抖音最新作品发布时间」（网页端 /api/latest_work 写的同一份缓存）。
+        #     remote_latest.json 是**下载器作品表 xlsx 的历史快照**，可能停留在一年前：
+        #     拿它算「本地是否跟上」会得出「抖音最新 2025-08-27 · 本地已跟上(2025-08-31 查)」
+        #     这种明显倒挂的结论（2026-11-06 用户反馈）。有联网数据就一定先用它。
+        live: dict[str, dict] = {}
+        lp = (Path(rp).parent / "latest_work.json") if rp else None
+        if lp and lp.exists():
+            try:
+                raw = json.loads(lp.read_text("utf-8"))
+                for uid, v in (raw.get("authors") or {}).items():
+                    latest = (v or {}).get("latest") or ""
+                    if latest:
+                        live[str(uid)] = {"latest": str(latest), "at": str(v.get("at") or "")}
+            except Exception as e:
+                log("latest_work.json 读取失败：", e)
+        self.live = live
 
         # 文件清单缓存要作废（索引重建了）
         with self._uf_lock:
@@ -489,7 +521,18 @@ class AuthorIndex:
             aweme_id = qid
             video = self.video_info(target, aweme_id, m.get("desc") or "",
                                     int(m.get("create_time") or 0)) if (aweme_id and same_video) else None
-            remote = self.remote.get(target) or None
+            # 抖音最新发布时间：**联网查到的优先**，旧的 xlsx 快照只在没联网查过时兜底。
+            # 反过来的话就会出现「抖音最新 2025-08-27」这种一年前的倒挂（2026-11-06 修）。
+            remote = None
+            _live = self.live.get(target) or None
+            if _live:
+                remote = {"pub": str(_live["latest"])[:10],
+                          "crawl": str(_live.get("at") or "")[:10],
+                          "live": _live["latest"], "src": "live"}
+            else:
+                _old = self.remote.get(target) or None
+                if _old:
+                    remote = dict(_old, src="table")
             # 「最新作品」按**发布日**排，不按下载时间：批量下载时几十个文件的 mtime
             # 全挤在同一分钟，按 mtime 排会把旧作品顶到最上面（10-14 排在 10-19 前面）
             try:
@@ -735,6 +778,24 @@ def admin_create_author(sec_uid: str) -> dict:
         return {"ok": False, "error": "连不上管理后台（8723 没开？）：%s" % e}
 
 
+def _admin_origins() -> set:
+    """管理后台页面的来源（它自己也会直接 fetch 8790 的 /queue）。
+
+    `app.js` 里 `QUEUE_BASE = 'http://127.0.0.1:8790'`，是从 8723 的页面里跨源请求的，
+    Origin 就是 `http://127.0.0.1:8723`。2026-11-06 收紧 CORS 时只放行了扩展，
+    忘了这一条 → 待下载区直接显示「8790 没启动」（实际 403）。
+    端口从配置的 admin_base 推，改了后台端口也能对上。
+    """
+    base = (CFG.get("admin_base") or "http://127.0.0.1:8723").strip().rstrip("/")
+    try:
+        port = urllib.parse.urlparse(base).port or 80
+    except ValueError:
+        port = 8723
+    return {"http://127.0.0.1:%d" % port,
+            "http://localhost:%d" % port,
+            "http://[::1]:%d" % port}
+
+
 # ---------------------------------------------------------------- HTTP 层
 class Handler(BaseHTTPRequestHandler):
     server_version = "DyLocalBridge/" + VERSION
@@ -745,11 +806,42 @@ class Handler(BaseHTTPRequestHandler):
             log("%s %s" % (self.address_string(), fmt % args))
 
     def _cors(self):
-        # 只被本机扩展调用，允许任意来源没关系（绑定在 127.0.0.1）
-        self.send_header("Access-Control-Allow-Origin", "*")
+        """只对「扩展」和「管理后台页面」回 CORS 头（2026-11-06 收紧）。
+
+        以前是 `Access-Control-Allow-Origin: *`，注释写「只被本机扩展调用，允许任意来源没关系」。
+        实际不是：绑定 127.0.0.1 只挡了外网，挡不住**用户自己浏览器里打开的任意网页** ——
+        那边一个 fetch 就能读走作者库（昵称/抖音号/作品数/状态/标签），还能 POST /queue/clear
+        清空待下载区。现在只回显两类来源：
+          · `chrome-extension://…`     —— 扩展的 service worker；
+          · `http://127.0.0.1:8723` 等 —— 管理后台页面（app.js 自己也调 /queue）。
+        其它来源既不回 Allow-Origin，也在 _client_ok() 里直接 403。curl 不带 Origin，照常可用。
+        """
+        origin = (self.headers.get("Origin") or "").strip()
+        low = origin.lower()
+        if low.startswith(EXT_ORIGIN_PREFIX) or low in _admin_origins():
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Cache-Control", "no-store")
+
+    def _allowed_hosts(self):
+        port = int(CFG.get("port") or 8790)
+        return {"127.0.0.1:%d" % port, "localhost:%d" % port, "[::1]:%d" % port}
+
+    def _client_ok(self):
+        """挡跨站请求与 DNS rebinding（和 8723 的 _client_ok 同一套口径）。"""
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host and host not in self._allowed_hosts():
+            self._json({"ok": False, "error": "forbidden host"}, 403)
+            return False
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if origin and not origin.startswith(EXT_ORIGIN_PREFIX) and origin not in _admin_origins():
+            log("拒绝跨站请求：Origin=%s Host=%s" % (origin, host))
+            self._json({"ok": False,
+                        "error": "forbidden origin：只允许扩展与管理后台访问本服务"}, 403)
+            return False
+        return True
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -765,7 +857,14 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
-        if n <= 0 or n > limit:
+        if n <= 0:
+            return {}
+        if n > limit:
+            # 不能只是 return {}：body 没读、连接又会被复用（HTTP/1.1），
+            # 残留的 body 会被当成下一个请求行解析 → 后续响应全部错位。
+            # 这里直接要求关闭连接，让 socketserver 丢掉这条 socket。
+            self.close_connection = True
+            log("请求体过大（%d 字节 > %d），已断开连接" % (n, limit))
             return {}
         try:
             return json.loads(self.rfile.read(n).decode("utf-8"))
@@ -773,12 +872,16 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_OPTIONS(self):
+        if not self._client_ok():
+            return
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self._cors()
         self.end_headers()
 
     def do_GET(self):
+        if not self._client_ok():
+            return
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
         path = u.path.rstrip("/") or "/"
@@ -835,15 +938,20 @@ class Handler(BaseHTTPRequestHandler):
             return {"ok": False, "error": "缺少 uid / sec_uid"}
         rec = IDX.authors.get(uid) or {}
         in_lib = bool(rec.get("file_count")) or bool(IDX.by_sec.get(sec))
+        raw_tags = body.get("tags") or rec.get("tags") or []
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]        # 传成 "卖号,公司号" 时不要按字符拆
+        elif not isinstance(raw_tags, (list, tuple)):
+            raw_tags = []
         item = {
             "uid": uid or (IDX.by_sec.get(sec) or ""),
             "sec_uid": sec or (rec.get("sec_uid") or ""),
             "nickname": str(body.get("nickname") or rec.get("nickname") or "")[:60],
             "douyin_id": str(body.get("douyin_id") or rec.get("douyin_id") or "")[:40],
-            "follower": int(body.get("follower") or 0),
+            "follower": _to_int(body.get("follower")),
             "level": str(body.get("level") or rec.get("level") or "")[:12],
             "status": str(body.get("status") or rec.get("status") or "")[:20],
-            "tags": [str(t)[:20] for t in (body.get("tags") or rec.get("tags") or [])][:8],
+            "tags": [str(t).strip()[:20] for t in raw_tags if str(t).strip()][:8],
             "signature": str(body.get("signature") or "")[:120],
             "avatar": str(body.get("avatar") or "")[:400],
             "in_lib": bool(in_lib),
@@ -880,6 +988,22 @@ class Handler(BaseHTTPRequestHandler):
                 "item": saved, **QUEUE.snapshot()}
 
     def do_POST(self):
+        if not self._client_ok():
+            return
+        try:
+            self._handle_post()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError):
+            pass
+        except Exception as e:      # noqa: BLE001
+            # 以前这里没有任何兜底：body 里一个 "follower": "abc" 就能让 int() 抛 ValueError，
+            # 连接被直接关掉，调用方拿不到任何 JSON（2026-11-06 修）
+            log("POST %s 处理失败：%s" % (self.path, e))
+            try:
+                self._json({"ok": False, "error": "%s: %s" % (type(e).__name__, e)}, 500)
+            except Exception:
+                pass
+
+    def _handle_post(self):
         u = urllib.parse.urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         if path == "/lookup":

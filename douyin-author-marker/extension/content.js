@@ -683,6 +683,10 @@
       }
 
       // ---- 落后几天：抖音最新发布 vs 本地最新一条作品的日期 ----
+      // 数据来源有两种，必须让用户一眼分清（2026-11-06）：
+      //   src=live  → 联网查到的真实发布时间，可信
+      //   src=table → 下载器作品表 xlsx 的历史快照，可能停留在一年前，
+      //               直接写成「抖音最新 2025-08-27」会被当成真的（用户就是这么被坑的）
       let lag = '';
       if (d.remote && d.remote.pub) {
         const dates = (a.recent || []).map(function (w) {
@@ -692,11 +696,17 @@
         const localLatest = dates.length ? dates[dates.length - 1] : '';
         if (localLatest) {
           const dd = Math.round((Date.parse(d.remote.pub) - Date.parse(localLatest)) / 86400000);
+          const isLive = d.remote.src === 'live';
+          const pubTxt = isLive ? '抖音最新 ' + esc(d.remote.pub)
+                                : '作品表记录 ' + esc(d.remote.pub);
+          const tail = d.remote.crawl
+            ? (isLive ? '（' + esc(d.remote.crawl) + ' 查）'
+                      : '（' + esc(d.remote.crawl) + ' 采集，未联网核对）')
+            : (isLive ? '' : '（未联网核对）');
           lag = dd > 0
-            ? '<div class="lag warn">抖音最新 ' + esc(d.remote.pub) + ' · 本地最新 ' + esc(localLatest) +
-              ' · 落后 ' + dd + ' 天' + (d.remote.crawl ? '（' + esc(d.remote.crawl) + ' 查）' : '') + '</div>'
-            : '<div class="lag">抖音最新 ' + esc(d.remote.pub) + ' · 本地已跟上' +
-              (d.remote.crawl ? '（' + esc(d.remote.crawl) + ' 查）' : '') + '</div>';
+            ? '<div class="lag warn">' + pubTxt + ' · 本地最新 ' + esc(localLatest) +
+              ' · 落后 ' + dd + ' 天' + tail + '</div>'
+            : '<div class="lag">' + pubTxt + ' · 本地已跟上' + tail + '</div>';
         }
       }
 

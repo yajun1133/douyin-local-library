@@ -21,6 +21,17 @@
 
 ## 快速开始
 
+**前提**（缺一样就跑不起来）：
+
+| 需要 | 说明 |
+|---|---|
+| Python 3.13 | 跑主服务（`server.py` / `scanner.py`）。只用标准库，**不需要 pip install** |
+| Python 3.12 | 跑下载器相关的子进程（`douk_config.py` / `profile_helper.py` / `fetch_favorites.py`）——DouK 的 `lib/curl_cffi` 是 3.12 编译的 |
+| ffmpeg / ffprobe | 抽封面、转码；LGPL 版即可（没有 `libx264` 时自动退到 `h264_mf` / `libopenh264`） |
+| 一个下载目录 | 形如 `downnnnnnnn/UID<uid>_<昵称>_发布作品/日期-昵称-描述.mp4`，由 DouK 下载器生成 |
+
+Python / ffmpeg / 下载目录这三类路径全部配在 `browser/src/paths.py` 的「外部路径」块里，**换机器只改这一段**（外加 `browser/start-browser.bat` 里的 `set PY=`）。完整配置清单见 [`browser/docs/CONFIG.md`](browser/docs/CONFIG.md)。
+
 ```bat
 start-all.bat
 ```
@@ -35,8 +46,6 @@ start-all.bat
 ```
 
 停止用 `stop-all.bat`。只想起其中一个，用各目录里自己的启动脚本。
-
-**运行前必须改的东西**：`browser/src/paths.py` 第 56~66 行的外部路径（下载器目录、Python、FFmpeg）。全项目所有路径都从这一个文件出去，换机器只改这一段。
 
 ---
 
@@ -83,6 +92,8 @@ douyin-local-library/
 | 某个功能怎么用 | [`browser/docs/GUIDE.md`](browser/docs/GUIDE.md) |
 | 界面总览、快速上手 | [`browser/docs/README.md`](browser/docs/README.md) |
 | 目录 / 接口 / 数据结构 / 踩坑 | [`browser/docs/PROJECT.md`](browser/docs/PROJECT.md) |
+| **配置项大全、模块清单、curl 示例** | [`browser/docs/CONFIG.md`](browser/docs/CONFIG.md) |
+| **已知缺陷与风险点（含位置/触发/影响）** | [`browser/docs/AUDIT-2026-11-06.md`](browser/docs/AUDIT-2026-11-06.md) |
 | 接手项目（硬约束、常用命令） | [`browser/docs/HANDOVER.md`](browser/docs/HANDOVER.md) |
 | 插件怎么装 | [`douyin-author-marker/INSTALL.md`](douyin-author-marker/INSTALL.md) |
 

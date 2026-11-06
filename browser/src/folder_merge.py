@@ -126,22 +126,17 @@ def pick_main(uid, folders, root, preferred):
     return main, counts
 
 
-def _md5(path, limit=None):
-    """算文件指纹。limit 只算前 N 字节（大文件预筛用）。"""
+def _md5(path):
+    """算整文件指纹（同名不同大小的文件直接判不同，不会走到这里）。"""
     import hashlib
     h = hashlib.md5()
     try:
         with open(path, "rb") as fp:
-            left = limit
             while True:
-                chunk = fp.read(1 << 20 if not left else min(1 << 20, left))
+                chunk = fp.read(1 << 20)
                 if not chunk:
                     break
                 h.update(chunk)
-                if left:
-                    left -= len(chunk)
-                    if left <= 0:
-                        break
     except OSError:
         return ""
     return h.hexdigest()
@@ -159,28 +154,40 @@ def _same_content(a, b):
 
 
 def _precheck_conflicts(src_dirs, dst_dir):
-    """先看一遍同一个 uid 的目录之间有没有「同名但不是同一份内容」的文件。
+    """先看一遍同一个 uid 的几个目录之间有没有「同名但不是同一份内容」的文件。
 
     有的话整个 uid 都不动 —— 部分合并会留下「一半在这边一半在那边」的烂摊子，
     比不合并更难收拾。同名 + 大小相同 + MD5 相同才算同一份（可以安全去重）。
+
+    ⚠️ 2026-11-06 修：原来只拿每个 child 和 dst 比，**没比 child 之间**。两个子目录若有
+    同名不同内容的文件，第一个已经搬进 dst、第二个才在 _merge_files 里报冲突 ——
+    那就已经是半合并了，正是这里要避免的情形。现在把它们放在同一个集合里两两比。
     """
     bad = []
-    for src_dir in src_dirs:
+    known = {}          # 文件名 -> 第一个见到的绝对路径（dst 排在前面，所以优先和 dst 比）
+    for d in [dst_dir] + list(src_dirs):
         try:
-            names = os.listdir(src_dir)
+            names = os.listdir(d)
         except OSError:
             continue
         for name in names:
-            s = os.path.join(src_dir, name)
-            d = os.path.join(dst_dir, name)
+            p = os.path.join(d, name)
             try:
-                if not (os.path.isfile(s) and os.path.isfile(d)):
+                if not os.path.isfile(p):
                     continue
-                if not _same_content(s, d):
+            except OSError:
+                bad.append(name)
+                continue
+            prev = known.get(name)
+            if prev is None:
+                known[name] = p
+                continue
+            try:
+                if not _same_content(prev, p):
                     bad.append(name)
             except OSError:
                 bad.append(name)
-    return bad
+    return list(dict.fromkeys(bad))
 
 
 def _merge_files(src_dir, dst_dir, main_name, child_name, db, apply, dup_ok):

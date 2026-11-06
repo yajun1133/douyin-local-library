@@ -255,7 +255,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | `/thumb` | GET | `path` | ffmpeg（`-ss 1`、`scale=400:-2`）生成/缓存的视频缩略图 jpg |
 | `/api/cache_info` | GET | — | `{ok, thumb:{files,bytes,max_mb}, trans:{files,bytes,max_mb}, total_bytes}` |
 | `/api/cache_clean` | POST | `{target: thumb\|trans\|all, wipe:bool}` | 按上限淘汰或整目录清空 → `{ok, freed, removed, failed, thumb, trans, total_bytes}`；`failed` = 删不掉的文件数（被占用等），部分成功也正常返回 |
-| `/`、`/app.js`、`/style.css`、`/user_data.json` | GET | — | 静态资源（脚本目录下的文件优先命中） |
+| `/`、`/app.js`、`/style.css`、`/user_data.json` | GET | — | 静态资源。**白名单制**（`STATIC_FILES = {index.html, app.js, style.css, favicon.ico, favicon.svg, annotate.html, annotate.js}`），`/user_data.json` 由 `STATIC_DATA_MAP` 单独映射到 `data/` 目录；白名单之外（含 `data.json`、源码）一律 404。html/js/css/json 发 `no-cache`，其余发一年 `immutable` |
 | `/媒体相对路径` | GET | — | 媒体文件（Range 206 + `Cache-Control: no-cache`，见"缓存"踩坑） |
 
 ---
@@ -298,7 +298,8 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 2. **改 `scanner.py` 后必须重扫**：删 `data.json` 或点"🔄 重新扫描"
 3. **改 `server.py` 后必须重启**（无热重载）
 4. **`user_data.json` 别删别覆盖**（用户手动标注），重扫不会动它
-5. **硬编码路径**（Python/ffmpeg/PotPlayer/数据源目录）换机要同步改 `server.py` + `scanner.py` + `.bat`（三处各有一份）
+5. **硬编码路径已收口到 `src/paths.py`**（2026-11-01 重构后）：Python / ffmpeg / 数据源目录 / DouK 目录全在 `paths.py` 的「外部路径」块里，`server.py`、`scanner.py`、各 tools 脚本都从它取，**不再各写一份**。
+   换机器只需改 `paths.py` **外加两处 bat**：`browser/start-browser.bat` 的 `set PY=`（没有 `python` 兜底，路径失效会直接报错退出）、`start-all.bat` 的 `PY/PYW`（有兜底，可不动）。详见 [`CONFIG.md`](CONFIG.md) 第二节。
 6. **`.bat` 必须纯 ASCII**（中文会因编码乱码报错）
 7. **媒体文件名含 `#`/空格**：前端用 `mediaUrl()`（逐段 encodeURIComponent），别改回 `encodeURI`
 8. **视频解码器覆盖不全**：右栏媒体区内嵌 `<video>`；HEVC 先看浏览器能不能直解（装了系统 HEVC 扩展就能，播原片），解不了才走 `/api/probe` + `/api/transcode`，真放不了才提示「📂 打开文件」。图文也在这同一块区域显示大图（多图用 ‹ › 翻页）

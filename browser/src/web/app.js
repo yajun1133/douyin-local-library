@@ -1192,6 +1192,13 @@ async function deleteAuthor(uid) {
     try { backToList(); } catch (e) { /* ignore */ }
     try { await loadAuthors(true); } catch (e) { /* ignore */ }
     try { refreshBlacklistCount(); } catch (e) { /* ignore */ }
+    // ④ 顺手退出追更名单：人都不在库里了，留着只会让守护进程每小时白查一次
+    try {
+        await fetch('/api/watch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'remove', uids: [String(uid)] })
+        });
+    } catch (e) { /* 名单没清掉也不影响删除本身 */ }
     showToast('已删除作者「' + name + '」，并加入黑名单');
 }
 
@@ -1427,6 +1434,144 @@ async function ensureLatestOnline(uid) {
     } catch (e) { /* 查不到就保持原样，不打扰用户 */ }
 }
 
+// ===== 自动追更（作者详情页最下面那条横栏）=====
+// 状态只存在追更名单 data/watch.json 里，**不进 user_data 标注**：
+// 所以这里刻意不走 setAccountField / markDirty，否则按钮状态会被写进标注文件，
+// 跟追更面板里的真名单对不上。
+// 打开作者时 /api/author 会把 watching / watch_enabled / watch_interval /
+// watch_next / watch_downloads 一起带回来，所以刷新页面、从列表/大小号/收藏
+// 换条路点进来，状态都是对的，不用前端另外问一次。
+const WATCH_FREQS = [[0, '自动'], [900, '15 分钟'], [1800, '30 分钟'], [3600, '1 小时']];
+
+function watchNextText(a) {
+    if (!a.watching) return '';
+    if (a.watch_enabled === false) return '追更已暂停';
+    const t = Number(a.watch_next || 0);
+    if (!t) return '等下一轮检查';
+    const ms = t * 1000 - Date.now();
+    if (ms <= 0) return '马上检查';
+    const min = Math.round(ms / 60000);
+    if (min < 60) return '约 ' + min + ' 分钟后检查';
+    const h = min / 60;
+    return '约 ' + (h >= 10 ? Math.round(h) : h.toFixed(1)) + ' 小时后检查';
+}
+
+function watchBarHtml(a) {
+    const inList = !!a.watching;
+    const on = inList && a.watch_enabled !== false;
+    const iv = Number(a.watch_interval || 0);
+    // 没 SEC_UID 的作者：追更了也下载不了。按钮照旧可点（点了会明确说原因），
+    // 但提示语先讲清楚，别让人以为是坏了。
+    const noSec = !inList && !String(a.sec_uid || '').trim();
+    const label = on ? '追更中' : (inList ? '已暂停' : '未追更');
+    const tip = noSec
+        ? '这位作者还没有 SEC_UID：先在 SEC_UID 那一栏填上，才能加入追更'
+        : (on ? '正在追更：发新作品会自动下载。点一下取消'
+            : (inList ? '追更已暂停（在追更面板里关掉的）。点一下恢复'
+                : '加入追更：定时检查这位作者，发现新作品自动下载'));
+    const chips = WATCH_FREQS.map(function (f) {
+        const v = f[0], lb = f[1];
+        return '<span class="wf-chip' + (iv === v ? ' active' : '') + (on ? '' : ' disabled') + '"'
+            + ' data-iv="' + v + '"'
+            + ' title="' + (on ? '检查间隔改成 ' + lb : '先打开追更，才能设间隔') + '"'
+            + ' onclick="setWatchInterval(\'' + a.uid + '\', ' + v + ')">' + lb + '</span>';
+    }).join('');
+    const dl = Number(a.watch_downloads || 0);
+    const meta = [watchNextText(a), dl ? '已自动下载 ' + dl + ' 个' : ''].filter(Boolean).join(' · ');
+    return '<div class="watch-bar' + (on ? ' on' : '') + (inList && !on ? ' paused' : '') + '" id="watchBar">'
+        + '<span class="wb-title">📡 自动追更</span>'
+        + '<button class="watch-switch' + (on ? ' on' : '') + '" id="watchSwitch" type="button"'
+        + ' onclick="toggleWatch(\'' + a.uid + '\')" title="' + tip + '"'
+        + ' aria-pressed="' + (on ? 'true' : 'false') + '">'
+        + '<span class="ws-dot"></span>' + label + '</button>'
+        + '<span class="wb-freq"><i>间隔</i>' + chips + '</span>'
+        + (meta ? '<span class="wb-meta">' + escapeHtml(meta) + '</span>' : '')
+        + (inList ? '' : '<span class="wb-hint">追更后：发现新作品自动存进这个作者的文件夹，不需要 DouK，也不用你点</span>')
+        + '</div>';
+}
+
+// 只换这一整条，不整块重绘 detailTop —— 重绘会把滚动位置、
+// 正在播的视频、展开的历史浮层全冲掉。
+function paintWatchBar() {
+    const a = detailState.author;
+    const old = document.getElementById('watchBar');
+    if (!a || !old) return;
+    const box = document.createElement('div');
+    box.innerHTML = watchBarHtml(a);
+    const fresh = box.firstElementChild;
+    if (fresh) old.replaceWith(fresh);
+}
+
+// 失败时恢复可点；成功时按钮已被 paintWatchBar 换成新的，不用管
+function _watchBtnUnbusy() {
+    const b = document.getElementById('watchSwitch');
+    if (b) { b.classList.remove('busy'); b.disabled = false; }
+}
+
+async function toggleWatch(uid) {
+    const a = detailState.author;
+    if (!a || String(a.uid) !== String(uid)) return;
+    const btn = document.getElementById('watchSwitch');
+    if (!btn || btn.classList.contains('busy')) return;   // 连点保护：别一秒点出三条名单
+    const wasOn = !!(a.watching && a.watch_enabled !== false);
+    btn.classList.add('busy');
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/watch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'mark', uid: String(uid), enabled: !wasOn,
+                sec_uid: a.sec_uid || '', nickname: a.nickname || '',
+                // 重新点亮时沿用原来选的间隔，别偷偷退回自动分级
+                interval: wasOn ? null : Number(a.watch_interval || 0),
+            }),
+        });
+        const d = await r.json().catch(function () { return {}; });
+        if (!r.ok || !d.ok) {
+            showToast('追更失败：' + (d.error || ('HTTP ' + r.status)));
+            _watchBtnUnbusy();
+            return;
+        }
+        a.watching = !!d.watching;
+        a.watch_enabled = !!d.watching;
+        if (d.watching) a.watch_next = 0;   // 下一轮排期由服务端现算，先别显示旧值
+        paintWatchBar();
+        showToast(d.watching
+            ? (d.added ? ('已加入追更，名单共 ' + (d.count || 1) + ' 位作者') : '已恢复追更')
+            : '已取消追更');
+    } catch (e) {
+        showToast('追更失败：' + (e && e.message ? e.message : e));
+        _watchBtnUnbusy();
+    }
+}
+
+async function setWatchInterval(uid, iv) {
+    const a = detailState.author;
+    if (!a || String(a.uid) !== String(uid)) return;
+    if (!(a.watching && a.watch_enabled !== false)) {
+        showToast('先打开追更，再选检查间隔');
+        return;
+    }
+    const f = WATCH_FREQS.filter(function (x) { return x[0] === Number(iv); })[0];
+    try {
+        const r = await fetch('/api/watch', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'mark', uid: String(uid), enabled: true,
+                sec_uid: a.sec_uid || '', nickname: a.nickname || '',
+                interval: Number(iv) || 0,
+            }),
+        });
+        const d = await r.json().catch(function () { return {}; });
+        if (!r.ok || !d.ok) { showToast('设置间隔失败：' + (d.error || ('HTTP ' + r.status))); return; }
+        a.watch_interval = Number(iv) || 0;
+        paintWatchBar();
+        showToast('检查间隔已改成「' + (f ? f[1] : '自动') + '」');
+    } catch (e) {
+        showToast('设置间隔失败：' + (e && e.message ? e.message : e));
+    }
+}
+
 // ① 上方区块：作者信息 + 状态/大小号/标签/备注/历史 + 作品筛选
 function renderDetailTop() {
     const a = detailState.author;
@@ -1647,7 +1792,8 @@ function renderDetailTop() {
             <h3>备注</h3>
             <textarea id="noteTextarea" class="note-input" rows="1" placeholder="写点备注…" title="${escapeHtml(a.note || '写点备注…')}" onchange="setNote('${a.uid}', this.value)">${escapeHtml(a.note || '')}</textarea>
         </div>
-    </div>`;
+    </div>
+    ${watchBarHtml(a)}`;
 
     document.getElementById('detailFilter').innerHTML = filters;
 

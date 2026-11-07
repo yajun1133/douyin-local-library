@@ -71,7 +71,8 @@ taskkill //PID <pid> //F
 | 前端（`src/web/*`） | 改完升 `index.html` 里**所有** `?v=`（`sed -i 's/?v=20261028c50/?v=20261028c51/g'`），让用户 Ctrl+F5。**不用重启服务** |
 | 后端（`src/server.py`） | 改完重启服务 |
 | 路径 | 一律从 `src/paths.py` 取，别在脚本里拼 `dirname(__file__)` |
-| 新增工具脚本 | 放 `tools/`，头部 `sys.path.insert(0, ../src)` 后 `import paths` |
+| 新增工具脚本 | 放 `tools/`，头部 `sys.path.insert(0, ../src)` 后 `import paths`。**脚本里不要写死真实 uid / sec_uid / 昵称 / 本机绝对路径** —— 参数从命令行拿，路径用 `__file__` 推导（仓库是 Public） |
+| 提交 | **每次改完就 commit，不要攒**：`git add -A` → 提交信息写清「为什么改 + 怎么验的」→ `git push origin main`（能不能推先 `env \| grep -i proxy` 再 `curl -x <proxy> https://github.com/`） |
 
 ### 2.3 验证
 

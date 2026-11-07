@@ -60,9 +60,11 @@ douyin-local-library/
 │  │  ├─ scanner.py                 扫描下载目录，生成索引 data.json
 │  │  ├─ watcher.py                 监听下载目录，新作品自动收录
 │  │  ├─ download_db.py             下载记录小库（SQLite）
+│  │  ├─ watch_core.py             📡 追更内核：按作者轮询 / 判重 / 直连下载（不经过 DouK）
+│  │  ├─ watch.py                  追更 CLI 与常驻进程
 │  │  ├─ paths.py                   唯一的路径来源
 │  │  └─ web/                       前端：index.html / app.js / style.css
-│  ├─ tools/                        独立小脚本：清缓存、恢复备份、黑名单、补 SEC_UID
+│  ├─ tools/                        独立小脚本：清缓存、恢复备份、黑名单、补 SEC_UID、按作者补下历史作品
 │  │  └─ legacy/                    历史脚本（已归档，不再维护）
 │  ├─ docs/                         GUIDE / README / PROJECT / HANDOVER / archive
 │  └─ data/ cache/ backup/ export/ recycle-bin/     运行时生成，不入库

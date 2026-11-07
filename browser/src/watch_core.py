@@ -158,6 +158,67 @@ def work_key(desc, desc_len=64):
     return norm_desc(clean_part(desc or "", desc_len))
 
 
+# 老版本 DouK 会把过长的描述用省略号吃掉中段，例如：
+#   库里：`我真的特别爱你～#我真的特别爱你 #... #是你喜欢的身材吗 #小肚小肚我在`
+#   接口：`我真的特别爱你～#我真的特别爱你 #肉腿微胖 #是你喜欢的身材吗 #小肚小肚我在`
+# 两边 work_key 永远对不上 → 全量扫一遍就重复下载（库里有 2.9 万条这种）。
+# 所以判重不能只比全等，得把省略号当通配：前缀、后缀各自对上就算同一条。
+ELLIPSE_RE = re.compile(r"\.{2,}|…")
+
+
+def ellipse_split(key):
+    """把已规范化的描述按**第一个**省略号拆成 (前缀, 后缀)。没有省略号返回 None。"""
+    m = ELLIPSE_RE.search(key or "")
+    if not m:
+        return None
+    return key[:m.start()], key[m.end():]
+
+
+def build_date_index(local):
+    """{(date, key)} → {date: [key, ...]}。模糊判重只在同一天内做。"""
+    out = {}
+    for date, key in local:
+        out.setdefault(date, []).append(key)
+    return out
+
+
+def _ell_hit(full, pre, suf):
+    """pre/suf 是否分别贴住 full 的两端。太短的一律不认，免得短后缀乱认亲。"""
+    if len(pre) + len(suf) < 6:
+        return False
+    if pre and not full.startswith(pre):
+        return False
+    if suf and not full.endswith(suf):
+        return False
+    return True
+
+
+def is_known(local, date_idx, date, desc, desc_len=64):
+    """这条作品本地到底有没有（精确 key + 省略号模糊）。
+
+    模糊匹配必须限定在**同一天**：`#卡点` 这种短前缀放到全库去比，会把别人的作品
+    错认成自己 —— 误判成「已有」就会永远漏下这一条，比重复下载严重得多。
+    """
+    key = work_key(desc, desc_len)
+    if (date, key) in local:
+        return True
+    same = date_idx.get(date) or ()
+    if not same:
+        return False
+    # 方向一：库里那条被省略了，接口给的是完整描述（绝大多数情况走这条）
+    for k in same:
+        sp = ellipse_split(k)
+        if sp and _ell_hit(key, sp[0], sp[1]):
+            return True
+    # 方向二：接口给的被省略了，库里留着完整的那条
+    sp = ellipse_split(key)
+    if sp:
+        for k in same:
+            if _ell_hit(k, sp[0], sp[1]):
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # 名单与状态
 # ---------------------------------------------------------------------------
@@ -1038,6 +1099,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
             # 不用等下一轮（不然点完「自动追更」要等十几分钟才动）。
 
         local = lib_idx.get(uid) or set()
+        date_idx = build_date_index(local)
         folder = lib_folders.get(uid) or ""
         author_dir = os.path.join(paths.SCAN_ROOT, folder) if folder else ""
 
@@ -1075,7 +1137,8 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
             desc = a.get("desc") or ""
             dl = int(cfg.get("desc_len") or 64)
             # 第 3 层判重：库里已有同一天同一描述 → DouK 以前下过
-            if (date, work_key(desc, dl)) in local:
+            # 老文件名里的 `#...` 由 is_known 按前后缀认出，不会重复下载
+            if is_known(local, date_idx, date, desc, dl):
                 seen.add(aid)
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 stats["skipped"] += 1
@@ -1101,7 +1164,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 st["last_new"] = time.time()
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 seen.add(aid)
-                local.add((date, work_key(desc, dl)))
+                k_new = (date, work_key(desc, dl))
+                local.add(k_new)
+                date_idx.setdefault(date, []).append(k_new[1])
                 log("  ↓ %s  %s (%.1f MB)"
                     % (datetime.fromtimestamp(ct2).strftime("%m-%d %H:%M"),
                        (desc or "")[:34], size / 1048576.0))

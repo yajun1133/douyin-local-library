@@ -93,7 +93,7 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 | 抖音号覆盖 | 同上，**当前 1955/1967**；缺的那 12 位接口返回空，页面上点「获取资料」也拿不到 |
 | thumb_cache | ffmpeg 抽帧 400px 宽，**纯 CPU**（`-threads 2`，不要加 `-hwaccel cuda`，实测慢 5 倍），上限 3072 MB，超了按 LRU 淘汰，可整个删。**同时最多跑 8 个 ffmpeg**（`_THUMB_SLOTS`）：列表滚屏会并发问几十张封面，靠进程数铺满核，不限并发只会互相抢核。2026-11-04 实测 79,764 张 / 1.59 GB |
 | trans_cache | HEVC→H.264 转码产物，上限 300 MB，可随时整个删。编码器顺序 **NVENC（GPU）→ h264_mf → libopenh264**，NVENC 失败一次就整个进程不再试 |
-| cover_cache | 封面图，文件名 = `md5(作品相对路径)`，**永不清理**（用户明确要求）。2026-11-04 实测 2,480 张 / 54 MB。⚠️ 作品文件一改名，这个 md5 就对不上了（见第八章第 36 条） |
+| cover_cache | 封面图，文件名 = `md5(作品相对路径)`，**永不清理**（用户明确要求）。2026-11-04 实测 2,480 张 / 54 MB。⚠️ 作品文件一改名，这个 md5 就对不上了（见第八章第 37 条） |
 
 ### 外部依赖（硬编码路径，换机需同步修改）
 
@@ -178,6 +178,8 @@ user_data.json ─────────────────────�
 
 ⚠️ 早期文档把 `_1.jpeg` 写成「封面图」、把 `_2.mp4` 当成作品视频，这是**错的**——它不是封面，是这组图之一的静帧；反过来把它当成「同一张图的静帧+动效」再去配对、加切换按钮，也是**多余的**。正确做法：当成帖子里的两张，按顺序翻（v13）。
 
+下载侧怎么判断「哪一项是静帧、哪一项是动效」，见「七.6 下载时怎么判断」那四条判据。
+
 判定与拆解（`app.js`，不改 data.json、不用重扫）：
 
 ```js
@@ -244,7 +246,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 | `/api/batch_result` | GET | `consume=1` | `{ok, conflicts[], failed[], filled, total, finished}`；带 `consume=1` 时同时清 `unread` 并删结果文件 |
 | `/api/export_secuids` | POST | `{type, uids[]}` | 把指定 uid（**含所在大小号组的全部成员**）的 SEC_UID 导出成 `https://www.douyin.com/user/<sec>` 每行一条的 txt，写入 `export/` 目录，文件名 `<类型>_<时间戳>.txt`（同名自动加 `-2/-3` 后缀不覆盖）。按 sec_uid 去重。返回 `{ok, count, missing, file, path}` |
 | `/api/export_authors` | POST | `{uids?, sec_uids?, format: csv\|txt\|json, json_mode: settings\|accounts, earliest_days?, target?}` | 导出作者信息，三种格式：`csv`（昵称/别名/抖音号/UID/SEC_UID/等级/标签/状态/**最新作品**/**最早作品**/主页链接）、`txt`（一行一个主页链接）、`json`（DouK 账号数据；`settings` = 以现有配置为底整份导出，连 cookie 一起，覆盖 `Volume/settings.json` 就能跑；`accounts` = 只给 `accounts_urls` 数组）。**`sec_uids`（2026-11-01 加）**：待下载区那些还没 uid 的作者直接按 sec_uid 导出——能反查到期库就带上昵称/等级/标签，查不到也照样出链接；和 `uids` 一起给会去重。`earliest_days=N` 的规则只有两条（2026-11-01 用户定）：**① 本地一件作品都没有的作者 → `earliest` 留空**（不设最早时间，DouK 全量抓）；**② 本地有作品的作者 → `earliest` = 他自己「已下载最新作品日期 − N 天」**（`latest` 留空，只补最近这段，边界不漏）。`N` 不传 / 传空 = 所有人都不设，全部抓取。`target=douk` → 不落 `export/`，直接整份替换 DouK 的 `Volume/settings.json`（先备份、DouK 在跑则拒绝）。没有 sec_uid 的账号在 txt/json 里剔除（csv 保留）。返回 `{ok, count, skipped, with_earliest, no_works, file, path, format, json_mode, has_cookie}`（`no_works` = 按规则 1 没设日期的作者数） |
-| `/api/douk/config` | GET / POST | GET：—；POST：`{settings:{白名单字段…}, pyc:{delay, every, rest}}` | 读写 DouK 下载器参数。GET 返回 `{ok, running, settings, fields{类型/中文名/提示}, pyc{every, rest, delay, sigma}, accounts, paths}`。POST 只改 `SETTING_FIELDS` 白名单（max_pages/max_size/timeout/max_retry/music/download），其余字段（cookie/browser_info/root/name_format…）一律不动；root 与 name_format 只在 GET 的 `readonly` 里**只读展示**（name_format 自 2026-10-31 起末尾带作品 id 防同名覆盖，见第八章第 24 条；界面仍不开放修改）；`pyc` 里的请求间隔（`get_wait_time` 的 avg_delay）与「每 N 个号暂停 M 秒」（`suspend` 常量）走 `src/douk_config.py` 子进程改 pyc 常量。写前自动备份 `backup/douk_settings_<时间>.json`，首次改 pyc 备份官方原版到 `backup/douk_function_原版.pyc`。`running:true` 时返回 `warn`（重启才生效） |
+| `/api/douk/config` | GET / POST | GET：—；POST：`{settings:{白名单字段…}, pyc:{delay, every, rest}}` | 读写 DouK 下载器参数。GET 返回 `{ok, running, settings, fields{类型/中文名/提示}, pyc{every, rest, delay, sigma}, accounts, paths}`。POST 只改 `SETTING_FIELDS` 白名单（max_pages/max_size/timeout/max_retry/music/download），其余字段（cookie/browser_info/root/name_format…）一律不动；root 与 name_format 只在 GET 的 `readonly` 里**只读展示**（name_format 自 2026-10-31 起末尾带作品 id 防同名覆盖，见第八章第 25 条；界面仍不开放修改）；`pyc` 里的请求间隔（`get_wait_time` 的 avg_delay）与「每 N 个号暂停 M 秒」（`suspend` 常量）走 `src/douk_config.py` 子进程改 pyc 常量。写前自动备份 `backup/douk_settings_<时间>.json`，首次改 pyc 备份官方原版到 `backup/douk_function_原版.pyc`。`running:true` 时返回 `warn`（重启才生效） |
 | `/api/create_author` | POST | `{sec_uid(可整条网址), link_uid(可选,当前账号uid)}` | 新建作者：`norm_sec_uid()` 抽纯 id → 走登录态 `im/user/info` 查权威 `uid`（3.12 子进程）→ 建到 user_data（sec_uid/昵称/抖音号）→ **全新账号再调一次 `fetch_profile_by_sec_uid()` 补简介**（老账号不覆盖，用户可能自己改过）→ 若给 link_uid 则自动并入当前大小号组。返回 `{ok, uid, sec_uid, nickname, douyin_id, signature, profile_note, linked[], existed}` |
 | `/trans_cache/xxx.mp4` | GET | — | 转码后的文件，支持 Range |
 | `/api/rescan` | POST | — | **立即**返回 `{ok}`，扫描在后台线程跑，扫完 `load_data(force=True)`；已在扫描时返回 409 `{ok:false, error}`（防重复起扫） |
@@ -506,84 +508,105 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 
 1. **aweme_id** —— `state.authors[uid].seen` 里记过就跳过（同一轮内也用它防重）。
 2. **基线时间** —— `last_ts` 之前的老作品一律不看（所以追更**补不到历史**，要补老作品用下面的 `tools/backfill_author.py`）。
-3. **库索引** —— `(date, work_key(desc))` 命中 `data.json` 对应 uid 的作品集合就算已有。
+3. **库索引** —— `(date, key_of_desc(desc))` 命中 `data.json` 对应 uid 的作品集合就算已有。
 
-补下载工具（`backfill_author.py`）还多一层：**DouK 下载记录**（`Volume/DouK-Downloader.db` 的
-`download_data` 表）。记录里有、本地却没有 = **用户自己删掉的**，一律不补（`W.douk_downloaded_ids()`）。
-理由：用户删作品就是为了不要它，补下载工具替他「恢复」等于跟用户对着干；而这层记录是判断
-「下过又没了」的唯一凭据（本地文件删了就没有别的痕迹）。
+第 3 层有个坑：老版本下载器把过长的描述**用省略号吃掉中段**（`我真的特别爱你 #... #是你喜欢的身材吗`），接口返回的却是完整描述 → key 全等永远对不上 → **对老作者做全量扫会重复下载**。全库 30 万条作品里约 **2.9 万条（9.6%）**是这种描述，涉及 1463 位作者。
 
-第 3 层有个坑：老版本下载器把过长的描述**用省略号吃掉中段**（`我真的特别爱你 #... #是你喜欢的身材吗`），接口返回的却是完整描述 → `work_key` 全等永远对不上 → **对老作者做全量扫会重复下载**。全库 30 万条作品里约 **2.9 万条（9.6%）**是这种描述，涉及 1463 位作者。
-
-现在由 `is_known()` 兜住（2026-11-07 修）：
+现在由 `is_known()` 兜住（2026-11-07 加，2026-11-08 又补了 `_pre_hit` 那条）：
 
 | 函数 | 作用 |
 |---|---|
 | `ELLIPSE_RE` / `ellipse_split(key)` | 认 `..` / `...` / `…` 三种形态，按**第一个**省略号拆成 `(前缀, 后缀)` |
 | `build_date_index(local)` | `{(date,key)}` → `{date:[key]}`，**模糊比对只在同一天内做** |
 | `_ell_hit(full, pre, suf)` | 前缀贴头、后缀贴尾，且 `len(pre)+len(suf) >= 6` |
-| `is_known(local, date_idx, date, desc)` | 先精确命中；不中再**双向**模糊（库省略→比接口完整版；接口省略→比库完整版） |
+| `_pre_hit(full, pre)` | **只比开头**且要求 ≥12 字（2026-11-08 加）：作者改过描述尾巴时后缀永远对不上，只能靠开头认人 |
+| `is_known(local, date_idx, date, desc)` | 先精确命中（老口径 + DouK 口径各试一次）；不中再**双向**模糊（库省略→比接口完整版；接口省略→比库完整版），方向一还允许「开头 ≥12 字」兜底 |
 
-两个硬约束，改的时候别放宽：
+三个硬约束，改的时候别放宽：
 
 - **必须限定同一天**。`#卡点` 这种短前缀丢到全库去比会把别人的作品认成自己 —— 误判成「已有」是**永久漏下这一条**，比重复下载严重得多。
 - **前后缀总长 < 6 字一律不认**，挡掉 `…成年` 这类两字后缀。
+- **「只比开头」的门槛是 12 字**（规范化后）。放宽到 6~8 字就会被 `#卡点舞`、`#慢摇` 这类话题前缀骗到；12 字以上的正文开头，同一天同一作者撞车的概率极低。
+
+还有两个「看起来像新作品、其实是同一件」的坑，2026-11-08 都踩了：
+
+- **模糊比对的后缀必须拿未截断的完整描述去比**。以前传进 `is_known()` 的是按 64 字硬切的 key，长描述的结尾被切掉，`full.endswith(库里的后缀)` 永远不成立 → 每条都判成新作品又下一遍（一次下了 10 条重复）。
+- **我们的命名要和 DouK 同形**。DouK 用 `beautify_string`（中文算 2 字宽，超长取「头 32 + `...` + 尾 32」），我们以前是按字数硬切 —— 同一件作品两个名字，判重自然对不上。现在 `name_desc()` / `key_of_desc()` 一律走这个口径。
 
 实测（2026-11-07）：构造用例 5 条全过；真实库 27,042 组「同作者同日多条」里模糊命中 261 对，逐条核对**全部是同一作品的描述变体，真实误判 0**。
+（2026-11-08 复跑当事作者：`backfill_author --pages 3` 新增 0 / 跳过 60。）
 
-#### 下载时怎么判断「这一项是图还是视频、存成什么后缀」（2026-11-08 踩过两次）
+#### 补下载工具多一层：DouK 下载记录
+
+`tools/backfill_author.py` 不看基线（专门补历史），所以额外查 **DouK 下载记录**
+（`Volume/DouK-Downloader.db` 的 `download_data`，本机 14 万条）：**记录里有、本地却没有 = 用户自己删掉的**，
+一律不补（`W.douk_downloaded_ids()`）。理由：用户删作品就是为了不要它，补下载工具替他「恢复」等于跟用户
+对着干；而这层记录是判断「下过又没了」的唯一凭据 —— 文件删了本地就没别的痕迹。
+
+⚠️ 这条只对「补下载工具」生效，追更 `scan_round` 不用它：追更有基线，新作品本来就不在 DouK 记录里。
+
+#### 下载时怎么判断「这一项是图还是视频、存成什么后缀」（2026-11-08 踩了三次）
+
+这四条**缺一条就会出错**，出错的表现都是「播放器里显示图片、播不出来」或者「图很糊」。
+DouK 5.8 的对应实现在 `src/extract/extractor.py::__extract_image_info` 和
+`src/downloader/download.py::_extract_content`，口径照它抄的。
 
 **判据一：这一项有没有 `video.play_addr`，跟 `aweme_type` 无关。**
 
 抖音图文作品（`aweme_type=68`）的 `images[]` 里，**每一项都可能是实况/动图**：那一项自带
-`video.play_addr`（`live_photo_type` / `clip_type`：2=静图、4=会动的那一项），而它的 `url_list`
-只是**封面帧**。只取 `url_list` 会得到一张静态图 —— 界面上就是「第一条是图、第二条还是图」，
-怎么点都播不出来。
+`video.play_addr`（`clip_type`：2=静图、4=会动的那一项），而它的 `url_list` 只是**封面帧**。
+只取 `url_list` 会得到一张静态图 —— 界面上就是「第一条是图、第二条还是图」，怎么点都播不出来。
 
 ```python
 live = pick_best_video((img or {}).get("video") or {})   # 有值 → 下 _N.mp4（实况 / 动图都走这条）
-urls = pick_url((img or {}).get("url_list"))             # 没值 → 下 _N.jpeg/.webp
+urls = pick_url((img or {}).get("url_list"))             # 没值 → 下 _N.jpeg / .webp
 ```
 
 一处例外，别搞混：图文作品的**顶层** `aweme.video` 也有 `play_addr`（抖音把整组图拼成的那条
 轮播视频），那不是要下的东西 —— 只认 `images[i].video`。
 
-**判据二：后缀由服务器回的 `Content-Type` 定，不按 URL 猜**（`save_item()`，对齐 DouK 5.8 的
-`_extract_content`）。抖音图片 URL 里没有可信后缀，同一个地址可能回 `image/webp` 也可能回
-`image/jpeg`；按 URL 猜会把 webp 存成 `.jpeg`。
+**判据二：后缀由服务器回的 `Content-Type` 定，不按 URL 猜**（`save_item()`）。
 
-**判据三（2026-11-08 新增）：`url_list` 取**最后一个**。**
-抖音的 `url_list` 是按清晰度**升序**排的，实测同一张图：
+抖音图片 URL 里没有可信后缀，同一个地址可能回 `image/webp` 也可能回 `image/jpeg`；按 URL 猜会把
+webp 存成 `.jpeg`。DouK 的 `CONTENT_TYPE_MAP` 就是干这个的，我们照抄（另外补了 `image/gif`）。
+
+**判据三：`url_list` 取**最后一个**（按清晰度升序排）。**
+
+实测同一张图：
 
 | 位置 | 内容 | 大小 | 尺寸 |
 |---|---|---|---|
 | `url_list[0]` / `[1]` | webp 缩略预览（两个镜像） | 9.2 KB | 1320×258（糊） |
 | `url_list[-1]` | jpeg 原图 | 19.8 KB | 正常 |
 
-DouK 5.8 的 `IMAGE_INDEX = -1` / `VIDEO_INDEX = -1` 就是取最后一份。之前取 `[0]` 导致追更下出来的
-图全是 9 KB 的糊图（全库 77 个 `.webp` 都是这么来的），`pick_url()` 现在**倒序**返回。
+DouK 的 `IMAGE_INDEX = -1` / `VIDEO_INDEX = -1` 就是取最后一份。之前我们取 `[0]`，追更下出来的
+图全是 9 KB 的糊图（当时全库 77 个 `.webp` 里有 32 个是这么来的，已全部重下修掉；剩下 45 个是
+「这件作品本来就只有 webp」）。现在 `pick_url()` **倒序**返回，失败重试时依次试剩下的镜像。
 
-**动图（GIF / 动态 webp）单独处理，不能原样存 `.webp`。**
-`save_item()` 写完前 128 字节会嗅一下：`GIF8` 开头或 webp 里有 `ANIM` 块 = 动图，走
-`anim_to_mp4()` 转成 `_N.mp4` 再落地（Windows 照片、大部分播放器都不放动图 webp，看起来就是
-「又是张不动的图」）。转码两条路：
+**判据四：真动图（GIF / 动态 webp）要转成 mp4，不能原样存 `.webp`。**
+
+`save_item()` 会嗅文件头：`GIF8` 开头，或 webp 的 `RIFF/WEBP` 里带 `ANIM` 块 = 动图，走
+`anim_to_mp4()` 转 `_N.mp4` 再落地。Windows 照片和大多数播放器都不放动图 webp，原样存下来
+在界面上就是「又是一张不动的图」。转码两条路：
 
 1. `ffmpeg -i x.webp` 直接转 —— **动态 webp 不行**，ffmpeg 的 webp 解码器不支持多帧
-   （实测 8.1 报 `image data not found`），GIF 可以；
+   （实测 8.1 报 `image data not found`）；GIF 可以。
 2. 退回 Pillow 拆帧 → `image2pipe` 喂给 ffmpeg。每帧按自带 `duration` 折成 30 fps 的重复次数，
    播放速度才不走样。本机 ffmpeg 是 LGPL 版没有 libx264，用 `libopenh264` 编 h264
    （浏览器认；没有就退回默认 mpeg4，兼容性差些）。
-   两条都失败就原样留 `.webp` 并记日志 —— 内容不丢，只是不会动。
 
-命名照旧 `_1/_2…`，所以一个「1 静图 + 1 实况」的作品落地就是 `_1.jpeg` + `_2.mp4`，
-前端 `mediaItemsOf()` 按扩展名分 kind，`live_single/live_multi` 分支会自动当视频播。
+两条都失败就原样留 `.webp` 并记日志 —— 内容不丢，只是不会动。
 
-已经下错的用 `tools/backfill_live.py <uid> --repair` 修：它比对接口与本地，两种问题都报 ——
+**命名与前端怎么配合**：命名照旧 `_1/_2…`，所以一个「1 静图 + 1 实况」的作品落地就是
+`_1.jpeg` + `_2.mp4`，前端 `mediaItemsOf()` 按扩展名分 kind，`live_single/live_multi` 分支会自动当视频播。
+
+**已经下错的历史文件**用 `tools/backfill_live.py <uid> --repair` 修。它比对接口与本地，两种问题都报：
 
 * **缺视频**：接口说这一项有 video，本地只有图；
-* **低画质**：本地这一项是静态 `.webp`，且比接口最高画质那份小 15% 以上（真动图不算）。
+* **低画质**：本地这一项是静态 `.webp`，且比接口最高画质那份小 15% 以上（真动图不算，
+  有些作品最高画质本来就是 webp）。
 
-命中就整条移进回收站再用修好的下载器重下（不留多余的封面图）。2026-11-08 用它修了 11 条
+命中就整条移进回收站，再用修好的下载器重下（不留多余的封面图）。2026-11-08 用它修了 11 条
 （其中一条 17 项的图文帖）。
 
 ---
@@ -626,32 +649,32 @@ DouK 5.8 的 `IMAGE_INDEX = -1` / `VIDEO_INDEX = -1` 就是取最后一份。之
     自查口诀：`/api/meta` 的 `total_authors` 和 `data.json` 里的 `meta.total_authors` 对不上 → 就是这个病。
 
 ### 抖音接口 / 数据补齐
-16. 查 uid / sec_uid 要用**登录态** `profile/other`（返回 19 位 uid），公开接口拿不到。
-17. **按昵称回填 SEC_UID 会串号**（同名作者共用一条，点开是别人），必须按 uid / sec_uid 匹配；批量补完要抽查。
-18. 批量获取资料时校验「返回的 sec_uid 是否就是目标账号」，否则会把别人的简介写到自己的账号上。
-19. 新下载的博主没有 `Data/*.xlsx`，重扫后 sec_uid 是空的 → 跑 `tools/fill_secuid_from_export.py`（纯本地，读 `export/*.csv`）。
-20. 缩略图缓存按 `md5(rel)` 命名、**不看 mtime**：改名 / 覆盖文件后必须删对应缓存，否则一直显示老图。
+17. 查 uid / sec_uid 要用**登录态** `profile/other`（返回 19 位 uid），公开接口拿不到。
+18. **按昵称回填 SEC_UID 会串号**（同名作者共用一条，点开是别人），必须按 uid / sec_uid 匹配；批量补完要抽查。
+19. 批量获取资料时校验「返回的 sec_uid 是否就是目标账号」，否则会把别人的简介写到自己的账号上。
+20. 新下载的博主没有 `Data/*.xlsx`，重扫后 sec_uid 是空的 → 跑 `tools/fill_secuid_from_export.py`（纯本地，读 `export/*.csv`）。
+21. 缩略图缓存按 `md5(rel)` 命名、**不看 mtime**：改名 / 覆盖文件后必须删对应缓存，否则一直显示老图。
 
 ### 媒体 / 播放
-21. 抽样 40 个视频有 25 个 HEVC，Chrome 默认解不了（进度条走、画面定格）。本机装了 HEVC 扩展 = 原生播；否则走 `/api/probe` + `/api/transcode`（ffmpeg 是 LGPL 版、没有 libx264，用 `libopenh264`，失败退 `h264_mf`）。
-22. 图文帖里的 `_N.mp4` **不是封面**，是「实况图」的动效；不要跟静帧配对，按序号一张一张排。
-23. 竖屏视频塞进固定高度的框，宽度是被高度算死的 —— 「容器更宽」和「没有黑边」互相矛盾，想更大只能全屏。
+22. 抽样 40 个视频有 25 个 HEVC，Chrome 默认解不了（进度条走、画面定格）。本机装了 HEVC 扩展 = 原生播；否则走 `/api/probe` + `/api/transcode`（ffmpeg 是 LGPL 版、没有 libx264，用 `libopenh264`，失败退 `h264_mf`）。
+23. 图文帖里的 `_N.mp4` **不是封面**，是「实况图」的动效；不要跟静帧配对，按序号一张一张排。
+24. 竖屏视频塞进固定高度的框，宽度是被高度算死的 —— 「容器更宽」和「没有黑边」互相矛盾，想更大只能全屏。
 
 ### 下载器 DouK（改它的配置 = 改用户数据）
-24. **`name_format` 必须带 `id`**（2026-10-31 已改成 `create_time nickname desc id`）。
+25. **`name_format` 必须带 `id`**（2026-10-31 已改成 `create_time nickname desc id`）。
     原来只有 `create_time nickname desc`：同一作者、同一天、desc 相同（`@某作者`、`#甜妹` 这种）的作品**文件名完全一样**，后下的静默覆盖先下的。
     实测那轮 3608 个文件名对应 3660 个作品 → **丢了 52 个**，43 组冲突，最狠的一个文件名挤了 4 个作品。
     长文件名安全：32 万文件名最长 91 字符，加 19 位 ID 才 111 < `name_length=128`。
-25. **`PermissionError(13, '另一个程序正在使用此文件')` 是上面那条的症状，不是杀软**。
+26. **`PermissionError(13, '另一个程序正在使用此文件')` 是上面那条的症状，不是杀软**。
     两个并发任务（`truncate=50`）写同一个 Cache 文件，一个 rename/unlink 时另一个还开着 → Windows 报 13。
     报错了会自动重试、通常能成功，所以**只看到报错容易以为没事，实际是静默覆盖在丢作品**。
-26. **`parse_work_filename()` 必须剥掉末尾的作品 ID**：`re.sub(r"-\d{15,20}$", "", desc)`。
+27. **`parse_work_filename()` 必须剥掉末尾的作品 ID**：`re.sub(r"-\d{15,20}$", "", desc)`。
     否则 `FILE_RE` 的非贪婪 `desc` 会把 `-7566012345678901234` 吞进描述，界面显示成 `@某作者-7566012345678901234`。
     只剥「-数字」这种带分隔符的尾巴 —— desc 本身就是纯数字的老文件（`2025-11-15-某作者-7572611624440000000`）不受影响。
-27. `earliest` 日期一律 `YYYY/MM/DD`：`check_date` 只 `strptime('%Y/%m/%d')`，横杠格式会被判无效并**丢弃限制 → 该作者全量重抓**。
-28. 改 `Volume/settings.json` 前**必须先确认 DouK 进程退出**（`tasklist | grep -i douk`）：它退出时会拿内存配置整份回写，改了等于白改。
-29. `download_data` 表只记 aweme_id、没有作者字段，所以「某作者下漏了」没法按作者清记录重下 —— 只能复制作品链接单独下。
-30. **「下载完了、`data.json` 里有 255 个作品，主页却一直显示 0 个」= 合成账号没退场**（2026-11-01 踩过）。
+28. `earliest` 日期一律 `YYYY/MM/DD`：`check_date` 只 `strptime('%Y/%m/%d')`，横杠格式会被判无效并**丢弃限制 → 该作者全量重抓**。
+29. 改 `Volume/settings.json` 前**必须先确认 DouK 进程退出**（`tasklist | grep -i douk`）：它退出时会拿内存配置整份回写，改了等于白改。
+30. `download_data` 表只记 aweme_id、没有作者字段，所以「某作者下漏了」没法按作者清记录重下 —— 只能复制作品链接单独下。
+31. **「下载完了、`data.json` 里有 255 个作品，主页却一直显示 0 个」= 合成账号没退场**（2026-11-01 踩过）。
     根因：`_load_user_data_locked()` 里「先把上一轮的合成账号摘掉」那句**无条件** `accounts.pop(uid)`。
     作者从「新建作者」变成「被扫描进 data.json」之后，每次刷新标注都会把刚读进来的真账号 pop 掉，
     再按 `user_data.json` 重建一个空壳 → 作品数永远 0，只有重启进程（`synthetic_uids` 清空）才好。
@@ -660,22 +683,31 @@ DouK 5.8 的 `IMAGE_INDEX = -1` / `VIDEO_INDEX = -1` 就是取最后一份。之
     只有 `work_count` 这类列表字段 → 就是被当成合成账号了。
 
 ### 其它
-31. `.bat` 必须**纯 ASCII**（中文会因编码乱码直接报错）；启动脚本输出要 flush，否则双击像「没反应」。
-32. 挪走 / 删掉磁盘上的作品文件后，索引里还在 → 点开全黑；删文件必须同步改索引或重扫。
-33. **`/api/rescan` 是增量扫描，不是全量**（按文件夹 mtime 判断「这目录变过没」）。批量搬完文件立刻扫会漏，
+32. `.bat` 必须**纯 ASCII**（中文会因编码乱码直接报错）；启动脚本输出要 flush，否则双击像「没反应」。
+33. 挪走 / 删掉磁盘上的作品文件后，索引里还在 → 点开全黑；删文件必须同步改索引或重扫。
+34. **`/api/rescan` 是增量扫描，不是全量**（按文件夹 mtime 判断「这目录变过没」）。批量搬完文件立刻扫会漏，
     要**再扫一次**才全 —— 2026-11-04 搬完 G 盘后，7 个刚放回的文件第一次只认到 2 个，第二次才对。
     改文件内容的场景也同理：只看 mtime 的增量逻辑对「同名文件被替换」不敏感，必要时走全量。
-34. **`os.remove()` 会被沙箱重定向进回收站**，`CODEBUDDY_SAFE_DELETE_ENABLED=0` 并不生效。
+35. **`os.remove()` 会被沙箱重定向进回收站**，`CODEBUDDY_SAFE_DELETE_ENABLED=0` 并不生效。
     表现：删了几 GB 文件，`df` 一点没释放（2026-11-04 实测 G 盘回收站压了 48.6 GB）。
     真删要用 `ctypes.windll.kernel32.DeleteFileW`（一次调用即生效，不产生新的回收站条目）。
     清回收站时 `$R`（数据）和配套的 `$I`（元数据）必须**成对删**，只删 `$R` 会留下孤儿 `$I`。
-35. 批量校验几万个文件的 SHA1 用**多进程**（`mp.Pool(6)`）：21615 个 / 48.6 GB，单进程 54 分钟 → 6 进程 22 分钟。
+36. 批量校验几万个文件的 SHA1 用**多进程**（`mp.Pool(6)`）：21615 个 / 48.6 GB，单进程 54 分钟 → 6 进程 22 分钟。
     瓶颈是机械盘上的小文件随机读，加并发有效；先比 `st_size`、不同就直接判「不重复」，能省掉大部分 IO。
-36. **作品文件改名不会同步 `cover.workFile`，封面会成片变成灰块**（2026-11-02 去 ID、2026-11-04 又踩一次）。
+37. **作品文件改名不会同步 `cover.workFile`，封面会成片变成灰块**（2026-11-02 去 ID、2026-11-04 又踩一次）。
     `cover_cache` 的文件名是 `md5(作品相对路径)`，`user_data.json` 里存的也是那个相对路径 —— 名字一改，
     两边同时对不上，`/cover?path=` 找不到源文件就 404。
     `_patch_user_cover_after_rename()` **只管「作者文件夹」改名，不管「作品文件」改名**。
     修法：拿索引按「日期 + 归一化描述」找回同一条作品的新文件名，改指针，再把旧缓存按新 md5 复制一份（省一次抽帧）。
+
+### 图文下载（2026-11-08）
+
+38. **图文作品「哪一项是会动的那一项」只看 `images[i].video`**，跟 `aweme_type` 无关；
+    顶层 `aweme.video` 是整组图的轮播视频，不能下。判错的表现就是「播放器里显示图片、播不出来」。
+39. **`url_list` 按清晰度升序排，必须取最后一个**（DouK 的 `IMAGE_INDEX = -1`）。取 `[0]` 会拿到
+    9 KB、1320×258 的 webp 缩略图 —— 画质糊，而且后缀还会被判成 `.webp`。
+40. **动态 webp 别指望 ffmpeg**：它的 webp 解码器不支持多帧（8.1 报 `image data not found`）。
+    要转 mp4 只能 Pillow 拆帧 → `image2pipe`；GIF 倒是能直接转。
 
 ---
 
@@ -732,11 +764,14 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
-- **2026-11-08 图文作品里的实况项被下成静态图（播放器「只有图片、播不了」）**：用户报某作者第 1、3 条作品「第二个是视频却播不出来，都显示图片」，并指出这两条是追更下的、DouK 下的都正常。
-  根因：抖音图文作品（`aweme_type=68`）的 `images[]` **每一项都可能是实况/动图**，那一项自带 `video.play_addr`，`url_list` 只是封面帧；`download_aweme` 只取 `url_list`，于是把视频存成了封面图。
-  修 `src/watch_core.py::download_aweme`：图集分支先看 `pick_best_video(img["video"])`，有值下 `_N.mp4`，没值才下图；顶层 `aweme.video`（整组图的轮播视频）不认。
-  新增 `tools/backfill_live.py`：比对接口与本地，缺视频的按 `--repair` 整条进回收站再重下。判重**不能按描述拼文件名** —— 老 DouK 文件名用省略号截断（`我来了 #卡点舞 #CU...度激励计划`），字面对不上会把「本地已有视频」误判成缺失（当天因此误删过 2 条，已从回收站恢复）；现在走 `desc_candidates()` 多切分点 + `ellipse_split/_ell_hit` 模糊比对，并要求本地该项确实存在才动手。
-  实测：报障作者那两条（11-07 / 11-05）从 `_1.webp + _2.webp` 变成 `_1.webp + _2.mp4`（ffprobe 确认 h264/aac）；同批另修 3 位作者的 3 条，共 5 条。追更名单里含 webp 作品的 15 位已全查，其余正常。
+- **2026-11-08 图文作品的「实况 / 动图」下载全链路重做（判据、后缀、画质、判重）**：用户先报「第一条是图、第二条是视频，第二个播不出来，只有 DouK 下的正常」，随后追问「还有第一张图、第二张是动图的，那个也得能下」。
+  ① **判据**：`images[]` 每一项都可能自带 `video.play_addr`（`clip_type` 2=静图 / 4=会动），`url_list` 只是封面帧 —— 有 `video` 就下 `_N.mp4`，**实况和动图是同一类**（DouK 5.8 也这么分）；顶层 `aweme.video`（整组图的轮播视频）不能下。
+  ② **后缀**改由服务器 `Content-Type` 定（对齐 DouK 的 `_extract_content`），不再按 URL 猜。
+  ③ **画质**：`url_list` 按清晰度升序排，取 `[-1]`（DouK `IMAGE_INDEX = -1`）。实测同一张图前两份是 9.2 KB / 1320×258 的 webp 缩略图，最后一份 19.8 KB 的 jpeg 才是原图 —— 之前取 `[0]`，追更下的图全是糊的。
+  ④ **真动图**（GIF / 带 `ANIM` 块的动态 webp）转 `_N.mp4`：ffmpeg 解不了动态 webp（8.1 报 `image data not found`），退回 Pillow 拆帧 → `image2pipe` + `libopenh264`；两条都失败就原样保留并记日志。
+  ⑤ **判重**（今天挖出的两个真因，症状都是重复下载）：命名复刻 DouK 的 `beautify_string`（中文算 2 宽、超长取头尾 + `...`），否则同一件作品会得到两种名字；`is_known()` 的后缀改用**未截断全文**比对（按 64 字硬切会把结尾切掉 → `endswith` 永远 false），并加「开头 ≥12 字一致」兜住作者改过描述尾巴的情况。另外 `backfill_author.py` 增加一层：DouK `download_data` 里有、本地却没有 = 用户删过，不补。
+  ⑥ **工具**：`tools/backfill_live.py` 现在同时报「实况项缺视频」和「本地是低画质静态 webp」。判重**不能按描述拼文件名**（老 DouK 名字用省略号截断），要走 `desc_candidates()` 多切分点 + `ellipse_split/_ell_hit` 模糊比对，且本地该项必须真的存在 —— 当天曾因此误删 2 条，已从回收站恢复。
+  实修：14 位有 webp 的作者全查，重下 11 条（含一条 17 项的图文帖）；误判多下的 10 条重复已删回回收站（原始 DouK 文件保留）；剩下 45 个 webp 核对后是「本来就只有 webp」。细节见「七.6 下载时怎么判断」。
 - **2026-11-08 追更「连续失败」根因是代理，不是账号**：用户看到「抖音那边连续失败，已自动暂停 33 分钟」，账号本身完全正常（该号历史成功 652 次）。
   查日志：`curl: (7) Failed to connect to www.douyin.com:443 over proxy 127.0.0.1` —— curl_cffi 默认读 `HTTPS_PROXY`，而会话代理端口每个会话都换，09:27 启动的常驻进程继承的端口几小时前就没了；直连抖音实测 200 / 0.47s。
   两处修改：① `NO_PROXY_OPTS` 显式绕过代理（API + CDN 下载）；② 新增 `RetryLater` + `is_net_error()` + `_mark_net_fail()`，把「网络不通 / 号池全冷却」和「账号被限流」分开 —— 前者不 `mark_fail`、不翻倍熔断，20 秒重试，连 3 次才停 2 分钟，`cool_reason` 也写进状态供面板显示。
@@ -771,7 +806,7 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 - **2026-11-05 c126 视频放完怎么办（4 种模式）**：详情页播放器底部、「🖼 设为封面」左边多一颗模式按钮（`#playModeBtn`），点开是 4 项菜单：**放完就停（默认，和以前行为一致）/ 继续播放下一个 / 重复播放（单曲循环）/ 随机播放**，选择存 `localStorage.playMode`，刷新不丢。实现要点：① `<video>` 的 `ended` **不冒泡**，所以在 `#playerStage` 上挂**捕获阶段**的委托（`bindPlayerEnded`，幂等），新渲染出来的播放器全都自动覆盖，不用在 4 个渲染函数里各挂一遍；② 多段视频（`_1.mp4`+`_2.mp4`）先把段走完，最后一段放完才换作品；③ 「继续下一个」走到列表末尾就停（复用 `stepWork`，越界直接 return）；④ 「随机」优先只在**确实有视频**的作品里挑（否则连续撞上图文，画面上什么都不动，看着像卡住）；⑤ 菜单挂 `body` + fixed 定位，按钮贴着窗口底部时**自动向上弹**（`offsetHeight` 量完再定位），否则往下弹会被切掉一圈。图文作品（`renderMediaStage`）不显示这颗按钮 —— 那里的动图本来就在 `loop`
 - **2026-11-04 c125 详情页加「推送到待下载」**：作者详情页 SEC_UID 那行、「获取资料」右边多一颗按钮，一键把这位作者推进待下载区（`POST http://127.0.0.1:8790/queue/add`，带上 uid / sec_uid / 昵称 / 抖音号 / 等级 / 状态 / 标签）。之后在「导出作者信息 → ① 选作者 → 待下载区」就能直接勾他，不用回抖音再找一遍。队列按 uid / sec_uid 判重，重复推只提示、不建两条。⚠️ 8790 是插件的本地查询服务（不是 8723 本体），没启动就推不了，提示语里写明了
 - **2026-11-04 c124 新下载加筛选**：工具栏多一个「筛选」，5 行（等级/标签/状态/频率/最后下载时间），每行行首圆钮 ＋＝并集 / －＝交集，和「导出作者信息」同一套语义。**筛选在服务端做**（复用导出的判定函数），所以往下翻页拿到的也全是筛完的结果。卡片日期前缀改成 `发布 YYYY-MM-DD` —— 以前直接把作品发布日期写在卡片上，而这一页是按「下载时间」切范围的，用户看到「今天」里全是 2025 年的作品会以为筛错了（其实是显示误导，数据一直是对的）
-- **2026-11-04 修封面成片变灰（202 位）**：`cover.workFile` 里记的相对路径在磁盘上找不到，原因是「去作品 ID」和「文件夹补 UID 前缀」两轮改名都没同步封面。按索引找回同一条作品的新文件名改指针，并把旧缓存按新 md5 复制一份（省抽帧）。有效封面 1614 → 1815。**根因见第八章第 36 条**
+- **2026-11-04 修封面成片变灰（202 位）**：`cover.workFile` 里记的相对路径在磁盘上找不到，原因是「去作品 ID」和「文件夹补 UID 前缀」两轮改名都没同步封面。按索引找回同一条作品的新文件名改指针，并把旧缓存按新 md5 复制一份（省抽帧）。有效封面 1614 → 1815。**根因见第八章第 37 条**
 - **2026-11-04 身份字段补齐 + 「G盘」标签**：从 G 盘并入的 160 位作者统一打 `G盘` 标签（其中 60 位原本连档案都没有，一并建了）；SEC_UID 补 62 位、抖音号补 122 位 —— 来源是对照表 CSV + 作者目录里的 `.txt`（存的是主页链接）+ 登录态接口反查。全库覆盖：SEC_UID 1960/1967、抖音号 1955/1967，剩的都是注销/私密，接口返回空
 - **2026-11-04 修 `profile_helper.py` 的 import**：`fetch_uid_by_secuid` 早已挪到 `tools/legacy/`，`sys.path` 只加了 `src/`，导致**页面上「获取资料」一直是坏的**（一调就 ModuleNotFoundError）。现在两个位置都试，功能恢复
 - **2026-11-04 G 盘老作品并入主库**：三批早期下载（4 种互不兼容的命名格式）共 162 个目录 → 合并进已有作者 100 位、新建 62 位、搬入 **15,298 个文件 / 36.5 GB**、判重 5,078 个。认作者的唯一依据是各目录里的 `.txt`（存 `https://www.douyin.com/user/MS4wLjAB…`）和标准目录名里的 UID —— **这批目录名和库里现行昵称差得离谱，按昵称匹配会大面积认错**

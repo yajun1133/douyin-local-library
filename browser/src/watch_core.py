@@ -70,6 +70,10 @@ DEFAULT_CFG = {
     "net_cool": 120,            # 连着 3 次网络不通 → 停 2 分钟，通了自动续上
     "account_ban": 300,         # 单个号连续失败后先歇 5 分钟，再犯翻倍
     "max_per_round": 40,        # 单轮最多下载多少条，防止一次性爆量
+    # 追更内容：all=视频+图文都追；video=只追视频（图文整条跳过）；image=只追图文。
+    # 用户 2026-11-08：「追更那里填一个追更更新的视频选项」—— 图文多的作者光图片就占一大半，
+    # 想只要视频的人得能关掉。
+    "content": "all",
     "desc_len": 64,             # 描述截断长度，对齐 DouK 的 desc_length
     "fail_limit": 3,            # 同一条作品失败 N 次后放弃，避免卡死
     "seen_keep": 400,           # 每个作者保留多少条 aweme_id 记忆
@@ -1068,6 +1072,15 @@ def existing_of(base, exts):
     return ""
 
 
+def aweme_kind(aweme):
+    """这条作品是「视频」还是「图文」。判据和 download_aweme 里那一句完全一致：
+    images / image_post_info.images 有内容就是图文（实况、动图也算图文）。"""
+    aweme = aweme or {}
+    if aweme.get("images") or ((aweme.get("image_post_info") or {}).get("images") or []):
+        return "image"
+    return "video"
+
+
 def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
     """下一条作品到 author_dir。返回 (文件数, 字节数, 错误)。"""
     ct = int(aweme.get("create_time") or 0)
@@ -1471,6 +1484,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
         author_dir = os.path.join(paths.SCAN_ROOT, folder) if folder else ""
 
         # 候选：比基线新、且没处理过的
+        want_content = str(cfg.get("content") or "all").lower()
         cand = []
         for a in al:
             aid = str(a.get("aweme_id") or "")
@@ -1479,6 +1493,13 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 continue
             if (st.get("fails") or {}).get(aid, 0) >= int(cfg.get("fail_limit") or 3):
                 seen.add(aid)
+                continue
+            # 追更内容设成「只追视频 / 只追图文」时，另一类直接算处理过：
+            # 不下载不算失败，但**基线要继续往前走**，否则每一轮都会重新「发现」同一批
+            if want_content in ("video", "image") and aweme_kind(a) != want_content:
+                seen.add(aid)
+                st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
+                stats["skipped"] += 1
                 continue
             cand.append((ct2, a))
         cand.sort(key=lambda x: x[0])   # 老的先下，顺序跟时间线一致

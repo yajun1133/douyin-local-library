@@ -496,6 +496,8 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 
 **2026-11-08：不再是单独一页。** 原来顶栏有颗「📡 追更」按钮 `window.open('/watch','_blank')`，追更面板是独立的 `src/web/watch.html`。现在并成主界面的一个视图 `#watchView`（`state.view = 'watch'`），走和其它视图完全一样的 `hideAllViews()` / `animateViewEnter()` / `rememberViewScroll()` 那一套；`watch.html` 已删除，`GET /watch` 改成 **302 → `/#watch`**（保旧书签），`app.js` 启动时认 `#watch` 落到追更视图后立刻 `replaceState` 抹掉 hash。
 
+**2026-11-08 c150：页面重排。** 顺序是 KPI 卡 → 「加作者 + 账号池」合成的一块 → `[名单 | 追更内容 / 节奏与安全设置 / 运行日志]` 两栏（`.wv-split`，右栏固定 392px，≤1180px 叠成一列）。名单那面表格收成 6 列：**「上次检查 / 下次」合成一列**，两行竖排（`11-08 13:57` / `7 分钟后`，年份和秒在 `title` 里），否则名单变窄后作者名会被挤成「乌…」。表头吸顶只对 `.wv-main .wv-tbl th` 生效 —— 账号池那张表也是 `.wv-tbl`，但它会随页面滚走，吸顶反而浮在名单上。
+
 - 函数一律 `wv` 前缀（`openWatchView / wvPull / wvRender / wvPost …`），因为主界面已有全局 `state`（`const`，不可重名）和 `showToast / escapeHtml`，老页面的 `render() / post() / toast()` 直接搬过来会撞车。
 - 轮询还是 5 秒，但**只在 `state.view === 'watch'` 时才真正发请求**，切走自动停。
 - 名单筛选：**作者详情页那套分段控件**（`.wall-filters > .btn.work-filter-btn > b.wf-n`，灰底轨道 + 白色选中块 + 计数胶囊），单选、点哪个显示哪个，`全部 / 热档 / 温档 / 冷档 / 静档 / 定档 / 有下载 / 已停用` 八个口径各自带数量。**不是**侧边栏「全部作者」那种竖排列表。切筛选只重绘不重新请求（`wvSetFilter` → `wvRender`），选中的按钮不会因为 5 秒轮询重建而丢焦点（`wvRenderFilter` 只在结构不对时重建，平时只改数字和 `active` 类）。
@@ -778,6 +780,12 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
   ③ **设置页**：原来所有分组平铺在灰底上，只有一行小标题。改成每节一张白卡（标题 + 分隔线），`.settings-body` 最大宽度 640 → 780（长路径不用挤）；底部 sticky 的「保存」条必须**实色 + 一条细线**，一开始用了半透明渐变，卡片内容会透上来、按钮像浮在字上。
   ④ **黑名单（这页收益最大）**：`.bl-url` 原来是 `word-break: break-all` + 主色，一整列 SEC_UID 折成三行红字，把真正要看的昵称/原因全盖住了，行高 70px。改成**单行省略 + 中性灰 + 等宽字体**，完整值放 `title`，行高掉到 36px，一屏能看到 20 条。`.bl-time / .bl-uid` 也不再折行。
   ⑤ 明确**没动**的：导出页（那些绿色是「待下载队列」的信号色，不是随手涂的）、作者详情页、新下载页、全部作者网格卡（c130 前后已经打磨过，圆角 14 / hover 抬升 / 13.5px 名字都在）。
+- **2026-11-08 c150 播放器 HEVC / 切页不停播 / 侧栏汉堡 / 追更重排 / 追更内容选项**：用户一口气报了六个问题。
+  ① **「每作者一行」右边那个播放器原来是一份独立实现**，和详情页不是同一套取源逻辑，所以踩了两个坑：**已转码缓存的文件会因为 `playable` 变成 `true` 而回头去播原片 HEVC → 黑屏**（看着就像不支持 HEVC）；原生解码失败时也没有 onerror / 5 秒无元数据兜底。现在两边统一成同一套取源顺序：**probe 带 `url` 就用缓存 → 浏览器解得动（`canPlayHevc()`）就播原片 → 都不行才转码**，并给行模式补上 `poster`、`rowMountVideo()` 里的两道兜底（`onerror` + 5 秒 `readyState===0`，只触发一次，`rowPlay.token` 自增去重）。详情页 `renderVideoStage()` 同样改成 `src = info.url || mediaUrl(rel)`。
+  ② **切界面不停播**：`hideAllViews()` 里加了一句扫全站 `video, audio` 一起 `pause()`，再调 `ndPlayReset()` / `rowStopPlay()` 清掉常驻播放器。播放器都常驻在 DOM 里，只 `display:none` 不会停声音 —— 各页面自己记着停靠不住，统一在这里兜。
+  ③ **侧栏开关改成常驻汉堡**：删掉「侧栏右上角 `«` + 折叠后浮出的 `»`」两颗按钮，顶栏最左放一颗 `.menu-btn`（三条 16×1.7px 横线），图标和位置永远不变，`aria-expanded` 跟着状态走。原来那句 `body:has(.sidebar.collapsed) .brand { margin-left: 40px }` 随之删掉（按钮在文档流里，不会再盖住品牌）。
+  ④ **追更页重排**（详见七.6）：账号池从页面最底下挪到「加作者」同一块；名单收窄、右边腾出 392px 放「追更内容 → 节奏与安全设置 → 运行日志」；节奏设置从单列长条改成两列小网格。
+  ⑤ **追更内容选项**：`DEFAULT_CFG["content"]`（`all / video / image`，默认 `all`），前端在右栏顶部一个下拉，改完立刻存。`watch_core` 在筛候选时按 `aweme_kind()` 过滤，**被过滤掉的那一类要算「已处理」并把 `last_ts` 往前推** —— 否则每轮都会重新「发现」同一批、日志里一直刷「发现 N 条新作品」却永远不下。
 - **2026-11-08 c146 用 `ui-ux-pro-max` 给追更页做视觉升级**：功能落定后用 GitHub 上的设计智能 skill（装在 `~/.workbuddy/skills/ui-ux-pro-max`）跑了一遍「数据密集型看板」规范，按它的检查清单改。
   ① **KPI 卡**：六张卡各加一个 18px / stroke 1.6 的线性图标（人像 / 火焰 / 脉冲 / 趋势 / 下载 / 时钟），装在 32px 浅色圆角托盘里；图标用 `currentColor`，只给「热号」粉、「请求」琥珀、「下载」墨绿三个点缀，其余中性灰 —— **颜色克制，粉只出现在主按钮和热档上**。卡高统一 72px，数字 22px / `tabular-nums`，「上次动作」用 15px 变体（时间文案不该和数字同字号）。估算超预算时整张卡换警示态（`.wv-card.over`，边框 + 数字 + 图标一起变），不再只靠改一个数字的颜色。
   ② **表格**：数字列右对齐 + 等宽数字；表头 `position: sticky` 吸顶；档位标签加 5px 色点（色块 + 文字双通道，色弱也能读）；行 hover 改 `#f8fafc`。

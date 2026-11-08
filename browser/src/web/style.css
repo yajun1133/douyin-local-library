@@ -870,7 +870,7 @@ img.author-cover { display: block; width: 100%; aspect-ratio: 3/4; object-fit: c
 }
 .sidebar-expand:hover { color: var(--text); }
 .sidebar-expand.visible { display: flex; }
-body:has(.sidebar.collapsed) .brand { margin-left: 40px; }
+/* 汉堡改成常驻在顶栏里之后，这里不再需要给品牌让位 */
 
 
 /* ===== 缓存管理面板 ===== */
@@ -1260,6 +1260,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     outline-offset: 2px;
 }
 ::selection { color: #a41235; background: #ffdbe3; }
+
+/* 左上角常驻汉堡：**图标和位置永远不变**，点一下收起/展开左侧功能栏。
+   原来是「侧栏右上角 « + 折叠后浮出的 »」两颗按钮，位置会跑、也不好找（2026-11-08 改）。 */
+.menu-btn {
+    flex: none;
+    width: 36px; height: 36px;
+    margin-right: -8px;
+    padding: 0;
+    display: inline-flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+    border: 1px solid transparent; border-radius: 10px;
+    background: transparent; color: #5f6673; cursor: pointer;
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.menu-btn span {
+    display: block; width: 16px; height: 1.7px; border-radius: 2px;
+    background: currentColor;
+}
+.menu-btn:hover { color: #0f172a; background: #f1f3f6; }
+.menu-btn:active { background: #e8ebf0; }
+.menu-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 /* 顶栏：品牌、搜索与全局操作分成清晰的三段 */
 .topbar {
@@ -4202,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261108c148';
+    content: 'v20261108c150';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -6615,12 +6636,15 @@ body.gallery-open { overflow: hidden; }
 }
 /* 详情页那两处 !important 是给作品筛选压高度的，这里同样适用，不用再写 */
 
-/* 名单表格 */
+/* 名单表格：**只有名单这一张**吸顶。账号池那张也是 .wv-tbl，但它在上面的面板里、
+   跟着页面滚走就完了，吸顶反而会浮在人家的内容上（2026-11-08 拆两栏时发现的）。 */
 .wv-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .wv-tbl th, .wv-tbl td { padding: 10px 14px; text-align: left; border-bottom: 1px solid #f1f2f4; }
 .wv-tbl th {
     font-size: 12px; font-weight: 500; color: var(--text-muted);
     background: #fafbfc; white-space: nowrap;
+}
+.wv-main .wv-tbl th {
     /* 146 行的时候，滚下去还能看见列名。
        top 不能写死 0：主界面的 .view-header 本身就是 position: sticky（z-index 20），
        表头贴到 0 会被标题条整块盖住。真实偏移由 wvSyncStickyTop() 量出标题条高度后写进
@@ -6767,9 +6791,8 @@ body.gallery-open { overflow: hidden; }
     .wv-hd { flex-wrap: wrap; }
     .wv-hd .hint { flex-basis: 100%; }
     .wv-tbl th, .wv-tbl td { padding: 9px 10px; }
-    /* 窄屏把「上次检查 / 下次」两列收掉，留作者、作品数、下载数、状态、操作 */
-    .wv-tbl th:nth-child(4), .wv-tbl td:nth-child(4),
-    .wv-tbl th:nth-child(5), .wv-tbl td:nth-child(5) { display: none; }
+    /* 窄屏收掉「检查」一列（上次/下次叠在一起的那列），留作者、作品数、下载数、状态、操作 */
+    .wv-tbl th:nth-child(4), .wv-tbl td:nth-child(4) { display: none; }
 }
 
 /* =====================================================================
@@ -6938,4 +6961,91 @@ details > summary:focus-visible {
 /* 作品/档位筛选胶囊保留原来那条 cubic-bezier 手感（别被上面的 .btn 过渡盖掉） */
 .wall-filters .work-filter-btn {
     transition: all .15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* =====================================================================
+   追更页布局改版（2026-11-08 c149）
+   ---------------------------------------------------------------------
+   用户四条：
+     ① 账号池别压在最下面 → 和「加作者」合成顶部同一块；
+     ② 名单左右长度收一收 → 右边腾出来放运行日志；
+     ③ 运行日志别在最下面；
+     ④ 节奏与安全设置也往上放，放运行日志上面。
+   所以页面变成：KPI → 加作者+账号池 → [名单 | 追更内容 / 节奏安全 / 运行日志]。
+   ===================================================================== */
+
+/* ---------- 顶部那块：加作者 + 账号池的小标题分隔 ---------- */
+.wv-subhd {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; background: #fafbfc;
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.wv-subt { font-size: 13px; font-weight: 650; color: var(--text); }
+.wv-subhd .hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+/* ---------- 左右两栏 ---------- */
+.wv-split {
+    display: grid;
+    /* 右栏固定 392px：日志要能看清一行日志，再窄就得折行；左栏吃掉剩下的 */
+    grid-template-columns: minmax(0, 1fr) 392px;
+    gap: 14px;
+    align-items: start;
+}
+.wv-main { min-width: 0; }
+.wv-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.wv-pad-sm { padding: 10px 14px; }
+
+/* 名单变窄后：作者名超长就省略，别把数字列挤走 */
+.wv-tbl .wv-nm b {
+    display: inline-block; max-width: 190px; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 「检查」一列：上次在上（灰）、下次在下（跟着远近淡淡的），省一列宽度 */
+.wv-tbl .wv-when { display: flex; flex-direction: column; gap: 1px; line-height: 1.45; }
+.wv-tbl .wv-when-l { font-size: 12px; color: #64748b; font-variant-numeric: tabular-nums; }
+.wv-tbl .wv-when-n { font-size: 11.5px; color: #94a3b8; }
+.wv-tbl .wv-when-col { white-space: nowrap; }
+
+/* 行内两颗按钮：靠右、不换行 */
+.wv-tbl .wv-ops { text-align: right; white-space: nowrap; }
+.wv-tbl .wv-ops .btn-mini + .btn-mini { margin-left: 4px; }
+
+/* ---------- 追更内容下拉 ---------- */
+.wv-sel {
+    font-family: inherit; font-size: 12.5px; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 8px; background: var(--panel); cursor: pointer;
+    outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+}
+.wv-sel:hover { border-color: #d5dae2; }
+.wv-sel:focus-visible {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(254, 44, 85, .1);
+}
+
+/* ---------- 节奏设置：两列小网格，八个字段不至于长长一条 ---------- */
+.wv-fgrid {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 10px 12px; margin-top: 10px;
+}
+.wv-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wv-f label { font-size: 12px; color: var(--text-muted); }
+.wv-f input[type=number] { width: 100%; }
+.wv-f .u { font-size: 11px; color: #9aa3af; line-height: 1.4; }
+.wv-f-check { justify-content: flex-start; }
+.wv-f-check label { color: var(--text); font-size: 12.5px; }
+.wv-f-check input[type=checkbox] { width: auto; margin: 2px 0 0; }
+
+/* 右栏的日志：高度比原来矮一点，跟着栏宽走 */
+.wv-log-panel .wv-log { height: 300px; border-radius: 0 0 var(--radius) var(--radius); }
+
+/* 窄屏叠成一列：名单在上、日志在下（顺序不变，读起来还是先名单后日志） */
+@media (max-width: 1180px) {
+    .wv-split { grid-template-columns: minmax(0, 1fr); }
+    .wv-log-panel .wv-log { height: 240px; }
+}
+@media (max-width: 720px) {
+    .wv-fgrid { grid-template-columns: 1fr; }
+    .wv-tbl .wv-nm b { max-width: 118px; }
 }

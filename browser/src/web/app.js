@@ -631,12 +631,21 @@ function rowPlayCard(el) {
 async function rowPlayVideo(rel, tk) {
     const st = rowStageEl();
     if (!st) return;
-    st.innerHTML = '<div class="rp-empty">加载中…</div>';
-    const probe = await probeVideo(rel);
+    st.innerHTML = '<div class="rp-empty">正在检测视频编码…</div>';
+    const info = await probeVideo(rel);
     if (tk !== rowPlay.token) return;
-    let src = mediaUrl(rel);
-    if (probe && probe.playable === false) {
-        // 浏览器放不了（多为 HEVC）→ 走服务端转码，和详情页同一条路
+
+    // 取源顺序**必须和详情页一致**（2026-11-08 用户报「行模式播不了 HEVC」的根因）：
+    //   ① probe 里带 url → 以前转过码了，直接用缓存。原来这里只看 playable，缓存过的文件
+    //      playable 会变成 true，于是又回去播原片 HEVC → 黑屏，看着就像"不支持 HEVC"。
+    //   ② 浏览器自己解得动（H.264，或装了系统 HEVC 扩展的 HEVC）→ 播原片，原画质零等待。
+    //   ③ 解不动 → 转码成 H.264，转完以后走 ① 秒开。
+    const cached = info.url || '';
+    const needTranscode = !cached && info.playable === false && !canPlayHevc();
+    const playedNative = !cached && !needTranscode && info.playable === false;
+    let src = cached || mediaUrl(rel);
+
+    if (needTranscode) {
         st.innerHTML = '<div class="rp-empty">这个视频浏览器放不了，正在转码…<br><span id="rpPct">0%</span></div>';
         const r = await transcodeVideo(rel, (pct) => {
             const el = document.getElementById('rpPct');
@@ -651,14 +660,57 @@ async function rowPlayVideo(rel, tk) {
         src = r.url;
     }
     if (tk !== rowPlay.token) return;
-    st.innerHTML = `<video src="${src}" controls autoplay playsinline preload="metadata"></video>`;
+    rowMountVideo(src, rel, playedNative);
+}
+
+// 往右侧播放区挂一个 <video>。playedNative=true 时挂两道兜底：
+// 解不出来（onerror）或 5 秒还拿不到元数据（既不报错也不加载）都自动退回转码，
+// 否则用户只会看到一个永远黑屏、没有任何提示的播放器。详情页早就有这两道，行模式漏了。
+function rowMountVideo(src, rel, playedNative) {
+    const st = rowStageEl();
+    if (!st) return;
+    const tk = rowPlay.token;
+    const poster = '/thumb?path=' + encodeURIComponent(rel);
+    st.innerHTML = `<video src="${src}" poster="${poster}" controls autoplay playsinline preload="metadata"></video>`;
+    const v = st.querySelector('video');
+    if (!v) return;
     // autoplay 在部分策略下会被忽略（没有用户手势记录时），显式再 play 一次；
     // 失败就静默留着控制条，别弹错误打断浏览
-    const v = st.querySelector('video');
-    if (v) {
-        v.play().catch(() => {});
-        // 播放中把上一张的高亮保持住；换作品时由 rowPlayCard 重置
+    v.play().catch(() => {});
+    if (!playedNative) return;
+    let retried = false;
+    const retry = () => {
+        if (retried) return;
+        retried = true;
+        rowRetryTranscode(rel, tk);
+    };
+    v.addEventListener('error', retry, { once: true });
+    setTimeout(() => {
+        if (tk !== rowPlay.token) return;
+        if (st.querySelector('video') === v && v.readyState === 0 && !v.error) retry();
+    }, 5000);
+}
+
+// 原生解码失败后的兜底：转成 H.264 再播（和详情页 retryWithTranscode 同一口径）
+async function rowRetryTranscode(rel, tk) {
+    if (tk !== rowPlay.token) return;
+    // 立刻换一个 token：onerror 和 5 秒超时可能同时触发，只让第一个真正跑
+    rowPlay.token = (rowPlay.token || 0) + 1;
+    const tk2 = rowPlay.token;
+    const st = rowStageEl();
+    if (!st) return;
+    st.innerHTML = '<div class="rp-empty">这个视频浏览器解不出来，正在转成 H.264…<br><span id="rpPct">…</span></div>';
+    const r = await transcodeVideo(rel, (pct) => {
+        const el = document.getElementById('rpPct');
+        if (el) el.textContent = pct >= 0 ? pct + '%' : '处理中…';
+    }, () => tk2 !== rowPlay.token);
+    if (tk2 !== rowPlay.token) return;
+    if (!r.ok) {
+        st.innerHTML = `<div class="rp-empty">转码失败：${escapeHtml(r.error || '未知原因')}<br>
+            <span style="font-size:12px">可以直接打开作者页用原文件播放</span></div>`;
+        return;
     }
+    rowMountVideo(r.url, rel, false);
 }
 
 function rowRenderImage(tk) {
@@ -2777,11 +2829,13 @@ async function renderVideoStage(w, token) {
     const info = await probeVideo(rel);
     if (token !== detailState.token) return;   // 用户已点了别的作品
 
-    // 编码能不能解，两条路：
-    //   ① 浏览器自己解得动（H.264，或装了系统 HEVC 扩展后的 HEVC）→ 直接播原片，原画质、零等待
-    //   ② 解不动（没装扩展 / 其它冷门编码）→ 转码到 trans_cache/，转一次以后秒开
-    const needTranscode = info.playable === false && !canPlayHevc();
-    let src = mediaUrl(rel);
+    // 编码能不能解，三条路（顺序不能换）：
+    //   ① 以前转过码 → 直接播缓存。原来这条写在「needTranscode」里面，缓存过之后
+    //      playable 变成 true，就再也进不去了，于是回头播原片 HEVC → 黑屏（2026-11-08 修）
+    //   ② 浏览器自己解得动（H.264，或装了系统 HEVC 扩展后的 HEVC）→ 直接播原片，原画质、零等待
+    //   ③ 解不动（没装扩展 / 其它冷门编码）→ 转码到 trans_cache/，转一次以后秒开
+    const needTranscode = info.playable === false && !info.url && !canPlayHevc();
+    let src = info.url || mediaUrl(rel);
     if (needTranscode) {
         if (info.url) {
             src = info.url;            // 以前转过的缓存，直接用
@@ -5906,15 +5960,19 @@ function bindEvents() {
         });
     }
 
-    // 侧边栏折叠 / 展开（« 收起，» 浮出）；窄屏默认收起，展开后浮在内容区上方
+    // 侧边栏折叠 / 展开：顶栏左上角那颗常驻的 ☰ 按钮切换（2026-11-08 改版）。
+    // 原来有「侧栏右上角 « 收起 + 折叠后浮出的 » 展开」两个按钮，位置会跑、也不好找，
+    // 现在只剩一颗汉堡，图标和位置都不变 —— 展开时是它、收起时还是它。
     const sidebar = document.getElementById('sidebar');
-    const expandBtn = document.getElementById('sidebarExpand');
     const toggleBtn = document.getElementById('sidebarToggle');
     const mobileSidebar = window.matchMedia ? window.matchMedia('(max-width: 680px)') : null;
     const setSidebarCollapsed = (collapsed) => {
         if (!sidebar) return;
         sidebar.classList.toggle('collapsed', collapsed);
-        if (expandBtn) expandBtn.classList.toggle('visible', collapsed);
+        if (toggleBtn) {
+            toggleBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+            toggleBtn.title = collapsed ? '展开左侧功能栏' : '收起左侧功能栏';
+        }
         // 给 body 也挂一份：右侧播放区靠这个类名跟着加宽（新下载页用）。
         // 不能用媒体查询——收侧栏时窗口宽度不变，媒体查询根本不会触发。
         document.body.classList.toggle('side-collapsed', collapsed);
@@ -5928,8 +5986,11 @@ function bindEvents() {
         else if (mobileSidebar.addListener) mobileSidebar.addListener(syncSidebarForViewport);
         window.addEventListener('resize', syncSidebarForViewport);
     }
-    if (sidebar && toggleBtn) toggleBtn.addEventListener('click', () => setSidebarCollapsed(true));
-    if (sidebar && expandBtn) expandBtn.addEventListener('click', () => setSidebarCollapsed(false));
+    if (sidebar && toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            setSidebarCollapsed(!sidebar.classList.contains('collapsed'));
+        });
+    }
     if (sidebar) {
         sidebar.addEventListener('click', (e) => {
             if (mobileSidebar && mobileSidebar.matches && e.target.closest('.side-item, .tag-chip')) {
@@ -6127,8 +6188,16 @@ function hideAllViews() {
             const el = document.getElementById(id);
             if (el) el.classList.add('hidden');
         });
-    // 「新下载」的播放区是常驻的，切走必须把 <video> 清掉 —— 只 display:none 的话声音会继续响
+    // 切视图一律把正在响的音视频停掉。播放器都是**常驻在 DOM 里**的（行模式右侧那块、
+    // 详情页右栏、新下载右栏），只加 display:none 不会停声音 —— 用户 2026-11-08 报的
+    // 「点了播放再切到别的界面它也不停」就是这个。这里统一扫一遍，不依赖各页面自己记着停。
+    document.querySelectorAll('video, audio').forEach((el) => {
+        try { el.pause(); } catch (e) { /* 忽略 */ }
+    });
+    // 「新下载」的播放区还要把 <video> 清掉（它是常驻的，留着会占内存）
     if (typeof ndPlayReset === 'function') ndPlayReset();
+    // 行模式右侧播放区同理：把 <video> 拆了、卡片高亮清掉，下次进来是干净的待播状态
+    if (typeof rowStopPlay === 'function') rowStopPlay();
 }
 
 // 记住当前视图的滚动位置（切走前调），下次切回再恢复，不丢进度
@@ -9672,6 +9741,14 @@ function wvAgo(ts) {
     return diff >= 0 ? txt + '后' : txt + '前';
 }
 
+// 「2026-11-08 13:57:57」→「11-08 13:57」。名单那列窄，年份和秒都是噪音，
+// 完整时间仍留在 title 里（鼠标悬停能看到）
+function wvShortTime(s) {
+    const v = String(s || '').trim();
+    const m = v.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/);
+    return m ? (m[2] + '-' + m[3] + ' ' + m[4]) : (v || '—');
+}
+
 // 当前筛选条件是否命中这一行
 function wvMatch(r, f) {
     if (f === 'all') return true;
@@ -9794,7 +9871,7 @@ if (typeof window !== 'undefined' && !window.__wvStickyBound) {
 }
 
 // ---------- 整块渲染 ----------
-// 首屏骨架：六行假数据占位，形状和真实行一致（名字 / 两个数字 / 时间 / 下次 / 标签）
+// 首屏骨架：六行假数据占位，形状和真实行一致（名字 / 两个数字 / 检查 / 标签）
 function wvSkeleton() {
     const tb = document.getElementById('wvTbody');
     if (!tb) return;
@@ -9803,7 +9880,6 @@ function wvSkeleton() {
         '<td class="wv-num"><span class="sk sk-num"></span></td>' +
         '<td class="wv-num"><span class="sk sk-num"></span></td>' +
         '<td><span class="sk sk-date"></span></td>' +
-        '<td><span class="sk sk-short"></span></td>' +
         '<td><span class="sk sk-tag"></span></td>' +
         '<td></td></tr>';
     tb.innerHTML = row.repeat(6);
@@ -9878,7 +9954,8 @@ function wvRender() {
 // 设置项回填。用户正在改任意一个输入框时不要回填 —— 否则 5 秒轮询会把
 // 刚敲进去的数字重置掉（老页面上踩过这个坑，这里保留同样的保护）。
 function wvRenderSettings(d) {
-    const IDS = ['wvSHot', 'wvSWarm', 'wvSCold', 'wvSIdle', 'wvSGap', 'wvSBudget', 'wvSMax', 'wvSAuto'];
+    const IDS = ['wvSHot', 'wvSWarm', 'wvSCold', 'wvSIdle', 'wvSGap', 'wvSBudget', 'wvSMax',
+                 'wvSAuto', 'wvSContent'];
     const editing = IDS.some((id) => document.activeElement === document.getElementById(id));
     if (editing) return;
     const s = d.settings || {};
@@ -9890,8 +9967,22 @@ function wvRenderSettings(d) {
     put('wvSGap', s.gap);
     put('wvSMax', s.max_per_round);
     put('wvSBudget', s.daily_budget);
+    // 追更内容（all / video / image）：不是数字，单独放，别被 type=number 那套逻辑吞掉
+    put('wvSContent', s.content || 'all');
     const auto = document.getElementById('wvSAuto');
     if (auto) auto.checked = !!d.auto_start;
+    wvContentHint(s.content || 'all');
+}
+
+// 「追更内容」下面那句解释：跟着选项变，免得只看到一个下拉不知道会下什么
+const WV_CONTENT_TEXT = {
+    all: '视频和图文都会下，跟下载器一个口径。',
+    video: '只下视频，图文（含实况/动图）一律跳过 —— 图片多的博主想省空间就选这个。',
+    image: '只下图文，视频一律跳过。',
+};
+function wvContentHint(v) {
+    const el = document.getElementById('wvContentHint');
+    if (el) el.textContent = WV_CONTENT_TEXT[v] || WV_CONTENT_TEXT.all;
 }
 
 // 筛选按钮：观感 = 作者详情页的作品分类（灰底分段控件 + 白色选中块 + 计数胶囊）。
@@ -9931,7 +10022,7 @@ function wvRenderTable(rowsAll) {
 
     if (!rows.length) {
         const msg = rowsAll.length ? '当前筛选没有匹配的作者' : '名单是空的，先在上面加几位';
-        tb.innerHTML = '<tr><td colspan="7" class="wv-empty">' + msg + '</td></tr>';
+        tb.innerHTML = '<tr><td colspan="6" class="wv-empty">' + msg + '</td></tr>';
         return;
     }
 
@@ -9953,14 +10044,23 @@ function wvRenderTable(rowsAll) {
             : '<span class="wv-nm" title="还不在本地作品库里，暂时没有主页可跳"><b>' +
               escapeHtml(r.nickname) + '</b></span>';
 
+        // 「检查」一列叠两行：上次查过 / 下次大概什么时候。
+        // 名单收窄后（右边要让给日志）再拆成两列会把作者名挤成「乌…」，
+        // 所以两列合一列、竖着排（2026-11-08）
+        const when = '<div class="wv-when">' +
+            '<span class="wv-when-l" title="上次检查：' + escapeHtml(r.last_scan || '—') + '">' +
+                escapeHtml(wvShortTime(r.last_scan)) + '</span>' +
+            '<span class="wv-when-n" title="下次检查">' +
+                (r.next_check ? wvAgo(r.next_check) : '—') + '</span>' +
+            '</div>';
+
         return '<tr class="wv-link' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
             '<td>' + nm + (r.in_lib ? '' : ' <span class="wv-tag off">不在库</span>') + '</td>' +
             '<td class="wv-num">' + (r.works || 0) + '</td>' +
             '<td class="wv-num">' + (r.downloads || '—') + '</td>' +
-            '<td>' + escapeHtml(r.last_scan || '—') + '</td>' +
-            '<td>' + (r.next_check ? wvAgo(r.next_check) : '—') + '</td>' +
+            '<td>' + when + '</td>' +
             '<td>' + st + extra + '</td>' +
-            '<td style="text-align:right;white-space:nowrap">' +
+            '<td class="wv-ops">' +
                 '<button class="btn btn-mini" data-act="toggle" data-uid="' + escapeHtml(r.uid) + '">' +
                     (r.enabled ? '停用' : '启用') + '</button>' +
                 '<button class="btn btn-mini" data-act="remove" data-uid="' + escapeHtml(r.uid) + '">移出</button>' +
@@ -10114,9 +10214,11 @@ function wvStop() {
 
 function wvRefresh() { wvPull(); }
 
-function wvSaveCfg() {
+function wvSaveCfg(okMsg) {
     const num = (id) => +((document.getElementById(id) || {}).value || 0);
     const auto = document.getElementById('wvSAuto');
+    const content = ((document.getElementById('wvSContent') || {}).value || 'all');
+    wvContentHint(content);
     wvPost({
         action: 'settings',
         auto_start: !!(auto && auto.checked),
@@ -10128,8 +10230,9 @@ function wvSaveCfg() {
             max_per_round: num('wvSMax'),
             gap: num('wvSGap'),
             daily_budget: num('wvSBudget'),
+            content: content,
         },
-    }, '已保存');
+    }, okMsg || '已保存');
 }
 
 // ---------- 账号池 ----------

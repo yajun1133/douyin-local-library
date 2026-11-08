@@ -4113,9 +4113,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_file(os.path.join(WEB_DIR, "index.html"))
             return
 
-        # 追更面板：单独一页，不挤进主界面（主界面已经够满了）
+        # 追更面板：2026-11-08 起并进主界面左侧「功能」栏，不再单开一页。
+        # 老地址（书签 / 桌面快捷方式）继续可用：302 到 /#watch，主界面接住并落到追更视图。
         if path == "/watch" or path == "/watch.html":
-            self._send_file(os.path.join(WEB_DIR, "watch.html"))
+            self.send_response(302)
+            self.send_header("Location", "/#watch")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         static_name = path.lstrip("/")

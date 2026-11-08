@@ -38,8 +38,7 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── watch_core.py   # 📡 追更核心：按作者轮询 → 判重 → 下载 → 落状态（无 UI、可单独 import）
 │   ├── watch.py        # 追更 CLI / 常驻进程（--scan / --daemon / --status）
 │   └── web/           # 前端（服务端按白名单托管）
-│       ├── index.html / app.js / style.css   # 主界面三件套
-│       ├── watch.html   # 📡 追更面板（/watch）：启动·停止、名单、账号池、节奏设置、日志
+│       ├── index.html / app.js / style.css   # 主界面三件套（含追更视图 #watchView）
 │       └── annotate.html / annotate.js       # 标注台（/annotate.html，选元素写意见给我）
 ├── tools/              # 日常会用到的独立脚本
 │   ├── fill_secuid_from_export.py  # **扫完补 sec_uid**：读 export/*.csv 按 UID 匹配，纯本地不联网
@@ -484,7 +483,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 - 保存 → `data/annotations/界面意见_YYYYMMDD-HHMMSS.md`，我直接读这份清单改代码
 - 实现要点：画布/徽标层是**运行时注入 iframe 文档**的（`app.js`/`style.css` 零改动）；绘制模式下 capture 阶段 `preventDefault + stopImmediatePropagation` 抢占事件；坐标存「页面坐标（client + scroll）」，滚动时 rAF 重绘
 
-### 6. 📡 追更（`/watch`，2026-11-06，c143）
+### 6. 📡 追更（主界面「功能」栏里的一个视图，2026-11-06 落地 / 2026-11-08 并进主界面）
 
 不经过 DouK：按作者轮询抖音 `aweme/post`（复用 `fetch_favorites.py` 的 `a_bogus` 签名），发现新作品直连 CDN 下载，命名规则与下载器一致（`日期-昵称-描述[_序号].ext`），所以**下一轮扫描会自动收进库**。
 
@@ -493,16 +492,24 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 1. **作者详情页信息卡下面那条横栏**（`#watchBar`）—— 开关 `未追更 / 追更中 / 已暂停` + 间隔 chips（自动/15 分钟/30 分钟/1 小时）+ 状态行（`约 8 分钟后检查 · 已自动下载 3 个`）。整条随状态变色（`.watch-bar.on/.paused`）。**只换这一条（`paintWatchBar()`），绝不整块重绘 `detailTop`** —— 重绘会把滚动位置、正在播的视频、展开的历史浮层全冲掉。
    - 状态**不进 `user_data.json`**：`/api/author` 每次一并返回 `watching / watch_enabled / watch_interval / watch_next / watch_last / watch_downloads`，所以刷新页面、从列表/大小号/收藏换条路点进来都是对的，前端也不用另问一次。
    - 未追更时 4 个 chip 置灰（先开追更才能设间隔）；没 SEC_UID 的作者按钮可点但明确拒绝（加进名单也下载不了）。
-2. **顶栏「📡 追更」→ 名单面板**（`/watch`）—— 启停、账号池、节奏设置、日志，以及**整张名单**。
+2. **左侧「功能」栏的「📡 追更」**（`#featureList` 的 `data-action="watch"`，角标是名单人数）—— 启停、账号池、节奏设置、日志，以及**整张名单**。
 
-**名单每一行都可点，点了跳到该作者的详情页**（`/#author=<uid>`，就是作品库那边的作者页）：
+**2026-11-08：不再是单独一页。** 原来顶栏有颗「📡 追更」按钮 `window.open('/watch','_blank')`，追更面板是独立的 `src/web/watch.html`。现在并成主界面的一个视图 `#watchView`（`state.view = 'watch'`），走和其它视图完全一样的 `hideAllViews()` / `animateViewEnter()` / `rememberViewScroll()` 那一套；`watch.html` 已删除，`GET /watch` 改成 **302 → `/#watch`**（保旧书签），`app.js` 启动时认 `#watch` 落到追更视图后立刻 `replaceState` 抹掉 hash。
 
-- 作者名那一格是 `<a class="nm" href="/#author=<uid>">`，点名字走浏览器默认行为 → **Ctrl+点击 / 中键「在新标签打开」都正常**；`<td>` 上挂了 `onclick="event.stopPropagation()"`，免得再被整行的委托处理器跳第二次。
-- 点这一行的**任何其他位置**（数字、空白）由 `#tbody` 的委托处理器接管：`location.href = '/#author=' + uid`；按下 Ctrl/Cmd/Shift 时改 `window.open(url,'_blank')`。
-- 命中顺序写死为 **按钮 → `a.nm` → `tr[data-uid]`**：`button[data-act]`（停用/移出）先返回，所以点按钮绝不会顺带跳页。
-- `in_lib === false`（`/api/watch/status` 里的「不在库」，这类作者是直接贴主页链接加进来的、库里还没有他的目录）：行上多 `no-lib` 类，hover 不高亮、不带 `↗`、光标不留手，**点了只弹一句提示**「还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来」。真跳过去只会看到空详情页。
+- 函数一律 `wv` 前缀（`openWatchView / wvPull / wvRender / wvPost …`），因为主界面已有全局 `state`（`const`，不可重名）和 `showToast / escapeHtml`，老页面的 `render() / post() / toast()` 直接搬过来会撞车。
+- 轮询还是 5 秒，但**只在 `state.view === 'watch'` 时才真正发请求**，切走自动停。
+- 名单筛选：**作者详情页那套分段控件**（`.wall-filters > .btn.work-filter-btn > b.wf-n`，灰底轨道 + 白色选中块 + 计数胶囊），单选、点哪个显示哪个，`全部 / 热档 / 温档 / 冷档 / 静档 / 定档 / 有下载 / 已停用` 八个口径各自带数量。**不是**侧边栏「全部作者」那种竖排列表。切筛选只重绘不重新请求（`wvSetFilter` → `wvRender`），选中的按钮不会因为 5 秒轮询重建而丢焦点（`wvRenderFilter` 只在结构不对时重建，平时只改数字和 `active` 类）。
+- 档位数据来自 `/api/watch/status` 的 `authors[].tier`（`hot/warm/cold/idle/fixed`，服务端已用 `WC.tier_of()` 给老状态兜算过）和 `tiers` 汇总。
+
+**名单每一行都可点，点了直接进该作者的详情页**（应用内 `openAuthor(uid)`，不再整页跳 `/#author=<uid>`）：
+
+- 作者名那一格是 `<a class="wv-nm" href="/#author=<uid>">`：左键被 `#wvTbody` 的委托处理器接住、走应用内 `openAuthor()`（不会整页刷新）；**Ctrl/Cmd/Shift+点击、中键**则放行给浏览器 → 真正在新标签打开。
+- 点这一行的**任何其他位置**（数字、空白）同样由 `#wvTbody` 接管，效果一样是 `openAuthor(uid)`。行上有 `tabindex="0"`，回车/空格也能进（键盘可达）。
+- 命中顺序写死为 **按钮 → `a.wv-nm`（带修饰键才放行）→ `tr[data-uid]`**：`button[data-act]`（停用/移出）先返回，所以点按钮绝不会顺带跳页。
+- `in_lib === false`（`/api/watch/status` 里的「不在库」，这类作者是直接贴主页链接加进来的、库里还没有他的目录）：名字不是链接、不带 `↗`，**点了只弹一句提示**「还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来」。真跳过去只会看到空详情页。
 - 已停用（`enabled:false`）的行**照样能点**，只是整行半透明。
-- 全部写在 `src/web/watch.html` 一个文件里（内联 CSS + 内联 JS，无构建）：样式 `tr.row-link/.nm/.go/.no-lib`，行渲染在 `render()` 的 `authors.map()`，点击分支在文件末尾 `#tbody` 的 `addEventListener`。**无需改服务端、无需改任何配置**。
+- 从追更进详情后，`state.returnView = 'watch'`，详情页「← 返回」会回到追更视图，**档位筛选和滚动位置都保留**（`closeDetail()` 里那段 `else if (state.returnView === 'watch')`）。
+- 实现位置：HTML 在 `index.html` 的 `#watchView`（`.wv-*` 类），逻辑在 `app.js` 末尾「追更（watchView）」那一整段，样式在 `style.css` 末尾。**服务端只改了 `/watch` 那一条路由（改成 302），其它接口一行没动**。
 
 #### 判重三层（`scan_round`，顺序不能换）
 
@@ -764,6 +771,10 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-08 c145 追更并进左侧「功能」栏 + 名单改成档位分段筛选**：用户三条要求 —— ①「追更」不要单开一页、放进左边功能区；② 追更里所有作者都能筛（点名要「冷档」这类档位）；③ 筛选样式要像**作者详情页**那套、而不是「全部作者」那套，「点哪个就显示哪个」。
+  ① **不再是独立页**：删掉顶栏那颗 `window.open('/watch','_blank')` 的按钮，`src/web/watch.html` 整个删除，内容搬成主界面里的 `#watchView`（左侧「功能」栏 `data-action="watch"`，角标显示名单人数，加载完 1.2 秒补拉一次 `/api/watch/status` 填数）。新视图走主界面既有的 `hideAllViews / animateViewEnter / rememberViewScroll`，`hideAllViews()` 的白名单加了 `watchView`；`GET /watch` 改 **302 → `/#watch`**，`app.js` 启动时认这个 hash 后立刻 `replaceState` 抹掉。逻辑用 `wv` 前缀（`state` 是 `const`、`showToast/escapeHtml` 已存在，老页面的 `render/post/toast` 直接搬会撞名）；5 秒轮询改成只在 `state.view === 'watch'` 时才发请求。
+  ②③ **筛选 = 详情页那套分段控件**：直接复用 `.wall-filters > .btn.work-filter-btn > b.wf-n`（灰底轨道 `#f1f5f9` + 白色选中块 + 计数胶囊，和「全部作品 / 视频 / 图文」那一排逐像素同源，不是侧边栏那种竖排 `.side-item`），单选、点哪个显示哪个，八个口径各带数量：`全部 145 / 热档 75 / 温档 34 / 冷档 20 / 静档 10 / 定档 6 / 有下载 61 / 已停用 0`。档位取自 `/api/watch/status` 的 `authors[].tier`（服务端 `WC.tier_of()` 已给老状态兜算）；切筛选只重绘不发请求（`wvSetFilter` → `wvRender`），且 `wvRenderFilter()` **只在按钮数量不对时重建**，平时只改数字和 `active` 类 —— 否则 5 秒一次的重绘会把键盘焦点吃掉。
+  ④ 顺手改好：点名单行**在应用内进作者详情**（`openAuthor(uid)`，不再整页跳 `/#author=`），`state.returnView='watch'`，「← 返回」回追更页且**保留档位筛选**；行加 `tabindex` + 回车/空格可进；窄屏（≤720px）自动收起「上次检查 / 下次」两列。实测（headless CDP）：点冷档 → 高亮按钮 1 个、表格 145 行→20 行、表头「筛出 20 / 145 位」、20 行档位标签全为「冷档」；点热档 → 75 行；进详情再返回 → 追更可见且筛选仍在。
 - **2026-11-08 图文作品的「实况 / 动图」下载全链路重做（判据、后缀、画质、判重）**：用户先报「第一条是图、第二条是视频，第二个播不出来，只有 DouK 下的正常」，随后追问「还有第一张图、第二张是动图的，那个也得能下」。
   ① **判据**：`images[]` 每一项都可能自带 `video.play_addr`（`clip_type` 2=静图 / 4=会动），`url_list` 只是封面帧 —— 有 `video` 就下 `_N.mp4`，**实况和动图是同一类**（DouK 5.8 也这么分）；顶层 `aweme.video`（整组图的轮播视频）不能下。
   ② **后缀**改由服务器 `Content-Type` 定（对齐 DouK 的 `_extract_content`），不再按 URL 猜。
@@ -786,7 +797,7 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 - **2026-11-06 c142→c143 📡 自动追更落地 + 前后改了三版**（现在只看「📍 七.6 追更」那段，下面是过程）：
   ① 先在详情页动作栏塞了一颗 `📡 追更` 小按钮（c142，三态 + 失败回滚）；② 用户要求**「自动追更不要放在导出页上，要放在作者详情页」** → 把导出页整块「④ 自动追更」删干净（`#watchExportSub`/`#exportWatchFreq`/`#watchExportNote`/`confirmExportToWatch`/`refreshWatchExportNote` 全删，`_watch_add_batch` 后端保留但前端已无调用方），改成详情页信息卡下面**一整条横栏**（开关 + 间隔 chips + 实况行，c143，`interval` 一并开放到 `mark` 接口）；③ 追更面板名单**整行可点跳作者主页**（`/#author=<uid>`，`in_lib=false` 的只提示不跳）。
   顺手补的两个洞：**六个写名单的入口共用 `_WATCH_WLOCK` 一把锁**（详情页点追更 + 面板改设置会互相覆盖，症状是刚点亮的追更几秒后自己消失）；**`deleteAuthor` 成功后自动 `action:"remove"` 退出追更名单**（人都删了，留着只会让守护进程白查）。
-  ⚠️ 改前端一律 `python tools/bump_version.py`（浏览器缓存），`watch.html` 自带内联脚本/样式、服务对 html 发 `no-cache`，不用管版本号。
+  ⚠️ 改前端一律 `python tools/bump_version.py`（浏览器缓存）。追更面板 2026-11-08 起在主界面里（`#watchView`），跟着主界面一起升版本；`watch.html` 已删除，`/watch` 只剩一条 302 到 `/#watch`。
 
 - **2026-11-05 c138 作者详情页「纯净赏图」**：筛选栏加了一颗「🖼 赏图 N」，点开是全屏照片墙——这位作者**所有图文作品的所有图片**（不跟当前分类走），图片按原比例铺开、不裁切，除了顶部一条 46px 细栏什么都没有（刻意固定深色底，不跟明暗主题）。点任意一张进大图，←/→ 或两侧按钮翻页、Esc 逐层退出（先关大图再关墙）。分页渲染：每次 120 张，滚到底或图片加载完自动追加。实现要点：① HTML 是 `.gallery-body`（滚动）+ `.gallery-cols`（`columns`）两层——**`columns` 不能直接挂在固定高度的滚动容器上**，否则多列内容横向溢出被 `overflow-x` 裁掉，既不滚也看不见；② 图片先给 `aspect-ratio: 3/4` 占位，否则加载前高度是 0，`loading=lazy` 判定不可见就永远不加载（死锁）；③ 实测本机原图 280KB 平均 260ms（多数是磁盘缓存命中），比现用 ffmpeg 生成缩略图（4~6 秒/张）快得多，所以**墙直接用原图**；④ `scroll` 事件在无头环境不派发，另加 700ms 定时兜底。
   顺手修了 `/thumb` 对图片返回 500 的 bug：`_thumb_ffmpeg()` 里的 `-ss 1` 会把单帧的 jpg 直接越过结尾，图片必须不 seek（`seek = []`）。

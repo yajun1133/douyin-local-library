@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261105c143">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261105c143">
-    <link rel="stylesheet" href="style.css?v=20261105c143">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261108c145">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261108c145">
+    <link rel="stylesheet" href="style.css?v=20261108c145">
 </head>
 <body>
     <button class="sidebar-expand" id="sidebarExpand" title="展开侧边栏">»</button>
@@ -43,9 +43,6 @@
             <button id="annotateBtn" class="ghost-btn"
                     title="标注台：在页面上框一下、画个箭头，写清哪儿想改，存下来我照着改"
                     onclick="window.open('/annotate.html','_blank')">✏️ 标注</button>
-            <button id="watchBtn" class="ghost-btn"
-                    title="追更：盯住一批重点作者，发现新作品就自动下载"
-                    onclick="window.open('/watch','_blank')">📡 追更</button>
         </div>
     </header>
 
@@ -61,6 +58,7 @@
                     <li class="side-item" data-action="fetchFavorites" title="抓取抖音最近收藏/喜欢的作者，按黑名单/已下载/未下载分类，可一键加入黑名单">💗 获取最近收藏</li>
                     <li class="side-item" data-action="exportAuthors" title="把作者信息导出成表格：等级、标签、状态等都可以先选好范围，预览后再导出">📤 导出作者信息</li>
                     <li class="side-item" data-action="newDownloads" title="只看最近下载下来的文件：按作者分组、组内按作品发布时间排，每张卡片下面标作者和发布时间">🆕 新下载 <span class="count zero" id="newDlBadge">0</span></li>
+                    <li class="side-item" data-action="watch" title="追更：盯住一批重点作者，发现新作品就自动下载（名单可按热/温/冷/静档筛选）">📡 追更 <span class="count zero" id="watchBadge">0</span></li>
                     <li class="side-item" data-action="files" title="改文件夹名（让文件夹跟着你标注的昵称走）、清理合并产生的重复文件">📁 文件管理</li>
                     <li class="side-item" data-action="settings" title="设置：更新频率禁用状态、文件地址、缓存管理">⚙️ 设置</li>
                 </ul>
@@ -554,6 +552,127 @@
                 </div>
             </section>
 
+            <!-- 追更：原先是一个单独页面（/watch，另开标签），现在并进主界面左侧「功能」栏。
+                 数据接口没变，仍是 /api/watch（GET 取状态、POST 改设置/名单）。 -->
+            <section id="watchView" class="hidden">
+                <div class="view-header">
+                    <h2>追更 <span class="view-sub" id="wvSub">读取中…</span></h2>
+                    <div class="view-sort">
+                        <button class="btn btn-primary" id="wvStart" onclick="wvStart()"
+                                title="启动追更进程：按档位间隔挨个查主页，发现新作品就下">开始追更</button>
+                        <button class="btn" id="wvStop" onclick="wvStop()" title="停止追更（已经下载的文件不受影响）">停止</button>
+                        <button class="btn" onclick="wvRefresh()" title="立刻重读一遍名单和运行状态">🔄 刷新</button>
+                    </div>
+                </div>
+                <div class="wv-body">
+                    <!-- 概览数字 -->
+                    <div class="wv-cards">
+                        <div class="wv-card"><div class="k">名单</div><div class="v" id="wvCount">0<small>位</small></div></div>
+                        <div class="wv-card"><div class="k">热号（2 天内发过）</div><div class="v" id="wvHot">0<small>位</small></div></div>
+                        <div class="wv-card"><div class="k">今日已用请求</div><div class="v" id="wvReq">0<small>次</small></div></div>
+                        <div class="wv-card" id="wvEstCard"><div class="k">按当前档位估算/天</div><div class="v" id="wvEst">0<small>次</small></div></div>
+                        <div class="wv-card"><div class="k">累计追更下载</div><div class="v" id="wvDl">0<small>条</small></div></div>
+                        <div class="wv-card"><div class="k">上次动作</div><div class="v" id="wvBeat" style="font-size:15px">—</div></div>
+                    </div>
+
+                    <!-- 风控提示条（冷却 / 额度用尽 / 估算超限时才出现） -->
+                    <div class="wv-guard hidden" id="wvGuard"></div>
+
+                    <!-- 加作者 -->
+                    <div class="wv-panel">
+                        <div class="wv-hd">加作者<span class="hint">uid / SEC_UID / 主页链接 / 库里唯一的昵称都行，可用逗号或换行分隔</span></div>
+                        <div class="wv-bd">
+                            <div class="wv-row">
+                                <input type="text" id="wvAddInput" class="wv-grow"
+                                       placeholder="例：MS4wLjABAAAA...  或  https://www.douyin.com/user/MS4wLjAB..."
+                                       onkeydown="if(event.key==='Enter')wvAdd()">
+                                <button class="btn btn-primary" onclick="wvAdd()">加入名单</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 名单 + 档位筛选（筛选样式与作者详情页的作品分类完全同一套分段控件） -->
+                    <div class="wv-panel">
+                        <div class="wv-hd">名单<span class="hint" id="wvTblHint"></span></div>
+                        <div class="wv-filter-bar">
+                            <div class="wall-filters" id="wvFilter" role="tablist" aria-label="按档位筛选追更作者"></div>
+                        </div>
+                        <div class="wv-bd wv-bd-flush">
+                            <table class="wv-tbl">
+                                <thead><tr>
+                                    <th style="width:26%">作者</th>
+                                    <th>本地作品</th>
+                                    <th>追更下载</th>
+                                    <th>上次检查</th>
+                                    <th>下次</th>
+                                    <th>状态</th>
+                                    <th style="width:128px"></th>
+                                </tr></thead>
+                                <tbody id="wvTbody"><tr><td colspan="7" class="wv-empty">读取中…</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 账号池 -->
+                    <div class="wv-panel">
+                        <div class="wv-hd">账号池<span class="hint">查询用哪个号的登录态。一个号被限流就自动换下一个，不在同一个号上反复试</span>
+                            <div class="wv-spacer"></div>
+                            <button class="btn btn-mini" onclick="wvAccSync()" title="把下载器（DouK）当前登录的那个号同步进账号池 —— 你在 DouK 里换了号就点一下">同步下载器</button>
+                            <button class="btn btn-mini" onclick="wvAccToggleForm()">添加账号</button>
+                        </div>
+                        <div class="wv-bd wv-bd-flush" id="wvAccBody">
+                            <div class="wv-empty" style="padding:16px">读取中…</div>
+                        </div>
+                        <div class="wv-bd hidden" id="wvAccForm" style="border-top:1px solid var(--border)">
+                            <div class="wv-row">
+                                <input type="text" id="wvAccLabel" placeholder="备注（例：小号1）" style="width:180px">
+                            </div>
+                            <div class="wv-row" style="margin-top:8px">
+                                <textarea id="wvAccCookie" class="wv-grow" rows="3"
+                                          placeholder="把这个号的 cookie 整段粘进来：sessionid=xxx; ttwid=xxx; ...&#10;（浏览器 F12 → Network → 任意 douyin.com 请求 → 复制 Cookie 整行）"></textarea>
+                            </div>
+                            <div class="wv-row" style="margin-top:8px">
+                                <span class="wv-note">至少要有 sessionid，否则不算登录态</span>
+                                <div class="wv-spacer"></div>
+                                <button class="btn btn-mini" onclick="wvAccToggleForm(true)">取消</button>
+                                <button class="btn btn-mini btn-primary" onclick="wvAccSave()">存进账号池</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 节奏与安全设置 -->
+                    <div class="wv-panel">
+                        <div class="wv-bd">
+                            <details>
+                                <summary>节奏与安全设置（改完立刻生效，正在跑的进程下一轮就会读到）</summary>
+                                <div class="wv-field"><label>热档间隔</label><input type="number" id="wvSHot" min="60" step="60"><span class="unit">秒 · 2 天内发过作品的作者</span></div>
+                                <div class="wv-field"><label>温档间隔</label><input type="number" id="wvSWarm" min="300" step="300"><span class="unit">秒 · 7 天内发过</span></div>
+                                <div class="wv-field"><label>冷档间隔</label><input type="number" id="wvSCold" min="600" step="600"><span class="unit">秒 · 30 天内发过</span></div>
+                                <div class="wv-field"><label>静档间隔</label><input type="number" id="wvSIdle" min="3600" step="3600"><span class="unit">秒 · 更久没动静，一天查一次就够</span></div>
+                                <div class="wv-field"><label>每个作者间隔</label><input type="number" id="wvSGap" min="1" step="0.5"><span class="unit">秒（2 秒 ≈ 一个人连着刷主页；号多可以更快，号少别低于 2）</span></div>
+                                <div class="wv-field"><label>每日请求上限</label><input type="number" id="wvSBudget" min="100" step="500"><span class="unit">次（全部号合计，到了当天就停）</span></div>
+                                <div class="wv-field"><label>单轮下载上限</label><input type="number" id="wvSMax" min="1" step="1"><span class="unit">条（防一次性爆量）</span></div>
+                                <div class="wv-field"><label>服务启动就自动追更</label><input type="checkbox" id="wvSAuto" style="width:auto"><span class="unit">开机打开界面就自己补漏，不用再点「开始」</span></div>
+                                <div class="wv-field"><button class="btn btn-primary btn-mini" onclick="wvSaveCfg()">保存</button></div>
+                                <div class="wv-note-block">
+                                    查询失败时<b>先换号再试一次</b>；单个号连续 2 次不成，它自己歇 5 分钟（再犯翻倍），其它号照常跑。<br>
+                                    所有号都不行、连续 5 位作者都查不动，才整体暂停 10 分钟 —— 这时是真被限流了，停下来才安全。
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+
+                    <!-- 运行日志 -->
+                    <div class="wv-panel">
+                        <div class="wv-hd">运行日志<span class="hint">最近 60 行</span>
+                            <div class="wv-spacer"></div>
+                            <button class="btn btn-mini" onclick="wvRefresh()">刷新</button>
+                        </div>
+                        <div class="wv-bd"><div class="wv-log" id="wvLog">（还没有日志）</div></div>
+                    </div>
+                </div>
+            </section>
+
             <section id="filesView" class="hidden">
                 <div class="view-header">
                     <h2>文件管理 <span class="view-sub" id="filesViewSub"></span></h2>
@@ -792,6 +911,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261105c143"></script>
+    <script src="app.js?v=20261108c145"></script>
 </body>
 </html>

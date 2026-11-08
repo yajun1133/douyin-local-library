@@ -257,11 +257,18 @@ def cmd_loop(args):
     「早就该查」的那批一次扫完 —— 这就是补漏，不需要额外逻辑。
     """
     W.log("=== 追更常驻启动（名单 %d 位）===" % len(W.load_watch().get("authors") or []))
-    try:
-        dy = W.Douyin()
-    except Exception as e:
-        W.log("× 启动失败：%s" % e)
-        return 2
+    # 号池暂时全在冷却（比如上次被误判限流）不该让常驻进程直接退出 ——
+    # 等一会儿它们就恢复了，起来之后照常接着追。
+    while True:
+        try:
+            dy = W.Douyin()
+            break
+        except W.RetryLater as e:
+            W.log("… 账号池暂时不可用（%s），60 秒后重试" % str(e)[:80])
+            time.sleep(60)
+        except Exception as e:
+            W.log("× 启动失败：%s" % e)
+            return 2
     # PID 落到文件里：网页那边「停止」要能精确杀掉它（server 重启后内存里的句柄就没了）
     try:
         with open(os.path.join(paths.DATA_DIR, "watch.pid"), "w") as f:

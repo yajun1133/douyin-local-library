@@ -63,6 +63,8 @@ DEFAULT_CFG = {
     "rest_secs": 20,            # 歇多久（秒）
     "break_fails": 5,           # 连续 N 位查询都失败（换号也不行）→ 全部暂停
     "break_cool": 600,          # 首次冷却 10 分钟；再犯翻倍，最长 2 小时
+    "net_wait": 20,             # 网络类失败时等多少秒再试（不封号、不熔断）
+    "net_cool": 120,            # 连着 3 次网络不通 → 停 2 分钟，通了自动续上
     "account_ban": 300,         # 单个号连续失败后先歇 5 分钟，再犯翻倍
     "max_per_round": 40,        # 单轮最多下载多少条，防止一次性爆量
     "desc_len": 64,             # 描述截断长度，对齐 DouK 的 desc_length
@@ -81,6 +83,37 @@ BAD_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36")
+
+# curl_cffi 默认会读 HTTPS_PROXY / HTTP_PROXY。本机的会话代理端口**每个会话都换**，
+# 常驻进程继承到的那个通常几小时后就没了 —— 于是所有请求都变成
+#   curl: (7) Failed to connect to www.douyin.com:443 over proxy 127.0.0.1
+# 抖音直连一直是通的，所以这里一律显式绕过代理（空串 = 不用代理）。
+NO_PROXY_OPTS = {"proxies": {"http": "", "https": ""}}
+
+
+class RetryLater(RuntimeError):
+    """「现在不行，但过一会儿就好」：网络断了 / 代理挂了 / 号池暂时全在冷却。
+
+    和普通失败的区别：这种错**不怪账号**，不该 `mark_fail`（否则好好的号被标成
+    「连续失败」歇 20 分钟），也不该触发 20~40 分钟的限流熔断 —— 代理抖一下
+    就要停半小时，是比限流本身更糟的误伤。
+    """
+
+
+# 判「网络层失败」用的特征串（小写）。只看类型+文本，不做精确匹配：
+# curl_cffi 0.7 把底层错误包成 RequestsError，异常类型名各版本不同，文本反而稳定。
+NET_HINTS = ("failed to perform", "curl: (6)", "curl: (7)", "curl: (28)",
+             "curl: (35)", "curl: (52)", "could not connect", "connection refused",
+             "connection reset", "connection aborted", "connectionerror",
+             "timed out", "timeout was reached", "name resolution",
+             "could not resolve", "eof occurred", "ssl", "proxy",
+             "jsondecodeerror")
+
+
+def is_net_error(e):
+    """这个异常是不是「网络/环境」层面的，而不是账号或风控层面的。"""
+    s = ("%s %s" % (type(e).__name__, e)).lower()
+    return any(k in s for k in NET_HINTS)
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +158,23 @@ def _read_json(path, default):
 
 
 def _write_json(path, data):
-    """先写临时文件再换名：中途断电不会留下半个 JSON（下一轮就读不出来了）。"""
+    """先写临时文件再换名：中途断电不会留下半个 JSON（下一轮就读不出来了）。
+
+    换名会撞 WinError 32/5：面板、扫描、别的追更实例可能同时持有同一个文件。
+    这种情况下 tmp 是完整的，重试几次就能成功，不该让整轮循环崩掉。
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    for i in range(6):
+        try:
+            os.replace(tmp, path)
+            return
+        except (PermissionError, OSError):
+            if i == 5:
+                raise
+            time.sleep(0.15 * (i + 1))
 
 
 def clean_part(s, limit=None):
@@ -583,7 +627,8 @@ class Douyin(object):
             raise RuntimeError("账号池是空的：先在面板里加一个抖音号的 cookie")
         cur = self.pool.current()
         if cur is None:
-            raise RuntimeError("账号池里没有可用的号（都没登录或全在冷却）")
+            # 池子里有号但全在冷却 —— 等它们缓过来就行，不是故障
+            raise RetryLater("账号池里没有可用的号（都没登录或全在冷却）")
         # browser_info 优先用这个号自己的，没有就退回下载器那份
         st, _ck = ff.load_ctx()
         self.bi = (cur.get("browser_info")
@@ -601,7 +646,8 @@ class Douyin(object):
     def get(self, url, extra, referer="https://www.douyin.com/"):
         acct = self.pool.current()
         if acct is None:
-            raise RuntimeError("账号池里没有可用的号（都在冷却或没登录）")
+            # 号都在冷却 ≠ 号坏了。当成网络类「等会儿再来」，不记账、不熔断
+            raise RetryLater("账号池里没有可用的号（都在冷却或没登录）")
         q = self.ff.build_query(self.bi)
         q.update(extra)
         q["a_bogus"] = self.ab.get_value(
@@ -611,7 +657,8 @@ class Douyin(object):
         acct["req_today"] = int(acct.get("req_today") or 0) + 1
         return self.cr.get(url, params=q,
                            headers=self.ff.make_headers(self.current_cookie(), referer),
-                           impersonate="chrome146", timeout=25)
+                           impersonate="chrome146", timeout=25,
+                           **NO_PROXY_OPTS)
 
     def author_works(self, sec_uid, pages=1, retry=2):
         """拉作者主页作品列表（新→旧）。返回 aweme_list。
@@ -622,8 +669,10 @@ class Douyin(object):
         out, cursor, seen = [], "0", set()
         for _ in range(max(1, pages)):
             last = ""
+            net = False
             data = None
             for attempt in range(1, max(1, retry) + 1):
+                net = False
                 try:
                     r = self.get(
                         "https://www.douyin.com/aweme/v1/web/aweme/post/",
@@ -643,10 +692,15 @@ class Douyin(object):
                         self.pool.mark_fail(last)
                 except Exception as e:
                     last = "%s: %s" % (type(e).__name__, e)
-                    self.pool.mark_fail(last)
+                    net = is_net_error(e)
+                    # 网络层的失败不记在账号头上：换个号一样连不上，记了只会
+                    # 把几个好号挨个打成「连续失败」，越跑越像被封
+                    if not net:
+                        self.pool.mark_fail(last)
                 if attempt < max(1, retry):
-                    # 换号成功就几乎不用等；没号可换才退让一下
-                    if self.pool.rotate(last):
+                    if net:
+                        time.sleep(1.5)          # 网络问题换号没意义，原地短等
+                    elif self.pool.rotate(last):
                         self.switches += 1
                         time.sleep(0.5)
                     else:
@@ -654,6 +708,8 @@ class Douyin(object):
             if not data:
                 if out:
                     break
+                if net:
+                    raise RetryLater(last or "网络不通")
                 raise RuntimeError(last or "查询失败")
             al = data.get("aweme_list") or []
             for a in al:
@@ -717,7 +773,8 @@ def save_stream(cr, urls, dest, referer, retry=3):
         for u in urls:
             try:
                 r = cr.get(u, headers={"User-Agent": UA, "Referer": referer},
-                           impersonate="chrome146", timeout=60, stream=True)
+                           impersonate="chrome146", timeout=60, stream=True,
+                           **NO_PROXY_OPTS)
                 if r.status_code != 200:
                     last = "HTTP %s" % r.status_code
                     r.close()
@@ -851,7 +908,10 @@ def guard(state, cfg, now=None, accounts=1):
     cu = float(state.get("cool_until") or 0)
     if cu > now:
         left = int((cu - now) / 60 + 0.99)
-        return False, "限流冷却中，还要等 %d 分钟（连续失败触发）" % left
+        # 冷却有两种来源：账号被限流（长）、网络不通（短）。文案得分得清，
+        # 否则网络抖一下就提示「被限流」，看着像号出事了。
+        why = state.get("cool_reason") or "连续失败触发"
+        return False, "冷却中，还要等 %d 分钟（%s）" % (left, why)
     day = time.strftime("%Y-%m-%d")
     if state.get("req_day") != day:
         state["req_day"] = day
@@ -875,9 +935,24 @@ def _mark_fail(state, cfg, now=None):
     cool = float(cfg.get("break_cool") or 900) * (2 ** lvl)
     state["cool_until"] = now + cool
     state["cool_level"] = lvl + 1
+    state["cool_reason"] = "疑似被限流，暂停保护"
     state["consec_fail"] = 0
     log("⚠ 连续 %d 位查询都失败，判断被抖音限流：暂停 %.0f 分钟再试（这是保护，不是故障）"
         % (limit, cool / 60))
+    return True
+
+
+def _mark_net_fail(state, cfg, now=None):
+    """网络不通（连不上抖音 / 代理挂了）：短冷却后自己恢复，不升级、不翻倍。
+
+    和 `_mark_fail` 分开的理由：这类失败跟「抖音在限流我」没有关系，
+    按限流那套翻倍（10→20→40 分钟）只会让一次断网毁掉半天。
+    """
+    now = now or time.time()
+    cool = float(cfg.get("net_cool") or 120)
+    state["cool_until"] = now + cool
+    state["cool_reason"] = "网络不通，稍后自动恢复"
+    state["consec_fail"] = 0
     return True
 
 
@@ -919,7 +994,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
     cfg = watch["settings"]
     stats = {"authors": 0, "checked": 0, "new": 0, "downloaded": 0,
              "bytes": 0, "failed": 0, "skipped": 0, "errors": [],
-             "paused": "", "requests": 0, "would": 0, "empty": 0}
+             "paused": "", "requests": 0, "would": 0, "empty": 0, "net": 0}
     budget = int(cfg.get("max_per_round") or 40)
     now = time.time()
     # 常驻进程可能跨午夜：每轮先把各号的「今日请求」归零，别让昨天的账算到今天头上
@@ -1003,6 +1078,24 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
 
         try:
             al = dy.author_works(sec, pages=int(cfg.get("per_author_pages") or 1))
+        except RetryLater as e:
+            # 网络断了 / 号池全在冷却：跟这位作者一点关系都没有。
+            # 不进 failed、不累加 consec_fail，只等一小会儿再试，
+            # 免得一次断网把整个名单判成「被限流」停 40 分钟。
+            stats["net"] = int(stats.get("net") or 0) + 1
+            st["last_scan"] = now_str()
+            log("… %s 暂时查不了（%s），等一下再试" % (nick, str(e)[:90]))
+            if stats["net"] >= 3:
+                _mark_net_fail(state, cfg)
+                stats["paused"] = "连不上抖音，稍后自动恢复"
+                stats["net"] = 0
+                log("⏸ 连续 %d 次连不上抖音：先停 %.0f 分钟（不是限流，网络通了就自己续上）"
+                    % (3, float(cfg.get("net_cool") or 120) / 60))
+                _save()
+                break
+            _save()
+            time.sleep(float(cfg.get("net_wait") or 20))
+            continue
         except Exception as e:
             stats["failed"] += 1
             st["last_scan"] = now_str()
@@ -1016,6 +1109,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
             time.sleep(_pace(cfg))
             continue
         _mark_ok(state)
+        stats["net"] = 0
         stats["checked"] += 1
         st["last_scan"] = now_str()
 

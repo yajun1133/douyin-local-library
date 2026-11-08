@@ -549,6 +549,16 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 13. 子进程脚本的可 import 范围**只有自己所在目录**；报「进程无输出」时先手动跑一遍看 stderr，别急着怀疑 cookie 过期。
 14. 子进程管道写中文要 `ensure_ascii=False` + 明确 UTF-8，否则走 Windows 默认 GBK 直接炸。
 15. 状态字典别用 `ok` 这类会和接口返回撞名的键（会把 `ok: true` 顶掉）。
+
+> **常驻进程别信环境代理**（2026-11-08）：「抖音那边连续失败，已自动暂停 33 分钟」不是账号问题。
+> 日志里是 `curl: (7) Failed to connect to www.douyin.com:443 over proxy 127.0.0.1` —— curl_cffi 默认读
+> `HTTPS_PROXY`，而**会话代理端口每个会话都换**，常驻进程继承的是启动那一刻的端口，几小时后随会话消失。
+> 后果是一条链：查询全挂 → 号池把 `ok=652` 的好号逐次标成「连续失败」（`ban_level` 一路涨到 3，冷却 40 分钟）
+> → 连续 5 位失败 → 判「被限流」停 20~40 分钟。**账号一次都没被抖音拒绝过，全是本地误伤。**
+> 修法：`NO_PROXY_OPTS = {"proxies": {"http": "", "https": ""}}` 显式传给每一处 curl_cffi 请求
+> （API + 下载 CDN；注意 `proxy=""` 不管用，必须用 `proxies` 字典）；错误再分一层 `RetryLater`
+> （网络不通 / 号池全冷却），这种失败**不 mark_fail、不熔断**，20 秒重试，连 3 次才停 2 分钟。
+> 验证：把 `HTTPS_PROXY` 指到死端口 `127.0.0.1:9`，仍能正常查到 22 条；真失败时号池 `fail` 保持 0。
 16. **「详情页作品数一直是 0，但磁盘有文件、下载记录也对」= 内存缓存与 `data.json` 永久错位**（2026-10-31 踩过）。
     根因：`_sync_cache_after_change()` 把 `CACHE["mtime"]` 设成新文件 mtime，却**只同步 `list_index` 的统计、没同步 `CACHE["accounts"][uid]`**（`/api/author` 读的正是这份）。之后 `load_data()` 一看 mtime 相同直接 `return False`，这份旧数据就再也刷不新，只能重启。
     修法：① `_sync_cache_after_change(uid, stats, acc)` 把 `works` / `stats` 一起同步；② `load_data` 的跳过条件改成 **mtime + size 双校验**（扫描器是「写 tmp 再 `os.replace`」，同一秒内多次替换 mtime 可能相同）。
@@ -661,6 +671,12 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-08 追更「连续失败」根因是代理，不是账号**：用户看到「抖音那边连续失败，已自动暂停 33 分钟」，账号本身完全正常（该号历史成功 652 次）。
+  查日志：`curl: (7) Failed to connect to www.douyin.com:443 over proxy 127.0.0.1` —— curl_cffi 默认读 `HTTPS_PROXY`，而会话代理端口每个会话都换，09:27 启动的常驻进程继承的端口几小时前就没了；直连抖音实测 200 / 0.47s。
+  两处修改：① `NO_PROXY_OPTS` 显式绕过代理（API + CDN 下载）；② 新增 `RetryLater` + `is_net_error()` + `_mark_net_fail()`，把「网络不通 / 号池全冷却」和「账号被限流」分开 —— 前者不 `mark_fail`、不翻倍熔断，20 秒重试，连 3 次才停 2 分钟，`cool_reason` 也写进状态供面板显示。
+  顺带修 `_write_json`：`os.replace` 撞 WinError 32/5 时重试 6 次（之前一撞就把整轮循环崩掉、日志里刷 `watch_state.json.tmp -> watch_state.json` 的 PermissionError）。
+  清理了这次误伤：两个号的 `ban_level/cool_until/last_error` 与全局限流冷却全部归零（备份 `data/watch_accounts.bak-*` / `data/watch_state.bak-*`）。
+  验证：死代理环境（`HTTPS_PROXY=http://127.0.0.1:9`）下仍能查到 22 条；故意断网时抛 `RetryLater` 且号池 `fail` 保持 0。重启后 2 分钟内已开始正常下载新作品。
 - **2026-11-07 追更判重修「`#...` 认不出」+ 新增 `tools/backfill_author.py`（补历史作品不靠 DouK）**：
   起因是用户发现某作者 9-20 那条明明公开、本地却没有 —— 查下来是 11-05 那次抖音接口只返回了 19 条（`共获取到 19` = `筛选处理后 19`，说明不是被过滤，是接口本身没给），加上下载器名单里该账号 `earliest=2026/10/25` 又把 9 月挡在外面，所以重跑也补不上。
   ① 新增 `tools/backfill_author.py`：**绕开追更基线**，拉主页全部作品后按库索引 `is_known()` 判重，只补本地缺的。sec_uid 依次从 `data/watch.json` → `data/user_data.json` → `--sec-uid UID:SEC_UID` 取，取不到就跳过（不猜）；用法 `python tools/backfill_author.py <uid> [<uid>...] --pages 12`。实跑一个号补 3 条（含缺的那条）、另一个号补 0 条，0 失败。**跑之前先把追更常驻停掉**，免得两边同时打接口。

@@ -45,6 +45,7 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 - 2026-11-04 的改动集中在：新下载筛选（c124）、G 盘老作品并入（15,298 个文件）、封面指针修复（202 位）、身份字段补齐。细节见 `PROJECT.md` 附录 A 前几条
 - **2026-11-06 新增「📡 自动追更」**（前端 c143）：不经过 DouK，按作者轮询抖音、发现新作品自己下。**入口只有两处，改的是同一份 `data/watch.json`** —— ① 作者详情页信息卡下面那条横栏（开关 + 间隔 chips）；② 顶栏「📡 追更」面板（`/watch`），名单**每一行都能点，点了跳 `/#author=<uid>` 的详情页**（`in_lib=false` 的作者只提示不跳）。核心在 `src/watch_core.py` + `src/web/watch.html`，接口 `/api/watch`、`/api/watch/status`。改了前端记得 `bump_version`；`watch.html` 是内联脚本，html 走 `no-cache`，不用管版本号。详见 `PROJECT.md` 七.6 和 `CONFIG.md` 3.5
 - **2026-11-07 追更判重修省略号 + 新增 `tools/backfill_author.py`**：老文件名把长描述中段省略成 `#...`（全库约 2.9 万条），接口给的是完整描述 → 全量扫老作者必重复下载。判重改成「精确命中 → 省略号前后缀双向模糊（限定同一天、前后缀总长 ≥6）」，函数在 `src/watch_core.py` 的 `is_known()` / `ellipse_split()` / `build_date_index()`，细节见 `PROJECT.md` 七.6「判重三层」。要补某位作者历史作品别用追更（有基线），用 `python tools/backfill_author.py <uid> --pages 12`，跑前先停追更常驻
+- **2026-11-08 追更失败是代理不是账号**：面板上「抖音那边连续失败，已自动暂停 N 分钟」先去看 `data/watch.log` —— 如果是 `curl: (7) Failed to connect ... over proxy 127.0.0.1`，就是常驻进程继承了已失效的会话代理端口，不是被限流、也不是 cookie 过期。`watch_core` 已用 `NO_PROXY_OPTS` 强制绕过代理，网络类失败走 `RetryLater`（不封号、不熔断，20 秒重试）。**改这一块的规矩：任何新加的 curl_cffi 请求都要带 `**NO_PROXY_OPTS`**
 - **没有阻塞性缺陷**，剩下的都是体验优化
 - 缺 sec_uid、转码 job 丢失、死代码等已知项见 `PROJECT.md` 第五章末尾
 

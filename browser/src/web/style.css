@@ -4202,7 +4202,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261108c146';
+    content: 'v20261108c148';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -6770,4 +6770,172 @@ body.gallery-open { overflow: hidden; }
     /* 窄屏把「上次检查 / 下次」两列收掉，留作者、作品数、下载数、状态、操作 */
     .wv-tbl th:nth-child(4), .wv-tbl td:nth-child(4),
     .wv-tbl th:nth-child(5), .wv-tbl td:nth-child(5) { display: none; }
+}
+
+/* =====================================================================
+   统一视觉层（2026-11-08 c147）
+   ---------------------------------------------------------------------
+   这轮用 ui-ux-pro-max 的设计规范把「各页风格不一」的地方收口。
+   原则：**只加外观、不动结构**——所有布局（网格列数、行模式固定列、
+   详情页左右分栏）一行没改，出问题直接回退本段即可。
+   ===================================================================== */
+
+:root {
+    --card-radius: 14px;
+    --card-border: #e9ecf2;
+    --card-shadow: 0 1px 3px rgba(15, 23, 42, .04), 0 2px 6px rgba(15, 23, 42, .02);
+    --card-shadow-hover: 0 10px 24px -8px rgba(15, 23, 42, .16), 0 2px 6px rgba(15, 23, 42, .04);
+}
+
+/* ---------- 1. 滚动条：细、圆、半透明（深浅底都能用） ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, .32);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+    transition: background .15s;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, .52); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+::selection { background: rgba(254, 44, 85, .18); color: inherit; }
+
+/* ---------- 2. 键盘焦点：只给真正会用键盘走到的控件 ---------- */
+/* 输入框不在这里加环 —— 它们本来就有「边框变粉」的聚焦态，而且文本类输入框
+   任何一次点击都会命中 :focus-visible，再加一圈会显得过重。 */
+.btn:focus-visible,
+.tag-chip:focus-visible,
+.opt-chip:focus-within,
+details > summary:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+/* ---------- 3. 减少动态效果：系统开了就全部关掉 ---------- */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+        scroll-behavior: auto !important;
+    }
+    .author-card:hover, .author-card:active { transform: none !important; }
+}
+
+/* ---------- 4. 每作者一行：给每个作者块一张白卡 ---------- */
+/* 原来作者块是「纸片散落」——没有容器，表头和作品条直接浮在页面上，
+   跟「新下载 / 大小号」那种白卡片完全两个风格。这里补齐外壳，不动内部布局。
+   注意：列数是 rowFitStrip() 按 .ar-strip 的实际宽度算的，加内边距它会自动少排一列，
+   不会挤爆，也不会出现横向滚动。 */
+.author-row {
+    background: var(--panel);
+    border: 1px solid var(--card-border);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    padding: 11px 13px 13px;
+    transition: border-color .18s ease, box-shadow .18s ease;
+}
+.author-row:hover { border-color: #dde3ec; box-shadow: var(--card-shadow-hover); }
+.ar-head {
+    padding: 0 1px 8px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #f1f4f8;
+}
+/* 作品缩略图：圆角统一 + 悬停描边，跟网格卡片一个手感 */
+.ar-card { border-radius: 10px; }
+.ar-card:hover { outline: 2px solid rgba(254, 44, 85, .45); outline-offset: -2px; }
+.ar-card.active { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* 右侧常驻播放区：圆角/阴影跟白卡对齐，空态居中且有图标感 */
+.rows-player {
+    border-radius: var(--card-radius);
+    border-color: var(--card-border);
+    box-shadow: var(--card-shadow);
+}
+.rp-empty {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    color: #8c95a3; font-size: 13px;
+}
+.rp-empty::before {
+    content: "";
+    width: 40px; height: 40px; border-radius: 12px;
+    background: rgba(255, 255, 255, .06);
+    border: 1px solid rgba(255, 255, 255, .1);
+    background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238c95a3' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.6' y='4.6' width='18.8' height='14.8' rx='3'/%3E%3Cpath d='M10.4 9.6l4.6 2.4-4.6 2.4z'/%3E%3C/svg%3E");
+    background-size: 22px 22px;
+    background-repeat: no-repeat;
+    background-position: center;
+}
+
+/* ---------- 5. 设置页：分节白卡（原来全平铺在灰底上） ---------- */
+.settings-body { max-width: 780px; }
+.settings-body .settings-section {
+    background: var(--panel);
+    border: 1px solid var(--card-border);
+    border-radius: var(--card-radius);
+    box-shadow: var(--card-shadow);
+    padding: 14px 16px 16px;
+    margin-bottom: 14px;
+}
+.settings-body .settings-title {
+    font-size: 14px; font-weight: 650; color: #0f172a;
+    padding-bottom: 9px; margin-bottom: 11px;
+    border-bottom: 1px solid #f1f4f8;
+}
+.settings-body .settings-desc { font-size: 12px; line-height: 1.65; margin-bottom: 12px; }
+.settings-body .settings-path-row { margin-bottom: 12px; }
+.settings-body .settings-path-row:last-of-type { margin-bottom: 0; }
+.settings-body .settings-path-row input { background: #fbfcfd; }
+.settings-body .settings-path-row input:focus { background: #fff; }
+.settings-body .settings-foot {
+    /* 实色 + 一条细线：不透明的分隔最干净，别用渐变/阴影去「虚化」下方内容 */
+    border-top: 1px solid var(--border);
+    padding: 10px 0 12px;
+    background: var(--bg);
+    box-shadow: none;
+}
+
+/* ---------- 6. 黑名单：SEC_UID 那一列是整页最刺眼的地方 ---------- */
+/* 原来 word-break: break-all + 主色，一整列红字折成三行，把真正要看的信息全盖住了。
+   改成单行省略 + 中性灰 + 等宽字体，完整值放 title，点开主页的行为不变。 */
+.bl-table td, .bl-table th { vertical-align: middle; }
+.bl-url { max-width: 210px; }
+.bl-url a {
+    display: block;
+    max-width: 210px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+    color: #64748b;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 11.5px;
+}
+.bl-url a:hover { color: var(--primary); }
+.bl-time, .bl-uid { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bl-uid { color: #64748b; font-size: 12px; }
+.bl-reason { max-width: 220px; }
+
+/* ---------- 7. 按钮按压反馈：全站点一下有回弹，不是死的 ---------- */
+.btn {
+    transition: background .15s ease, border-color .15s ease, color .15s ease,
+                box-shadow .15s ease, transform .12s ease;
+}
+.btn:active:not(:disabled) { transform: translateY(1px); }
+
+/* ---------- 8. 空态/加载态统一（原来各页各写一套） ---------- */
+.loading {
+    color: #94a3b8;
+    font-size: 13px;
+    line-height: 1.7;
+    padding: 26px 0;
+    text-align: center;
+}
+
+/* 作品/档位筛选胶囊保留原来那条 cubic-bezier 手感（别被上面的 .btn 过渡盖掉） */
+.wall-filters .work-filter-btn {
+    transition: all .15s cubic-bezier(0.16, 1, 0.3, 1);
 }

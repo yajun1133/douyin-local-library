@@ -6219,7 +6219,7 @@ async function loadBlacklist() {
                     <td class="bl-uid">${escapeHtml(r.uid || '')}</td>
                     <td class="bl-reason">${blReasonsHtml(r)}</td>
                     <td class="bl-time">${escapeHtml(r.added_at || '')}</td>
-                    <td class="bl-url">${r.url ? `<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="打开抖音主页">${escapeHtml(r.sec_uid || '主页')}</a>` : '<span class="tag-hint">无</span>'}</td>
+                    <td class="bl-url">${r.url ? `<a href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.sec_uid || '主页')}&#10;点击打开抖音主页">${escapeHtml(r.sec_uid || '主页')}</a>` : '<span class="tag-hint">无</span>'}</td>
                     <td class="bl-ops">
                         <button class="btn btn-mini" onclick="editBlacklistReason('${onClickArg(r.sec_uid)}')" title="改标签">✎ 标签</button>
                         <button class="btn btn-mini" onclick="removeBlacklist('${onClickArg(r.sec_uid)}')" title="移出黑名单">移除</button>

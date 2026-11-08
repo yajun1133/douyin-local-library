@@ -824,7 +824,24 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
     images = aweme.get("images") or ((aweme.get("image_post_info") or {}).get("images") or [])
     if images:
         for i, img in enumerate(images, 1):
-            urls = pick_url((img or {}).get("url_list"))
+            img = img or {}
+            # 实况/动图（live photo）：这一项本身就是一段视频，url_list 只是它的封面帧。
+            # 只下封面会得到一张静态图 —— 播放器里永远"显示图片、播不出来"（2026-11-08 踩过）。
+            # 判定就一条：这一项有没有 video.play_addr，有就是视频，跟 aweme_type 无关。
+            live = pick_best_video(img.get("video") or {})
+            if live:
+                name = "%s-%s-%s_%d%s" % (date, nick, desc, i, VIDEO_EXT)
+                dest = os.path.join(author_dir, name)
+                if os.path.exists(dest) and os.path.getsize(dest) > 1024:
+                    continue
+                n, err = save_stream(dy.cr, live, dest, referer)
+                if n:
+                    files += 1
+                    size += n
+                else:
+                    errs.append("实况%d %s" % (i, err))
+                continue
+            urls = pick_url(img.get("url_list"))
             if not urls:
                 continue
             # 扩展名：先按 URL 猜，猜不到就用 content-type 兜底（save_stream 之后才知道）

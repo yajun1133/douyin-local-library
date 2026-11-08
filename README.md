@@ -64,7 +64,7 @@ douyin-local-library/
 │  │  ├─ watch.py                  追更 CLI 与常驻进程
 │  │  ├─ paths.py                   唯一的路径来源
 │  │  └─ web/                       前端：index.html / app.js / style.css
-│  ├─ tools/                        独立小脚本：清缓存、恢复备份、黑名单、补 SEC_UID、按作者补下历史作品
+│  ├─ tools/                        独立小脚本：清缓存、恢复备份、黑名单、补 SEC_UID、按作者补下历史作品、补图文里的实况视频
 │  │  └─ legacy/                    历史脚本（已归档，不再维护）
 │  ├─ docs/                         GUIDE / README / PROJECT / HANDOVER / archive
 │  └─ data/ cache/ backup/ export/ recycle-bin/     运行时生成，不入库

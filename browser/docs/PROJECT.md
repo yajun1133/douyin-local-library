@@ -48,6 +48,7 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── clean_index.py     # 把 data.json 里混进去的标注字段剥掉（--dry 只看；写前自动备份）
 │   ├── restore_backup.py  # 从备份恢复标注（--list / --latest / --file）
 │   ├── backfill_author.py # **按作者全量对齐**：拉主页全部作品、按库索引判重补下（不受追更基线限制）
+│   ├── backfill_live.py    # **补实况视频**：图文作品里被当成静态图下掉的实况项，按「该序号有没有 mp4」补（--repair 整条重下）
 │   ├── blacklist.py       # 黑名单（不下载名单）公共模块
 │   ├── block_author.py     # 把作者加入黑名单（--delete 连本地文件夹一起删）
 │   ├── downloaded.py      # 「哪些作品已下载」索引
@@ -525,6 +526,28 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 
 实测（2026-11-07）：构造用例 5 条全过；真实库 27,042 组「同作者同日多条」里模糊命中 261 对，逐条核对**全部是同一作品的描述变体，真实误判 0**。
 
+#### 下载时怎么判断「这一项是图还是视频」（2026-11-08 踩过）
+
+**唯一判据：这一项有没有 `video.play_addr`，跟 `aweme_type` 无关。**
+
+抖音图文作品（`aweme_type=68`）的 `images[]` 里，**每一项都可能是实况/动图**：那一项自带
+`video.play_addr`（`live_photo_type` / `clip_type`），而它的 `url_list` 只是**封面帧**。
+只取 `url_list` 会得到一张静态图 —— 界面上就是「第一条是图、第二条还是图」，怎么点都播不出来。
+
+```python
+live = pick_best_video((img or {}).get("video") or {})   # 有值 → 下 _N.mp4
+urls = pick_url((img or {}).get("url_list"))             # 没值 → 下 _N.jpeg/.webp
+```
+
+一处例外，别搞混：图文作品的**顶层** `aweme.video` 也有 `play_addr`（抖音把整组图拼成的那条
+轮播视频），那不是要下的东西 —— 只认 `images[i].video`。
+
+命名照旧 `_1/_2…`，所以一个「1 静图 + 1 实况」的作品落地就是 `_1.webp` + `_2.mp4`，
+前端 `mediaItemsOf()` 按扩展名分 kind，`live_single/live_multi` 分支会自动当视频播。
+
+已经下错的用 `tools/backfill_live.py <uid> --repair` 修：它会比对接口与本地，把缺视频的作品
+整条移进回收站再重下（不留多余的封面图）。
+
 ---
 
 ## 八、踩坑要点（一条一句；完整过程见归档）
@@ -671,6 +694,11 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-08 图文作品里的实况项被下成静态图（播放器「只有图片、播不了」）**：用户报某作者第 1、3 条作品「第二个是视频却播不出来，都显示图片」，并指出这两条是追更下的、DouK 下的都正常。
+  根因：抖音图文作品（`aweme_type=68`）的 `images[]` **每一项都可能是实况/动图**，那一项自带 `video.play_addr`，`url_list` 只是封面帧；`download_aweme` 只取 `url_list`，于是把视频存成了封面图。
+  修 `src/watch_core.py::download_aweme`：图集分支先看 `pick_best_video(img["video"])`，有值下 `_N.mp4`，没值才下图；顶层 `aweme.video`（整组图的轮播视频）不认。
+  新增 `tools/backfill_live.py`：比对接口与本地，缺视频的按 `--repair` 整条进回收站再重下。判重**不能按描述拼文件名** —— 老 DouK 文件名用省略号截断（`我来了 #卡点舞 #CU...度激励计划`），字面对不上会把「本地已有视频」误判成缺失（当天因此误删过 2 条，已从回收站恢复）；现在走 `desc_candidates()` 多切分点 + `ellipse_split/_ell_hit` 模糊比对，并要求本地该项确实存在才动手。
+  实测：报障作者那两条（11-07 / 11-05）从 `_1.webp + _2.webp` 变成 `_1.webp + _2.mp4`（ffprobe 确认 h264/aac）；同批另修 3 位作者的 3 条，共 5 条。追更名单里含 webp 作品的 15 位已全查，其余正常。
 - **2026-11-08 追更「连续失败」根因是代理，不是账号**：用户看到「抖音那边连续失败，已自动暂停 33 分钟」，账号本身完全正常（该号历史成功 652 次）。
   查日志：`curl: (7) Failed to connect to www.douyin.com:443 over proxy 127.0.0.1` —— curl_cffi 默认读 `HTTPS_PROXY`，而会话代理端口每个会话都换，09:27 启动的常驻进程继承的端口几小时前就没了；直连抖音实测 200 / 0.47s。
   两处修改：① `NO_PROXY_OPTS` 显式绕过代理（API + CDN 下载）；② 新增 `RetryLater` + `is_net_error()` + `_mark_net_fail()`，把「网络不通 / 号池全冷却」和「账号被限流」分开 —— 前者不 `mark_fail`、不翻倍熔断，20 秒重试，连 3 次才停 2 分钟，`cool_reason` 也写进状态供面板显示。

@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261108c153">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261108c153">
-    <link rel="stylesheet" href="style.css?v=20261108c153">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261108c155">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261108c155">
+    <link rel="stylesheet" href="style.css?v=20261108c155">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -474,7 +474,12 @@
             <!-- 新下载：只看最近下载下来的那批文件（按作者分组，卡片下标作者 + 发布时间） -->
             <section id="newView" class="hidden">
                 <div class="view-header">
-                    <h2>新下载 <span class="view-sub" id="newViewSub"></span></h2>
+                    <h2><span id="newViewTitle">新下载</span> <span class="view-sub" id="newViewSub"></span></h2>
+                    <!-- 追更模式才显示：从「追更 → 累计追更下载」点进来时，这里替换掉时间范围条 -->
+                    <div class="view-sort hidden" id="ndWatchBar">
+                        <button class="btn" onclick="openNewDownloadsView()" title="回到「新下载」：全部作者、按时间范围看">← 全部下载</button>
+                        <button class="btn" onclick="refreshWatchDownloads()" title="重新读一遍追更的下载流水">🔄 刷新</button>
+                    </div>
                     <div class="view-sort nd-range" id="ndRangeBar">
                         <button class="btn on" data-range="today" onclick="ndPickRange('today')" title="只算今天（0 点以后）落盘的文件">今天</button>
                         <button class="btn" data-range="3d" onclick="ndPickRange('3d')" title="最近 72 小时">近 3 天</button>
@@ -587,7 +592,11 @@
                             <span class="wv-ico i-slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 16.5 9 11l3.2 3.2L20.5 6"/><path d="M15.6 6h4.9v4.9"/></svg></span>
                             <div class="wv-kv"><div class="k">按当前档位估算 / 天</div><div class="v" id="wvEst">0<small>次</small></div></div>
                         </div>
-                        <div class="wv-card">
+                        <!-- 这张卡是入口：点进去看「追更下到的作品」，版式照「新下载」 -->
+                        <div class="wv-card wv-card-link" id="wvDlCard" onclick="openWatchDownloadsView()"
+                             role="button" tabindex="0"
+                             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openWatchDownloadsView();}"
+                             title="点开看追更下到的作品（按作者分组，界面和「新下载」一样）">
                             <span class="wv-ico i-green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v10"/><path d="M8 10.5 12 14.5l4-4"/><path d="M4.5 17.6v.9A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5v-.9"/></svg></span>
                             <div class="wv-kv"><div class="k">累计追更下载</div><div class="v" id="wvDl">0<small>条</small></div></div>
                         </div>
@@ -666,21 +675,11 @@
                         </div>
 
                         <div class="wv-side">
-                            <!-- 追更内容：只追视频 / 只追图文 / 都追。这就是「填一个追更更新的视频选项」那个开关 -->
-                            <div class="wv-panel">
-                                <div class="wv-hd">追更内容
-                                    <div class="wv-spacer"></div>
-                                    <select id="wvSContent" class="wv-sel" onchange="wvSaveCfg('已保存')"
-                                            title="决定发现新作品时下什么类型">
-                                        <option value="all">视频 + 图文都追</option>
-                                        <option value="video">只追视频</option>
-                                        <option value="image">只追图文</option>
-                                    </select>
-                                </div>
-                                <div class="wv-bd wv-pad-sm">
-                                    <div class="wv-note" id="wvContentHint">视频和图文都会下，跟下载器一个口径。</div>
-                                </div>
-                            </div>
+                            <!-- 2026-11-08：原来的「追更内容」下拉删掉了。
+                                 用户原话：「不需要这个追更内容选择，我刚开始想要的是上面
+                                 那个（累计追更下载）能点进去看已下载的」。
+                                 服务端的 content 选项保留（默认 all = 跟下载器一个口径），
+                                 只是不再提供界面。 -->
 
                             <!-- 节奏与安全设置（放在运行日志上面） -->
                             <div class="wv-panel">
@@ -964,6 +963,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261108c153"></script>
+    <script src="app.js?v=20261108c155"></script>
 </body>
 </html>

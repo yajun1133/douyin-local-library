@@ -40,6 +40,12 @@ import paths  # noqa: E402
 WATCH_FILE = os.path.join(paths.DATA_DIR, "watch.json")
 STATE_FILE = os.path.join(paths.DATA_DIR, "watch_state.json")
 LOG_FILE = os.path.join(paths.DATA_DIR, "watch.log")
+# 逐条下载明细（jsonl，一行一条作品）。
+# 为什么单独记：watch_state.json 里每个作者只有一个 downloads 计数，点进去没法看「下到了啥」。
+# 主界面的「累计追更下载」要能点开看明细，就必须有一条一条的记录。
+# 每行：{"ts": 落盘时间, "uid":, "nickname":, "date": 作品发布日, "desc":,
+#        "rels": [库内相对路径…], "size": 字节, "backfill": 是否从老日志回填}
+DOWNLOADS_FILE = os.path.join(paths.DATA_DIR, "watch_downloads.jsonl")
 # 账号池：追更用的登录 cookie 可以放好几个，一个被限流就换下一个。
 ACCOUNTS_FILE = os.path.join(paths.DATA_DIR, "watch_accounts.json")
 
@@ -383,6 +389,93 @@ def load_state():
 
 def save_state(d):
     _write_json(STATE_FILE, d)
+
+
+# ---------------------------------------------------------------------------
+# 逐条下载明细（watch_downloads.jsonl）
+#
+# 主界面「累计追更下载 N 条」那张卡片要能点开看明细，观感照「新下载」。
+# watch_state 里每个作者只有一个计数，撑不起这个视图，所以单独记流水。
+# 一行一条作品（图文作品的多张图合成一条，rels 里放全部相对路径）。
+# ---------------------------------------------------------------------------
+
+_DL_LOCK = __import__("threading").Lock()
+
+
+def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False):
+    """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。"""
+    rels = [r for r in (rels or []) if r]
+    if not rels:
+        return False
+    rec = {
+        "ts": int(ts or time.time()),
+        "uid": str(uid or ""),
+        "nickname": (nickname or "").strip(),
+        "date": (date or "").strip(),
+        "desc": (desc or "").strip(),
+        "rels": rels,
+        "size": int(size or 0),
+    }
+    if backfill:
+        rec["backfill"] = True
+    try:
+        with _DL_LOCK:
+            os.makedirs(os.path.dirname(DOWNLOADS_FILE), exist_ok=True)
+            with open(DOWNLOADS_FILE, "a", encoding="utf-8") as fp:
+                fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        return True
+    except OSError as e:      # 记流水失败绝不能影响下载本身
+        print("[watch] 下载明细写入失败：%s" % e)
+        return False
+
+
+_DL_CACHE = {"key": None, "rows": []}
+
+
+def load_downloads():
+    """读回全部下载明细，按落盘时间从新到旧；坏行直接跳过（别让一行坏了整份读不出）。
+
+    按 (mtime, size) 缓存：这个函数会被 /api/watch/status 5 秒一次调到，
+    明细会越攒越多，每次都重解析没必要。文件一变（追加）就自动失效。
+    """
+    try:
+        st = os.stat(DOWNLOADS_FILE)
+        key = (st.st_mtime, st.st_size)
+    except OSError:
+        return []
+    if _DL_CACHE["key"] == key:
+        return _DL_CACHE["rows"]
+
+    out = []
+    seen = set()          # rel -> 已归属，回填和实时记录可能重复，按文件去重
+    with open(DOWNLOADS_FILE, "r", encoding="utf-8", errors="replace") as fp:
+        for ln in fp:
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            rels = [x for x in (r.get("rels") or []) if isinstance(x, str) and x]
+            rels = [x for x in rels if x not in seen]
+            if not rels:
+                continue
+            seen.update(rels)
+            r["rels"] = rels
+            r["files"] = len(rels)
+            out.append(r)
+    out.sort(key=lambda r: -(int(r.get("ts") or 0)))
+    _DL_CACHE["key"] = key
+    _DL_CACHE["rows"] = out
+    return out
+
+
+def download_count():
+    """明细里的作品条数（实时记录 + 回填的合计）。"""
+    return len(load_downloads())
 
 
 # ---------------------------------------------------------------------------
@@ -1081,8 +1174,12 @@ def aweme_kind(aweme):
     return "video"
 
 
-def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
-    """下一条作品到 author_dir。返回 (文件数, 字节数, 错误)。"""
+def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
+    """下一条作品到 author_dir。返回 (文件数, 字节数, 错误)。
+
+    out：传一个 list 进来，会把真落盘的文件绝对路径追加进去（给「下载明细」用）。
+    不传就完全不影响老行为 —— backfill_*.py 那边还是三个返回值。
+    """
     ct = int(aweme.get("create_time") or 0)
     if not ct:
         return 0, 0, "没有 create_time"
@@ -1114,6 +1211,8 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
                 if n:
                     files += 1
                     size += n
+                    if out is not None:
+                        out.append(base + ext)
                 else:
                     errs.append("实况%d %s" % (i, err))
                 continue
@@ -1129,6 +1228,8 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
             if n:
                 files += 1
                 size += n
+                if out is not None:
+                    out.append(base + ext)
             else:
                 errs.append("图%d %s" % (i, err))
     else:
@@ -1142,6 +1243,8 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
         n, ext, err = save_item(dy.cr, urls, base, referer)
         if n:
             files, size = 1, n
+            if out is not None:
+                out.append(base + ext)
         else:
             errs.append(err)
 
@@ -1543,7 +1646,8 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 stats["would"] = int(stats.get("would") or 0) + 1
                 continue
 
-            files, size, err = download_aweme(dy, a, author_dir, nick, dl)
+            _got = []
+            files, size, err = download_aweme(dy, a, author_dir, nick, dl, out=_got)
             if files:
                 budget -= 1
                 stats["downloaded"] += 1
@@ -1551,6 +1655,13 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 st["downloads"] = int(st.get("downloads") or 0) + 1
                 st["last_new"] = time.time()
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
+                # 记流水：主界面的「累计追更下载」点开就是这份明细
+                try:
+                    _rels = [os.path.relpath(p, paths.SCAN_ROOT).replace(os.sep, "/")
+                             for p in _got]
+                    record_download(uid, nick, date, desc, _rels, size)
+                except Exception as _e:      # 记账失败不影响下载结果
+                    print("[watch] 记下载明细失败：%s" % _e)
                 seen.add(aid)
                 k_new = (date, key_of_desc(desc, dl))
                 local.add(k_new)

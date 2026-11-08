@@ -1108,7 +1108,9 @@ async function openAuthor(uid, workIndex, transition = 'forward') {
         const inNew = state.view === 'new' || (document.getElementById('newView') && !document.getElementById('newView').classList.contains('hidden'));
         // 从「追更」名单点进来 → 返回时回追更页（筛选档位和滚动位置都还在）
         const inWatch = state.view === 'watch' || (document.getElementById('watchView') && !document.getElementById('watchView').classList.contains('hidden'));
-        state.returnView = inExport ? 'export' : (inWatch ? 'watch' : (inNew ? 'new' : (inBatch ? 'batch' : (inAlts ? 'alts' : (inFav ? 'favorites' : 'authors')))));
+        // 「追更下载」也借用 newView，但它必须先于 inNew 判 —— 否则返回会掉到「新下载」
+        state.returnView = state.view === 'watchDl' ? 'watchDl'
+            : (inExport ? 'export' : (inWatch ? 'watch' : (inNew ? 'new' : (inBatch ? 'batch' : (inAlts ? 'alts' : (inFav ? 'favorites' : 'authors'))))));
     }
     document.getElementById('authorView').classList.add('hidden');
     document.getElementById('altView').classList.add('hidden');
@@ -1362,6 +1364,17 @@ function backToList() {
         const eb2 = document.getElementById('exportBtn');
         if (eb2) eb2.classList.add('hidden');
         state.listScrollTop = state.viewScroll['export'] || 0;
+    } else if (state.returnView === 'watchDl') {
+        // 从「追更下载」点作者进详情：返回时仍停在追更下载（数据和滚动都在内存里，不重新请求）
+        targetViewId = 'newView';
+        hideAllViews();
+        document.getElementById('newView').classList.remove('hidden');
+        clearSideActive();
+        document.querySelectorAll('#featureList .side-item').forEach(i => i.classList.toggle('active', i.dataset.action === 'watch'));
+        const ebw = document.getElementById('exportBtn');
+        if (ebw) ebw.classList.add('hidden');
+        applyNdWatchMode(true);
+        state.listScrollTop = state.viewScroll['watchDl'] || 0;
     } else if (state.returnView === 'new') {
         // 从「新下载」点作者名进详情：返回时还回新下载页（不重新请求，保留原来那批数据和滚动位置）
         targetViewId = 'newView';
@@ -7897,7 +7910,10 @@ async function openSettingsView() {
 // 为什么单独一页：DouK 一跑就是几百上千个文件，散在各位作者的作品墙里根本看不出
 // 「这一次到底新增了什么」。数据不是靠扫目录猜的——服务端读 data/download_log.db
 // 的 file 表，mtime 就是文件落盘时间（≈ 下载完成时间），所以「今天」就是真·今天下载的。
-const newDlState = { range: 'today', data: null, loading: false, loadingMore: false };
+// watchOnly：这个视图被「追更 → 累计追更下载」借用来显示追更下到的作品。
+// 数据源不同（/api/watch/downloads 而不是 /api/new_downloads），但渲染、播放、
+// 灯箱全部复用，所以观感和「新下载」逐像素一样。
+const newDlState = { range: 'today', data: null, loading: false, loadingMore: false, watchOnly: false };
 
 // 「按作者筛选」——和「📤 导出作者信息」那一栏完全同一套口径：
 // 作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间，每行自带一个 ＋/－ 组合开关。
@@ -8046,8 +8062,71 @@ async function openNewDownloadsView() {
     const eb = document.getElementById('exportBtn');
     if (eb) eb.classList.add('hidden');
     restoreViewScroll('new');
+    applyNdWatchMode(false);
     renderNdFilter();          // 筛选面板的选项（标签来自 meta）+ 上次的勾选状态
     await refreshNewDownloads(true);
+}
+
+// ---------- 「追更下载」：借用 newView，只换数据源 ----------
+// 用户要的是「点累计追更下载 → 看到追更下到的作品，界面和新下载一样」。
+// 与其复制一套列表，不如把 newView 切成「追更模式」：隐藏时间范围条，
+// 顶部换成一条「← 全部下载」的返回条，数据走 /api/watch/downloads。
+function applyNdWatchMode(on) {
+    newDlState.watchOnly = !!on;
+    const title = document.getElementById('newViewTitle');
+    const bar = document.getElementById('ndRangeBar');
+    const wbar = document.getElementById('ndWatchBar');
+    if (bar) bar.classList.toggle('hidden', !!on);
+    if (wbar) wbar.classList.toggle('hidden', !on);
+    // 标题单独一个 span：#newViewSub 要留给 renderNewDownloads() 写统计，不能一起清掉
+    if (title) title.textContent = on ? '追更下载' : '新下载';
+}
+
+async function refreshWatchDownloads() {
+    const body = document.getElementById('newBody');
+    if (!body) return;
+    body.innerHTML = '<div class="loading">读取中…</div>';
+    try {
+        const d = await fetch('/api/watch/downloads', { cache: 'no-store' }).then((r) => r.json());
+        if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败');
+        // 结构照 /api/new_downloads 造：has_more=false 后台就不会去翻页
+        newDlState.data = {
+            groups: d.groups || [],
+            total_files: d.total_files || 0,
+            shown_items: d.total || 0,
+            cursor: null,
+            has_more: false,
+        };
+        renderNewDownloads();
+        // 统计文案由 renderNewDownloads() 写进标题旁的 #newViewSub（「277 个作品 ·
+        // 316 个文件 · 102 位作者」），这里不要再写一遍，否则一屏里出现两次同样的数字。
+    } catch (e) {
+        body.innerHTML = '<div class="loading">读取失败：' + escapeHtml(e.message) + '</div>';
+    }
+}
+
+async function openWatchDownloadsView() {
+    forceCloseDetail();
+    rememberViewScroll();
+    state.view = 'watchDl';
+    state.returnView = 'watchDl';
+    hideAllViews();
+    const view = document.getElementById('newView');
+    if (view) view.classList.remove('hidden');
+    animateViewEnter('newView', 'neutral');
+    clearSideActive();
+    // 侧栏保持「追更」高亮：用户是从追更页点进来的，不是从「新下载」
+    document.querySelectorAll('#featureList .side-item').forEach((i) => i.classList.toggle('active', i.dataset.action === 'watch'));
+    const eb = document.getElementById('exportBtn');
+    if (eb) eb.classList.add('hidden');
+    restoreViewScroll('watchDl');
+    applyNdWatchMode(true);
+    await refreshWatchDownloads();
+}
+
+function refreshWatchDownloadsClick() {
+    if (newDlState.watchOnly) refreshWatchDownloads();
+    else refreshNewDownloads(true);
 }
 
 function ndPickRange(range) {
@@ -8720,11 +8799,15 @@ function renderNewDownloads(opts) {
         sub.textContent = total
             ? total + ' 个作品' + (d.has_more ? '（往下滚继续加载）' : '')
                 + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者' + filtered
-            : (ndFilterActive()
-                ? '筛选后这个范围里没有作品，把条件放宽试试'
-                : '这个范围内没有新下载');
+            : (newDlState.watchOnly
+                ? '追更还没下到过作品 —— 等它发现新作品就会自动出现在这里'
+                : (ndFilterActive()
+                    ? '筛选后这个范围里没有作品，把条件放宽试试'
+                    : '这个范围内没有新下载'));
     }
-    if (badge) {
+    if (badge && !newDlState.watchOnly) {
+        // 追更模式下别动侧栏「新下载」的角标 —— 那个数字是「新下载」自己的口径，
+        // 被追更的条数盖掉会让人以为下载器下了 277 个（2026-11-08 实测踩到）
         badge.textContent = total || 0;
         badge.classList.toggle('zero', !total);
     }
@@ -10018,7 +10101,7 @@ function wvRender() {
 // 刚敲进去的数字重置掉（老页面上踩过这个坑，这里保留同样的保护）。
 function wvRenderSettings(d) {
     const IDS = ['wvSHot', 'wvSWarm', 'wvSCold', 'wvSIdle', 'wvSGap', 'wvSBudget', 'wvSMax',
-                 'wvSAuto', 'wvSContent'];
+                 'wvSAuto'];
     const editing = IDS.some((id) => document.activeElement === document.getElementById(id));
     if (editing) return;
     const s = d.settings || {};
@@ -10030,22 +10113,11 @@ function wvRenderSettings(d) {
     put('wvSGap', s.gap);
     put('wvSMax', s.max_per_round);
     put('wvSBudget', s.daily_budget);
-    // 追更内容（all / video / image）：不是数字，单独放，别被 type=number 那套逻辑吞掉
-    put('wvSContent', s.content || 'all');
+    // 「追更内容」下拉 2026-11-08 删了（用户不需要）。服务端的 content 一并保持原值，
+    // 保存时继续把当前值带回去，别因为界面上没这个控件就把它重置成 all。
+    wvState.content = s.content || 'all';
     const auto = document.getElementById('wvSAuto');
     if (auto) auto.checked = !!d.auto_start;
-    wvContentHint(s.content || 'all');
-}
-
-// 「追更内容」下面那句解释：跟着选项变，免得只看到一个下拉不知道会下什么
-const WV_CONTENT_TEXT = {
-    all: '视频和图文都会下，跟下载器一个口径。',
-    video: '只下视频，图文（含实况/动图）一律跳过 —— 图片多的博主想省空间就选这个。',
-    image: '只下图文，视频一律跳过。',
-};
-function wvContentHint(v) {
-    const el = document.getElementById('wvContentHint');
-    if (el) el.textContent = WV_CONTENT_TEXT[v] || WV_CONTENT_TEXT.all;
 }
 
 // 筛选按钮：观感 = 作者详情页的作品分类（灰底分段控件 + 白色选中块 + 计数胶囊）。
@@ -10280,8 +10352,9 @@ function wvRefresh() { wvPull(); }
 function wvSaveCfg(okMsg) {
     const num = (id) => +((document.getElementById(id) || {}).value || 0);
     const auto = document.getElementById('wvSAuto');
-    const content = ((document.getElementById('wvSContent') || {}).value || 'all');
-    wvContentHint(content);
+    // 「追更内容」下拉已经删了，但服务端这个设置还在（默认 all）。保存时原样带回去，
+    // 否则每存一次设置就把用户以前选过的值重置成 all。
+    const content = wvState.content || 'all';
     wvPost({
         action: 'settings',
         auto_start: !!(auto && auto.checked),

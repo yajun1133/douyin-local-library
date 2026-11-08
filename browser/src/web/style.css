@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261108c153';
+    content: 'v20261108c155';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -7049,3 +7049,24 @@ details > summary:focus-visible {
     .wv-fgrid { grid-template-columns: 1fr; }
     .wv-tbl .wv-nm b { max-width: 118px; }
 }
+
+/* ===== 追更下载（借用 newView 的追更模式）=====
+   2026-11-08：用户要在追更页点「累计追更下载」直接看下到的作品，
+   并要求「界面就和『新下载』一样」。所以不另造一套列表，而是把 newView
+   切成追更模式：时间范围条换成「← 全部下载」，数据源换掉，渲染完全复用。 */
+.wv-card-link { cursor: pointer; }
+.wv-card-link:hover { border-color: #d8dde6; box-shadow: var(--card-shadow-hover); }
+.wv-card-link:hover .v { color: var(--primary); }
+.wv-card-link:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+/* 右上角一个小小的「↗」提示这张卡能点 */
+.wv-card-link::after {
+    content: "›";
+    position: absolute; right: 12px; bottom: 10px;
+    font-size: 15px; line-height: 1; color: #c3cad6;
+    transition: color .15s ease, transform .15s ease;
+}
+.wv-card-link { position: relative; }
+.wv-card-link:hover::after { color: var(--primary); transform: translateX(2px); }
+/* 追更模式那条返回栏：和名字/按钮排一行，不换行太挤时自动折 */
+#ndWatchBar { gap: 8px; flex-wrap: wrap; }
+#ndWatchBar .wv-note { margin-left: 2px; }

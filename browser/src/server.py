@@ -3464,6 +3464,15 @@ def _watch_status():
             "interval": int(a.get("interval") or 0),
             "fails": len(s.get("fails") or {}),
         })
+    # 「累计追更下载」以**明细条数**为准：卡片上那个数字点开就是这份列表，两边必须一致。
+    # watch_state 里每个作者只有一个计数，而状态文件被重建过（2026-11-08 09:39 那次
+    # 作者从 140 变 180），重建前的下载就丢了；明细是逐条追加的，不会丢。
+    try:
+        _dl_n = WC.download_count()
+    except Exception:
+        _dl_n = 0
+    if _dl_n:
+        total_dl = _dl_n
     rows.sort(key=lambda r: (-r["downloads"], r["nickname"]))
 
     logs = []
@@ -3518,6 +3527,81 @@ def _watch_status():
         "log_file": WC.LOG_FILE,
         "python312": paths.PYTHON312,
         "python312_ok": os.path.exists(paths.PYTHON312),
+    }
+
+
+def _watch_downloads():
+    """追更下载明细，按作者分组 —— 结构刻意和 /api/new_downloads 对齐，
+    前端直接喂给 renderNewDownloads()，观感和「新下载」完全一样。
+
+    数据来自 data/watch_downloads.jsonl（追更自己写的流水）。2026-11-08 之前
+    只有每个作者的计数、没有逐条记录，历史那份用
+    tools/backfill_watch_downloads.py 从 watch.log + download_log.db 回填。
+    """
+    import scanner as _sc
+
+    load_data()
+    load_user_data()
+    accs = CACHE.get("accounts") or {}
+    recs = WC.load_downloads()
+
+    groups, order = {}, []
+    for r in recs:
+        uid = str(r.get("uid") or "")
+        if not uid:
+            continue
+        g = groups.get(uid)
+        if g is None:
+            acc = accs.get(uid) or {}
+            nick = (acc.get("nickname") or "").strip() or (r.get("nickname") or "").strip() or uid
+            if _sc.looks_like_sec_uid(nick):
+                nick = uid
+            g = groups[uid] = {
+                "uid": uid, "nickname": nick, "items": [],
+                "level": str(acc.get("level") or "").strip(),
+                "freq": str(acc.get("update_freq") or "").strip(),
+                "status": str(acc.get("status") or "").strip(),
+                "tags": [str(t).strip() for t in (acc.get("tags") or []) if str(t).strip()],
+            }
+            order.append(uid)
+        rels = list(r.get("rels") or [])
+        if not rels:
+            continue
+        ext = os.path.splitext(rels[0])[1].lower()
+        # 图文里只要有一张是 mp4（实况/动图），就当视频作品处理：封面用那段视频
+        for x in rels:
+            if os.path.splitext(x)[1].lower() in _sc.VIDEO_EXTS:
+                rels.sort(key=lambda p: 0 if os.path.splitext(p)[1].lower() in _sc.VIDEO_EXTS else 1)
+                ext = os.path.splitext(rels[0])[1].lower()
+                break
+        g["items"].append({
+            "rel": rels[0],
+            "rels": rels,
+            "date": r.get("date") or "",
+            "desc": r.get("desc") or "",
+            "is_video": ext in _sc.VIDEO_EXTS,
+            "files": len(rels),
+            "size": int(r.get("size") or 0),
+            # mtime 在「新下载」里是下载完成时间，列表/排序都用它，这里用记的落盘时间
+            "mtime": int(r.get("ts") or 0),
+        })
+
+    out = []
+    for uid in order:
+        g = groups[uid]
+        if not g["items"]:
+            continue
+        g["items"].sort(key=lambda it: (-(it["mtime"] or 0), it.get("date") or ""))
+        g["count"] = len(g["items"])
+        out.append(g)
+    out.sort(key=lambda g: -(g["items"][0]["mtime"] if g["items"] else 0))
+
+    return {
+        "ok": True,
+        "total": len(recs),
+        "total_files": sum(len(r.get("rels") or []) for r in recs),
+        "authors": len(out),
+        "groups": out,
     }
 
 
@@ -4634,6 +4718,11 @@ class Handler(BaseHTTPRequestHandler):
         # 追更：状态（名单 + 每个作者进度 + 最近日志）
         if path == "/api/watch/status":
             self._send_json(_watch_status())
+            return
+
+        # 追更：逐条下载明细（主界面「累计追更下载」点开就是它，观感照「新下载」）
+        if path == "/api/watch/downloads":
+            self._send_json(_watch_downloads())
             return
 
         # 数据体检：账号数 / 封面数 / 最近保存 / 自动备份（用户最怕「数据被弄丢」）

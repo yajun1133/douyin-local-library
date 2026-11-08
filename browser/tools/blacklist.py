@@ -39,7 +39,8 @@ class Blacklist:
         self.path = path
         self.sec_uids = set()
         self.uids = set()
-        self.names = {}
+        self.names = {}        # 全部行的昵称，只用来给命中结果配个可读的名字
+        self.names_free = {}   # 只有「没有 uid 也没有 sec_uid」的行 —— 允许按昵称兜底的那部分
         self.rows = []
         self._load()
 
@@ -49,26 +50,41 @@ class Blacklist:
         with open(self.path, encoding="utf-8-sig", newline="") as f:
             for r in csv.DictReader(f):
                 self.rows.append(r)
-                if r.get("sec_uid"):
+                has_sec = bool((r.get("sec_uid") or "").strip())
+                has_uid = bool(str(r.get("uid") or "").strip())
+                if has_sec:
                     self.sec_uids.add(r["sec_uid"].strip())
-                if r.get("uid"):
+                if has_uid:
                     self.uids.add(str(r["uid"]).strip())
                 n = norm_name(r.get("nickname"))
                 if n:
                     self.names[n] = r.get("nickname")
+                    # 只有「当初加黑名单时一个 ID 都没留下」的行，才允许靠昵称认人。
+                    # 有 uid / sec_uid 的行必须按 ID 精确匹配 —— 否则同名就会误伤：
+                    # 2026-11-08 实测：某位作者的昵称归一化后（去掉下划线/空白）正好等于
+                    # 黑名单里另一个同名号，于是这位本地确实有作品的作者被整条从内存索引
+                    # 剔除，列表/搜索/详情全都没有它，看着像「有作品但主页是空的」。
+                    # 具体 UID 和昵称不入库（本仓库是公开的）。
+                    if not has_sec and not has_uid:
+                        self.names_free[n] = r.get("nickname")
 
     def __len__(self):
         return len(self.rows)
 
     def match(self, sec_uid="", uid="", nickname=""):
-        """命中返回黑名单里的昵称，否则 None。"""
+        """命中返回黑名单里的昵称，否则 None。
+
+        认人顺序：sec_uid → uid → 昵称。
+        **昵称这一路只对「当初没留 ID」的黑名单行生效**（见 _load 里的 names_free）：
+        只要黑名单行带着 uid/sec_uid，就说明能用 ID 精确认人，再用昵称兜底只会误伤同名账号。
+        """
         if sec_uid and sec_uid.strip() in self.sec_uids:
             return self.names.get(norm_name(nickname)) or sec_uid[:16]
         if uid and str(uid).strip() in self.uids:
             return self.names.get(norm_name(nickname)) or str(uid)
         n = norm_name(nickname)
-        if n and n in self.names:
-            return self.names[n]
+        if n and n in self.names_free:
+            return self.names_free[n]
         return None
 
     def is_blocked(self, sec_uid="", uid="", nickname=""):

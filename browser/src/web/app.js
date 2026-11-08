@@ -128,6 +128,12 @@ const state = {
     // 大小号关联按旧快照写回磁盘——表现为「解除了但关联还在」。增量上送后，
     // 未修改的账号永远不会离开本机，旧快照不可能覆盖新数据。
     dirtyAccounts: new Set(),
+    // uid -> { 字段名: true }：这次到底改了哪几个字段。
+    // 只有这些字段会随保存上送。2026-11-08 之前是整条账号对象一起发，
+    // 而 state.userData 是页面打开那一刻的快照 —— 旧标签页随便点一下星标，
+    // 就会把当时那整条旧记录写回去，把别处改过的 status / update_freq 一起冲掉，
+    // 表现为「状态和更新频率自己变了」。按字段发之后，没改过的字段永远不出本机。
+    dirtyFields: {},
     dirtyVersion: {},     // uid -> 改动次数，用来判断「保存期间是否又被改过」
     dirtyMeta: false,     // alt_group_names（文件夹改名）等顶层字段的脏标记
     fillMode: (function () { try { return localStorage.getItem('mediaFill') === '1'; } catch (e) { return false; } })(),
@@ -152,12 +158,26 @@ const state = {
 // 「每作者一行」一行里铺几个作品缩略图（后端 works 参数上限 40）
 const ROW_WORKS = 12;
 
-function markDirty(uid) {
+function markDirty(uid, field) {
     if (!uid) return;
     uid = String(uid);
     state.dirtyAccounts.add(uid);
+    if (field) {
+        const fs = state.dirtyFields[uid] || (state.dirtyFields[uid] = {});
+        fs[field] = true;
+    }
     // 版本号：保存请求在途期间又改了同一个账号时，成功后不能把这个脏标记删掉，
     // 否则这期间的改动永远送不出去（并发保存丢改动的老问题）
+    state.dirtyVersion[uid] = (state.dirtyVersion[uid] || 0) + 1;
+}
+
+// 一次改动涉及多个字段时用（比如批量采用资料会同时改昵称/抖音号/简介/历史）
+function markDirtyFields(uid, fields) {
+    if (!uid) return;
+    uid = String(uid);
+    state.dirtyAccounts.add(uid);
+    const fs = state.dirtyFields[uid] || (state.dirtyFields[uid] = {});
+    (fields || []).forEach((f) => { if (f) fs[f] = true; });
     state.dirtyVersion[uid] = (state.dirtyVersion[uid] || 0) + 1;
 }
 
@@ -1125,8 +1145,17 @@ async function openAuthor(uid, workIndex, transition = 'forward') {
             return;
         }
         // 合并用户标注
+        // 昵称要特殊处理：注销/封号后抖音会把昵称改成「用户+数字」这种系统默认名，
+        // 批量取资料抄进 user_data 之后就一路盖到详情页标题上，等于认不出是谁。
+        // 服务端 /api/author 已经优先给了文件夹里的真名，这里不能被 user_data 的默认名盖回去。
         const ud = ((state.userData || {}).accounts || {})[uid];
-        if (ud) Object.assign(a, ud);
+        if (ud) {
+            const _keepNick = a.nickname;
+            Object.assign(a, ud);
+            if (/^用户\d+$/.test(String(ud.nickname || '').trim()) && _keepNick) {
+                a.nickname = _keepNick;
+            }
+        }
         detailState.uid = uid;
         detailState.author = a;
         detailState.index = -1;
@@ -1722,10 +1751,12 @@ function renderDetailTop() {
 
     // 更新频率：day / 3天 / 周 / 月，做成「多选样式的标签」，点哪个亮哪个（单选语义）
     // 账号状态在「禁用更新频率」列表里（注销/封号/卖号等）时不显示可点的 chips，只给一句提示。
+    // 2026-11-08 起频率值不再被清空（以前改状态就静默删值），所以这里要把存着的值
+    // 明确写出来 —— 否则用户会以为「设过的频率没了」。
     const curFreq = String(a.update_freq || '').trim();
     const _freqDisabled = (state.updateFreqDisabledStatus || []).indexOf(String(a.status || '').trim()) >= 0;
     const freqChips = _freqDisabled
-        ? `<span class="tag-hint">${escapeHtml(a.status || '未设置')}永不更新</span>`
+        ? `<span class="tag-hint" title="这个状态不参与更新频率筛选，但之前设的值保留着，改回正常就会恢复">${escapeHtml(a.status || '未设置')}永不更新${curFreq ? `（原设置：${escapeHtml(curFreq)}）` : ''}</span>`
         : FREQ_LIST.map((v) =>
             `<span class="freq-chip${curFreq === v ? ' active' : ''}" data-freq="${v}" title="更新频率：${v}" onclick="setFreq('${a.uid}', '${v}')">${v}</span>`
         ).join('');
@@ -3253,8 +3284,26 @@ async function saveUserDataOnce() {
         if (!uids.length && !metaDirty && !noteKeys.length) return true;   // 没改过，不发请求
 
         const body = { accounts: {} };
+        // 快照这次的 dirtyFields 一起，成功后按同样内容清（期间新加的字段要保留）
+        const fieldSnap = {};
         uids.forEach((uid) => {
-            if (acc[uid]) body.accounts[uid] = acc[uid];
+            const src = acc[uid];
+            if (!src) return;
+            const fs = state.dirtyFields[uid];
+            const keys = fs ? Object.keys(fs) : [];
+            if (!keys.length) {
+                // 兜底：没记到具体字段（老代码路径 / 手工改的整条对象）就整条发。
+                // 正常路径不会走到这里 —— 所有改动都该带上字段名。
+                body.accounts[uid] = src;
+                return;
+            }
+            fieldSnap[uid] = keys.slice();
+            const part = {};
+            keys.forEach((k) => {
+                // 内存里已经没有这个键 = 要删掉它（服务端约定 null = 删字段）。
+                part[k] = (k in src) ? src[k] : null;
+            });
+            body.accounts[uid] = part;
         });
         if (metaDirty && state.userData && state.userData.alt_group_names) {
             body.alt_group_names = state.userData.alt_group_names;
@@ -3281,6 +3330,16 @@ async function saveUserDataOnce() {
             // 只有「期间没被再改过」的账号才能摘掉脏标记
             if ((state.dirtyVersion[uid] || 0) === versions[uid]) {
                 state.dirtyAccounts.delete(uid);
+                delete state.dirtyFields[uid];
+            } else {
+                // 保存期间又改了：只摘掉这次真正送上去的那几个字段，
+                // 期间新加的字段留着下次发（否则那笔改动永远送不出去）
+                const sent = fieldSnap[uid];
+                const cur = state.dirtyFields[uid];
+                if (sent && cur) {
+                    sent.forEach((k) => { delete cur[k]; });
+                    if (!Object.keys(cur).length) delete state.dirtyFields[uid];
+                }
             }
         });
         if (metaDirty) state.dirtyMeta = false;
@@ -3307,7 +3366,7 @@ function setAccountField(uid, field, value) {
     }
     state.userData.accounts = state.userData.accounts || {};
     state.userData.accounts[uid] = state.userData.accounts[uid] || {};
-    markDirty(uid);
+    markDirty(uid, field);
     const ua = state.userData.accounts[uid];
     SAVE_FIELDS.forEach(k => {
         ua[k] = a[k];
@@ -3322,7 +3381,7 @@ function setAccountFieldRaw(uid, field, value) {
     state.userData.accounts = state.userData.accounts || {};
     const ua = state.userData.accounts[uid] || (state.userData.accounts[uid] = {});
     ua[field] = value;
-    markDirty(uid);
+    markDirty(uid, field);
     // 如果改的正好是当前打开的作者，同步它的内存对象，界面立刻反映
     if (state.currentAuthor && state.currentAuthor.uid === uid) {
         state.currentAuthor[field] = value;
@@ -3354,14 +3413,11 @@ async function refreshMeta() {
 
 function setStatus(uid, value) {
     setAccountField(uid, 'status', value);
-    // 状态进了「不能设更新频率」的列表（注销/禁言封号/卖号…）：把之前设过的更新频率清掉。
-    // 否则侧边栏「更新频率 day」里照样能筛到他 —— 这些号根本没有「更新」可言。
-    // 后端 merge_save_user_data() 里也兜了同样的规则，两边都清才不会「改完又冒回来」。
-    if ((state.updateFreqDisabledStatus || []).indexOf(String(value || '').trim()) >= 0) {
-        if (state.userData.accounts[uid]) state.userData.accounts[uid].update_freq = null;
-        if (state.currentAuthor && state.currentAuthor.uid === uid) state.currentAuthor.update_freq = '';
-        saveUserData();
-    }
+    // 2026-11-08：**不再自动清掉 update_freq**。
+    // 老逻辑是「状态进了『不能设更新频率』的列表就 null 掉频率」，而且没有任何提示 ——
+    // 用户只是把某个号标成「不好看了 / 私密账号 / 注销」，之前设的频率就凭空消失了，
+    // 过两天改回「正常」也回不来，看着就像「数据自己变了」。
+    // 现在改成：值原样保留，只是这类账号不参与频率筛选（服务端 _t_freq 里已排除）。
     refreshTop();
     refreshStatusCounts();   // 状态列/等级/频率计数跟着变
     showToast('状态已更新');
@@ -3864,7 +3920,7 @@ async function setMainAccount(uid) {
     group.forEach((u) => {
         const entry = acc[u] || (acc[u] = {});
         entry.main_uid = isMain ? '' : uid;
-        markDirty(u);
+        markDirty(u, 'main_uid');
         const a = state.currentAuthor;
         if (a && a.uid === u) a.main_uid = isMain ? '' : uid;
     });
@@ -3887,7 +3943,7 @@ function writeAltGroup(members) {
     list.forEach((u) => {
         const others = list.filter((x) => x !== u);
         const entry = acc[u] || (acc[u] = {});
-        markDirty(u);
+        markDirty(u, 'alt_accounts');
         // 单人组显式写空数组：服务端合并写约定「null/空 = 清除」。
         // 不能用 delete：合并写遇到「键不存在」会保留磁盘旧值，解除关联就失效了。
         if (others.length) entry.alt_accounts = others;
@@ -3912,7 +3968,7 @@ function writeAltGroup(members) {
         if (lv) {
             list.forEach((u) => {
                 const e = acc[u] || (acc[u] = {});
-                if ((e.level || '') !== lv) { e.level = lv; markDirty(u); }
+                if ((e.level || '') !== lv) { e.level = lv; markDirty(u, 'level'); }
             });
             if (state.currentAuthor && list.indexOf(state.currentAuthor.uid) >= 0) {
                 state.currentAuthor.level = lv;
@@ -3958,7 +4014,7 @@ function normalizeAltGroups() {
             // 上送层由 writeAltGroup 的空数组约定负责，落盘前服务端 normalize 也会清）
             g.forEach((u) => {
                 if (acc[u] && Array.isArray(acc[u].alt_accounts) && acc[u].alt_accounts.length === 0) {
-                    delete acc[u].alt_accounts; changed++; markDirty(u);
+                    delete acc[u].alt_accounts; changed++; markDirty(u, 'alt_accounts');
                 }
             });
             return;
@@ -3968,7 +4024,7 @@ function normalizeAltGroups() {
             const entry = acc[u] || (acc[u] = {});
             const old = Array.isArray(entry.alt_accounts) ? entry.alt_accounts.slice().sort() : null;
             if (!old || old.join('|') !== others.join('|')) {
-                entry.alt_accounts = others; changed++; markDirty(u);
+                entry.alt_accounts = others; changed++; markDirty(u, 'alt_accounts');
             }
         });
     });
@@ -4396,8 +4452,15 @@ async function refreshStatusCounts() {
             if (el) el.textContent = lvCounts[v] || '0';
         });
         // 更新频率计数（day/3天/周/月）
+        // 状态落在「不能设更新频率」列表里的账号不计数 —— 服务端 /api/authors?freq=
+        // 也是这么排除的（_t_freq 里 return False）。不跟着排除的话，侧边栏显示
+        // 「day 475」点进去只有 470 个，对不上账。
+        // 2026-11-08 之前这些账号的频率会被服务端直接清空，所以没这个问题；
+        // 现在不再销毁用户数据，就得在这里对齐口径。
+        const _locked = new Set((state.updateFreqDisabledStatus || []).map((x) => String(x || '').trim()));
         const freqCounts = {};
         (d.items || []).forEach((a) => {
+            if (_locked.has(String(a.status || '').trim())) return;
             const v = a.update_freq || '';
             if (FREQ_LIST.indexOf(v) >= 0) freqCounts[v] = (freqCounts[v] || 0) + 1;
         });
@@ -5110,7 +5173,7 @@ function applyBatchPatch(uid, patch) {
     });
     if (!changed) return false;
     state.userData.accounts[uid] = next;
-    markDirty(uid);
+    markDirtyFields(uid, ['nickname', 'douyin_id', 'signature', 'history']);
     return true;
 }
 

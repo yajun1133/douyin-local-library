@@ -119,22 +119,13 @@ def merge_save_user_data(partial):
             else:
                 disk.pop("status_notes", None)
 
-        # 不变式：状态属于「不能设置更新频率」的（默认注销/禁言封号/卖号）账号，不许留 update_freq。
-        # 以前只在「设置里改禁用列表」时清一次；用户后来把某个号改成「禁言/封号」，旧频率还留在
-        # user_data 里，侧边栏「更新频率 day」照样能筛到他（2026-10-30 报的问题）。
-        # 放在保存的唯一入口兜底：前端漏清、老数据残留、别的脚本写入，都会被这里纠正。
-        try:
-            _disabled = {str(x).strip() for x in (load_settings().get("update_freq_disabled_status") or [])
-                         if str(x).strip()}
-        except Exception:
-            _disabled = set()
-        if _disabled:
-            for ua in merged.values():
-                if not isinstance(ua, dict):
-                    continue
-                if str(ua.get("status") or "").strip() in _disabled and ua.get("update_freq"):
-                    ua.pop("update_freq", None)
-
+        # 2026-11-08：这里原来有一条「状态属于『不能设更新频率』的账号就 pop 掉 update_freq」
+        # 的不变式。撤销理由：
+        #   ① 它是**无提示的数据销毁** —— 用户只是把某个号标成「不好看了 / 私密账号」，
+        #      之前设好的频率就被抹掉了，改回「正常」也回不来，看着像「数据自己变了」；
+        #   ② 它本来想解决的问题（这类账号不该出现在「更新频率」筛选里）在
+        #      `_t_freq()` 里已经解决了：那个过滤器碰到 locked 状态直接 return False。
+        # 所以频率值一律保留，只在筛选/计数时排除。
         fixed = normalize_alt_groups(disk["accounts"])
 
         import tempfile
@@ -368,6 +359,9 @@ def _eff_ffprobe():
 # 这两件事都不能交给前端直接碰磁盘。
 
 FOLDER_NAME_RE = re.compile(r"^UID(\d+)_(.*)_发布作品$")
+# 抖音在账号注销/受限后把昵称改成的系统默认名（「用户 + 数字」），不带任何信息。
+# 批量取资料抄进 user_data 后会盖掉文件夹里的真实昵称，见 _load_user_data_locked。
+_AUTO_NICK_RE = re.compile(r"^用户\d+$")
 BAD_NAME_CHARS = '\\/:*?"<>|'
 # 改名合并时挑出来的重复文件放这里（不在扫描范围内：目录名不以 _发布作品 结尾）
 DUP_QUAR_DIRNAME = "_改名合并_重复文件_20261030"
@@ -2609,13 +2603,23 @@ def _load_user_data_locked(force=False):
     for uid, ua in new_acc.items():
         acc = accounts.get(uid)
         if isinstance(acc, dict) and isinstance(ua, dict):
+            _disk_nick = str(acc.get("nickname") or "").strip()   # 必须在 update 之前取
             acc.update(ua)
+            # 注销/封号之后抖音会把昵称改回「用户+数字」这种系统默认名，
+            # 批量取资料把它抄进 user_data，就把文件夹里那个真实昵称盖掉了 ——
+            # 页面上只剩一串数字，等于认不出是谁（2026-11-08 用户报「主页看不到」时
+            # 那位作者显示成「用户4328835325159」就是这么来的）。
+            # 默认名不带任何信息，遇到就退回 data.json 里从文件夹名解析出来的昵称。
+            _ud_nick = str(ua.get("nickname") or "").strip()
+            if _ud_nick and _AUTO_NICK_RE.match(_ud_nick) and _disk_nick:
+                acc["nickname"] = _disk_nick
             # 列表卡片直接用 lst 里的值，改过的昵称/抖音号要同步，否则搜索和列表还是旧值
             it = list_index.get(uid)
             if it:
                 for k in ("nickname", "douyin_id", "sec_uid", "cover", "alias"):
                     if k in ua:
                         it[k] = ua[k]
+                it["nickname"] = acc.get("nickname") or it.get("nickname") or ""
     # 合成账号：user_data 里有标注但 data.json 没有的 uid（新建作者/手工填的 UID）。
     # 补进 accounts 和作者列表，让它们能出现在「全部作者」、能被搜索、能被批量获取资料、
     # 能被导出——作品数为 0，卡片上显示「无本地作品」。

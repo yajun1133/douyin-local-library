@@ -23,6 +23,7 @@
 **最容易踩的六条**（详见第 4 节）：
 1. 改了 html/js/css **必须升** `index.html` 里的 `?v=` 版本号，否则浏览器用旧缓存，看起来「改了没反应」。
 2. 写 `user_data.json` **只能走 `merge_save_user_data()`**，直接 `open("w")` 会整库覆盖（真出过事故，见第 5 节）。
+   **前端改字段必须 `markDirty(uid, '字段名')`**（多个字段用 `markDirtyFields`）。保存只发改动字段，不传字段名会退回「整条账号上送」——那就是旧快照覆盖新数据的老坑（2026-11-08 c153 修的就是这个）。
 3. 前端**永远不要** fetch `data.json`（约 72MB）。
 4. 标注字段（星标/标签/封面/大小号…）的**权威只有 `user_data.json`**，靠服务端 `load_user_data()` 叠加进内存。
    - 历史坑（2026-11-01 已修）：`CACHE["accounts"]` 和 `data.json` 的账号是同一批 dict，五个写盘口会把标注一起 dump 回 `data.json`。现在写盘统一过 `_index_only()`，剥掉 10 个标注字段；老残留用 `python tools\clean_index.py` 清（`--dry` 先看）。
@@ -48,6 +49,7 @@ curl -s --noproxy 127.0.0.1 http://127.0.0.1:8723/api/meta
 - **2026-11-08 追更失败是代理不是账号**：面板上「抖音那边连续失败，已自动暂停 N 分钟」先去看 `data/watch.log` —— 如果是 `curl: (7) Failed to connect ... over proxy 127.0.0.1`，就是常驻进程继承了已失效的会话代理端口，不是被限流、也不是 cookie 过期。`watch_core` 已用 `NO_PROXY_OPTS` 强制绕过代理，网络类失败走 `RetryLater`（不封号、不熔断，20 秒重试）。**改这一块的规矩：任何新加的 curl_cffi 请求都要带 `**NO_PROXY_OPTS`**
 - **2026-11-08 图文作品的下载口径（实况 / 动图 / 画质 / 判重）**：`images[]` 每一项都可能带 `video.play_addr` —— **判据永远是「这一项有没有 `video`」，别看 `aweme_type`；顶层 `aweme.video` 是整组图的轮播视频，不能下**。实况和动图走同一条路（下 `_N.mp4`）；后缀改由**服务器 `Content-Type`** 定，不按 URL 猜；`url_list` 取**最后一个**（前几份是 9 KB 的 webp 缩略图，最后才是原图 —— DouK 的 `IMAGE_INDEX = -1` 同理）；真动图（GIF / 带 `ANIM` 的 webp）转 mp4（ffmpeg 解不了动态 webp，退回 Pillow 拆帧 + `libopenh264`，转不了就保留原文件）。判重顺带修了两处，不修就会**重复下载**：命名复刻 DouK 的 `beautify_string`（中文算 2 宽、超长取头尾），`is_known()` 的后缀改拿未截断全文比、并允许「开头 ≥12 字」兜作者改过描述的情况（当天因此多下了 10 条，已删回回收站）。历史下错的跑 `python tools/backfill_live.py <uid> --repair`（同时报「缺视频」和「低画质 webp」），跑前先停追更常驻。细节见 `PROJECT.md` 七.6 的四条判据 + 判重三层
 - **2026-11-08 c150 一次修一串**：① 「每作者一行」右侧播放器原来是一份**独立实现**，缺「缓存优先」和失败兜底 → 已转码过的 HEVC 会回头播原片黑屏；现在和详情页同一套取源顺序（`info.url` → `canPlayHevc()` 原片 → 转码），并补 `rowMountVideo()` 的 onerror / 5 秒兜底。② `hideAllViews()` 统一 `pause()` 全站 `video, audio` 再 `ndPlayReset()` / `rowStopPlay()` —— 播放器常驻 DOM，只 `display:none` 不会停声音。③ 侧栏开关换成顶栏左上角**常驻汉堡**（`.menu-btn`），旧的 `«`/`»` 两颗按钮删了。④ 追更页重排：加作者+账号池合成一块，名单收窄、右边放「追更内容 / 节奏与安全设置 / 运行日志」。⑤ 新增追更设置 `content`（`all/video/image`），`watch_core` 用 `aweme_kind()` 过滤，**被跳过的那类要推进 `last_ts`**，否则每轮都重新「发现」同一批
+- **2026-11-08 c153 修两个「数据看着不对」的根因**（都不是数据坏了）：① **黑名单按昵称兜底会误伤同名号** —— `blacklist.match()` 会先把昵称归一化（去掉下划线/空白/星号/表情），于是「某某_」和「某某」被当成同一个人，撞上另一个同名号的黑名单行，那位作者连同 2 个真实作品被整条从内存索引剔除（列表/搜索/`/api/author` 全没了，待下载区却照样显示 2 个作品）。现在只有「黑名单行既没 uid 也没 sec_uid」才允许按昵称兜底，有 ID 的一律按 ID 精确匹配。**写文档/注释时不要把真实 UID、昵称贴进来**（仓库是公开的）。② **保存整条账号对象导致旧快照回写** —— `saveUserDataOnce()` 原来发 `acc[uid]` 整个对象，而它是页面打开时的快照，所以点个星标就能把别处改过的 `status`/`update_freq` 冲回旧值。现在按 `state.dirtyFields` **只发改动字段**（`markDirty(uid, field)`）。③ 顺手撤掉「状态落入禁用列表就 pop 掉 `update_freq`」这条无提示的销毁逻辑，频率值一律保留、只在筛选和计数时排除（`_t_freq()` 本来就这么做）。**以后加字段记得 `markDirty(uid, '新字段名')`，不传字段名会退回整条上送，等于把这个坑挖回来。**
 - **没有阻塞性缺陷**，剩下的都是体验优化
 - 缺 sec_uid、转码 job 丢失、死代码等已知项见 `PROJECT.md` 第五章末尾
 

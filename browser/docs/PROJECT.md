@@ -500,6 +500,7 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 - 轮询还是 5 秒，但**只在 `state.view === 'watch'` 时才真正发请求**，切走自动停。
 - 名单筛选：**作者详情页那套分段控件**（`.wall-filters > .btn.work-filter-btn > b.wf-n`，灰底轨道 + 白色选中块 + 计数胶囊），单选、点哪个显示哪个，`全部 / 热档 / 温档 / 冷档 / 静档 / 定档 / 有下载 / 已停用` 八个口径各自带数量。**不是**侧边栏「全部作者」那种竖排列表。切筛选只重绘不重新请求（`wvSetFilter` → `wvRender`），选中的按钮不会因为 5 秒轮询重建而丢焦点（`wvRenderFilter` 只在结构不对时重建，平时只改数字和 `active` 类）。
 - 档位数据来自 `/api/watch/status` 的 `authors[].tier`（`hot/warm/cold/idle/fixed`，服务端已用 `WC.tier_of()` 给老状态兜算过）和 `tiers` 汇总。
+- 视觉上按「数据密集型看板」处理（2026-11-08 c146）：六张 KPI 卡带线性图标托盘；表格数字列右对齐 + 等宽；表头吸顶；档位标签带色点；首屏有骨架屏。**表头吸顶的 `top` 是从 `.view-header` 实测出来的**（见附录 A c146 第 ③ 条），别改成 `top: 0`，会被标题条盖住。
 
 **名单每一行都可点，点了直接进该作者的详情页**（应用内 `openAuthor(uid)`，不再整页跳 `/#author=<uid>`）：
 
@@ -771,6 +772,13 @@ PY="C:/Users/Administrator/.workbuddy/binaries/python/versions/3.13.12/python.ex
 > 2026-11-04 整理：这一节长期超出「只留 10 条」的容量，改成按时间倒序保留近期改动。
 > 更早的逐版本明细在 `本地 _archive/ 下的历史详述（含真实账号信息，未随仓库发布）` 的「附录：文档更新记录」。
 
+- **2026-11-08 c146 用 `ui-ux-pro-max` 给追更页做视觉升级**：功能落定后用 GitHub 上的设计智能 skill（装在 `~/.workbuddy/skills/ui-ux-pro-max`）跑了一遍「数据密集型看板」规范，按它的检查清单改。
+  ① **KPI 卡**：六张卡各加一个 18px / stroke 1.6 的线性图标（人像 / 火焰 / 脉冲 / 趋势 / 下载 / 时钟），装在 32px 浅色圆角托盘里；图标用 `currentColor`，只给「热号」粉、「请求」琥珀、「下载」墨绿三个点缀，其余中性灰 —— **颜色克制，粉只出现在主按钮和热档上**。卡高统一 72px，数字 22px / `tabular-nums`，「上次动作」用 15px 变体（时间文案不该和数字同字号）。估算超预算时整张卡换警示态（`.wv-card.over`，边框 + 数字 + 图标一起变），不再只靠改一个数字的颜色。
+  ② **表格**：数字列右对齐 + 等宽数字；表头 `position: sticky` 吸顶；档位标签加 5px 色点（色块 + 文字双通道，色弱也能读）；行 hover 改 `#f8fafc`。
+  ③ **表头吸顶的坑（重要）**：主界面的 `.view-header` **本身就是 sticky**（`top:-20px` / `z-index:20`，三个断点还不一样），表头如果也写 `top:0` 会被标题条整块盖住，看起来像「根本没有表头」。所以 `wvSyncStickyTop()` 每次渲染量一次「标题条高度 + 它的 top 偏移」写进 `--wv-th-top`，CSS 里 `th { top: var(--wv-th-top, 58px) }`；窗口 resize 时补算。实测滚动 1200px 后 `th.y=85`、标题条底边 84，正好贴着。
+  ④ **首屏骨架**：接口 200~800ms，原来只写一行「读取中…」；现在先铺 6 行和真实列对齐的灰条（`wvSkeleton()`），KPI 数字先压到 0.3 透明（`#watchView.wv-booting`），数据到了再亮起来，避免 0 → 168 的跳变像出错。
+  ⑤ **可达性**：`#watchView` 内所有按钮和 `details summary` 补 `:focus-visible` 焦点环（真键盘 Tab 实测 2px solid 主色）；`prefers-reduced-motion: reduce` 下骨架动画和所有过渡全部置 `none`（实测 `animationName = none`）。
+  ⑥ 顺手：窄屏卡片标签允许折行（原来 `nowrap+ellipsis` 会把「热号 · 2 天内发过」吃掉一半），680px 下六卡 3×2 排布、高度仍是 72px。
 - **2026-11-08 c145 追更并进左侧「功能」栏 + 名单改成档位分段筛选**：用户三条要求 —— ①「追更」不要单开一页、放进左边功能区；② 追更里所有作者都能筛（点名要「冷档」这类档位）；③ 筛选样式要像**作者详情页**那套、而不是「全部作者」那套，「点哪个就显示哪个」。
   ① **不再是独立页**：删掉顶栏那颗 `window.open('/watch','_blank')` 的按钮，`src/web/watch.html` 整个删除，内容搬成主界面里的 `#watchView`（左侧「功能」栏 `data-action="watch"`，角标显示名单人数，加载完 1.2 秒补拉一次 `/api/watch/status` 填数）。新视图走主界面既有的 `hideAllViews / animateViewEnter / rememberViewScroll`，`hideAllViews()` 的白名单加了 `watchView`；`GET /watch` 改 **302 → `/#watch`**，`app.js` 启动时认这个 hash 后立刻 `replaceState` 抹掉。逻辑用 `wv` 前缀（`state` 是 `const`、`showToast/escapeHtml` 已存在，老页面的 `render/post/toast` 直接搬会撞名）；5 秒轮询改成只在 `state.view === 'watch'` 时才发请求。
   ②③ **筛选 = 详情页那套分段控件**：直接复用 `.wall-filters > .btn.work-filter-btn > b.wf-n`（灰底轨道 `#f1f5f9` + 白色选中块 + 计数胶囊，和「全部作品 / 视频 / 图文」那一排逐像素同源，不是侧边栏那种竖排 `.side-item`），单选、点哪个显示哪个，八个口径各带数量：`全部 145 / 热档 75 / 温档 34 / 冷档 20 / 静档 10 / 定档 6 / 有下载 61 / 已停用 0`。档位取自 `/api/watch/status` 的 `authors[].tier`（服务端 `WC.tier_of()` 已给老状态兜算）；切筛选只重绘不发请求（`wvSetFilter` → `wvRender`），且 `wvRenderFilter()` **只在按钮数量不对时重建**，平时只改数字和 `active` 类 —— 否则 5 秒一次的重绘会把键盘焦点吃掉。

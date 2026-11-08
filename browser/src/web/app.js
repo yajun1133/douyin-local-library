@@ -9712,6 +9712,13 @@ async function openWatchView() {
     const eb = document.getElementById('exportBtn');
     if (eb) eb.classList.add('hidden');
     wvBindOnce();
+    // 第一次进来：先把骨架和筛选按钮摆出来。接口 200~800ms，只写一行「读取中…」会跳一下
+    if (!wvState.data) {
+        const vv = document.getElementById('watchView');
+        if (vv) vv.classList.add('wv-booting');
+        wvRenderFilter([]);
+        wvSkeleton();
+    }
     // 只在追更视图里轮询，切走就停（interval 还留着，靠 state.view 判断，省得反复建/清定时器）
     if (!wvState.timer) {
         wvState.timer = setInterval(() => {
@@ -9764,11 +9771,51 @@ async function wvPost(body, okMsg) {
     }
 }
 
+// 表头吸顶的偏移量。
+// 主界面的 .view-header 自己就是 sticky（top: -20px / z-index: 20，三个断点还不一样），
+// 表头如果也贴 0 就会被标题条整块盖住，视觉上像「没有表头」。所以每次渲染量一次：
+//   吸附位置 = 标题条自身高度 + 它的 top 偏移（负值）
+// 结果写进 --wv-th-top，交给 CSS 的 `th { top: var(--wv-th-top) }`。
+// 顺手在窗口尺寸变化时补一次（断点会改标题高度）。
+function wvSyncStickyTop() {
+    const root = document.getElementById('watchView');
+    if (!root) return;
+    const h = root.querySelector('.view-header');
+    if (!h) return;
+    const topOff = parseFloat(getComputedStyle(h).top) || 0;
+    const v = Math.round(h.offsetHeight + topOff + 1);   // +1 留一条缝，别和标题边框粘在一起
+    root.style.setProperty('--wv-th-top', Math.max(0, v) + 'px');
+}
+if (typeof window !== 'undefined' && !window.__wvStickyBound) {
+    window.__wvStickyBound = true;
+    window.addEventListener('resize', () => {
+        if (state.view === 'watch') wvSyncStickyTop();
+    });
+}
+
 // ---------- 整块渲染 ----------
+// 首屏骨架：六行假数据占位，形状和真实行一致（名字 / 两个数字 / 时间 / 下次 / 标签）
+function wvSkeleton() {
+    const tb = document.getElementById('wvTbody');
+    if (!tb) return;
+    const row = '<tr class="wv-skel">' +
+        '<td><span class="sk sk-name"></span></td>' +
+        '<td class="wv-num"><span class="sk sk-num"></span></td>' +
+        '<td class="wv-num"><span class="sk sk-num"></span></td>' +
+        '<td><span class="sk sk-date"></span></td>' +
+        '<td><span class="sk sk-short"></span></td>' +
+        '<td><span class="sk sk-tag"></span></td>' +
+        '<td></td></tr>';
+    tb.innerHTML = row.repeat(6);
+}
+
 function wvRender() {
     const d = wvState.data;
     if (!d) return;
     const rowsAll = d.authors || [];
+    const root = document.getElementById('watchView');
+    if (root) root.classList.remove('wv-booting');
+    wvSyncStickyTop();
 
     // 标题旁的状态文案
     const sub = document.getElementById('wvSub');
@@ -9797,11 +9844,7 @@ function wvRender() {
     const est = d.est_daily || 0;
     setV('wvEst', est + '<small>次</small>');
     const estCard = document.getElementById('wvEstCard');
-    if (estCard) {
-        const over = d.req_budget && est > d.req_budget;
-        estCard.style.borderColor = over ? 'rgba(254,44,85,.45)' : '';
-        estCard.querySelector('.v').style.color = over ? 'var(--primary)' : '';
-    }
+    if (estCard) estCard.classList.toggle('over', !!(d.req_budget && est > d.req_budget));
     setV('wvDl', d.total_downloads + '<small>条</small>');
     const beat = document.getElementById('wvBeat');
     if (beat) beat.textContent = d.heartbeat ? wvAgo(d.heartbeat) : '—';
@@ -9897,8 +9940,9 @@ function wvRenderTable(rowsAll) {
         if (r.tier === 'fixed' && r.interval) {
             t = ['定', '每 ' + Math.round(r.interval / 60) + ' 分钟查一次', 'hot'];
         }
-        let st = '<span class="wv-tag ' + t[2] + '" title="' + escapeHtml(t[1]) + '">' + t[0] + '档</span>';
-        if (!r.enabled) st = '<span class="wv-tag off">已停用</span>';
+        let st = '<span class="wv-tag ' + t[2] + '" title="' + escapeHtml(t[1]) + '">' +
+                 '<i class="wv-dot"></i>' + t[0] + '档</span>';
+        if (!r.enabled) st = '<span class="wv-tag off"><i class="wv-dot"></i>已停用</span>';
         const extra = r.fails ? ' <span class="wv-tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
 
         // 名字包成 <a>：中键 / Ctrl+点击可以「在新标签打开」，左键走应用内详情页
@@ -9911,8 +9955,8 @@ function wvRenderTable(rowsAll) {
 
         return '<tr class="wv-link' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
             '<td>' + nm + (r.in_lib ? '' : ' <span class="wv-tag off">不在库</span>') + '</td>' +
-            '<td>' + (r.works || 0) + '</td>' +
-            '<td>' + (r.downloads || '—') + '</td>' +
+            '<td class="wv-num">' + (r.works || 0) + '</td>' +
+            '<td class="wv-num">' + (r.downloads || '—') + '</td>' +
             '<td>' + escapeHtml(r.last_scan || '—') + '</td>' +
             '<td>' + (r.next_check ? wvAgo(r.next_check) : '—') + '</td>' +
             '<td>' + st + extra + '</td>' +

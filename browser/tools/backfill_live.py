@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""补下图文作品里被漏掉的「实况视频」。
+"""修图文作品「某一项被下成静态图 / 低画质预览」的问题。
 
 背景（2026-11-08 查到的坑）：
     抖音图文作品（aweme_type=68）的**每一项**都可能是实况/动图 —— 那一项自带
@@ -8,12 +8,20 @@
     是图」，第二条怎么点都播不出来。DouK 下的没这个问题，所以对比之下很像
     「用了追更才坏的」。
 
+    同一版下载器还有第二个毛病：图片地址取了 `url_list[0]`，那是 webp 缩略预览
+    （1320×258 的糊图），真正的高画质在 `url_list[-1]`（jpeg）。所以本工具顺带把
+    「本地是静态 webp 预览」的项也报出来重下。
+
+判定口径：
+    * 缺视频：接口说这一项有 video，本地却只有图（没有 .mp4）
+    * 低画质：本地这一项存的静态 .webp（含 ANIM 的真动图不算，那是转 mp4 失败后的保底）
+
 用法：
     # 先停追更常驻，避免两边同时打接口（面板上点停止，或 POST /api/watch stop）
     python tools/backfill_live.py <uid> [<uid> ...] [--pages 3] [--repair] [--dry-run]
 
     --pages    每位作者翻几页（默认 3，一页 20 条）
-    --repair   把缺视频的作品整条移进回收站再重下（推荐：不会留下多余的封面图）
+    --repair   把有问题的作品整条移进回收站再重下（推荐：不会留下多余的封面图）
     --dry-run  只报告缺哪些，不动任何文件
 
 为什么默认只报告、--repair 才动手：
@@ -142,6 +150,49 @@ def live_indexes(aweme):
             if W.pick_best_video((im or {}).get("video") or {})]
 
 
+def head_size(dy, url):
+    """远端文件大小（HEAD Content-Length）。拿不到就返回 0，调用方别据此下结论。"""
+    try:
+        r = dy.cr.head(url, headers={"Referer": "https://www.douyin.com/",
+                                     "User-Agent": W.UA},
+                       impersonate="chrome146", timeout=15, **W.NO_PROXY_OPTS)
+        return int(r.headers.get("content-length") or 0)
+    except Exception:
+        return 0
+
+
+def lowq_indexes(dy, aw, items):
+    """本地哪几项是「低画质预览」——老版下载器取 url_list[0] 留下的糊图。
+
+    判据不是「后缀是 webp」就行（有些作品的最高画质本来就只有 webp）：
+    拿接口里最高画质那份的 Content-Length 跟本地比，明显更小才算低画质。
+    真动图（webp 里带 ANIM 块）不算：那是转 mp4 失败后的保底，内容没丢。
+    """
+    out = []
+    imgs = aw.get("images") or ((aw.get("image_post_info") or {}).get("images") or [])
+    for i, exts in (items or {}).items():
+        p = exts.get(".webp")
+        if not p:
+            continue
+        try:
+            with open(p, "rb") as fp:
+                head = fp.read(128)
+            local = os.path.getsize(p)
+        except OSError:
+            continue
+        if W.is_anim_webp(head):
+            continue
+        idx = int(i) - 1
+        if 0 <= idx < len(imgs):
+            urls = W.pick_url((imgs[idx] or {}).get("url_list"))
+            remote = head_size(dy, urls[0]) if urls else 0
+        else:
+            remote = 0
+        if remote and local < remote * 0.85:
+            out.append(i)
+    return sorted(out)
+
+
 def post(url, payload):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
@@ -201,9 +252,8 @@ def main():
         lib_works = ((lib.get("accounts") or {}).get(str(uid)) or {}).get("works") or []
         targets = []
         for aw in aws:
-            idxs = live_indexes(aw)
             ct = int(aw.get("create_time") or 0)
-            if not idxs or not ct:
+            if not ct:
                 continue
             date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
             desc = aw.get("desc") or ""
@@ -212,19 +262,26 @@ def main():
                 # 本地压根没有这一条 —— 属于「历史漏抓」，不是本工具管的「缺视频」。
                 # 那种情况交给 tools/backfill_author.py，别在这里顺手补（会绕开它的判重）。
                 continue
+            idxs = live_indexes(aw)
             lack = [i for i in idxs if not (i in items and ".mp4" in items[i])]
-            if lack:
+            lowq = lowq_indexes(dy, aw, items)
+            if lack or lowq:
                 n_local = len(items) if items else 0
                 n_remote = len(aw.get("images") or
                                ((aw.get("image_post_info") or {}).get("images") or []))
-                targets.append((aw, date, desc, lack, base, items, n_local, n_remote))
+                targets.append((aw, date, desc, lack, lowq, base, items, n_local, n_remote))
 
         if not targets:
-            print("  ✓ 没有缺视频的作品"); continue
+            print("  ✓ 没有缺视频 / 低画质的作品"); continue
         tot_miss += len(targets)
-        for aw, date, desc, lack, base, items, n_local, n_remote in targets:
-            print("  ! %s 实况项 %s 缺视频  [本地 %d 项 / 接口 %d 项]  %s"
-                  % (date, lack, n_local, n_remote, (desc or "")[:34]))
+        for aw, date, desc, lack, lowq, base, items, n_local, n_remote in targets:
+            why = []
+            if lack:
+                why.append("实况项 %s 缺视频" % lack)
+            if lowq:
+                why.append("项 %s 是低画质 webp" % lowq)
+            print("  ! %s %s  [本地 %d 项 / 接口 %d 项]  %s"
+                  % (date, "；".join(why), n_local, n_remote, (desc or "")[:34]))
             if args.dry_run:
                 continue
             if not args.repair:
@@ -232,8 +289,8 @@ def main():
                 print("      补下 %d 个 / %.1f MB %s" % (n, size / 1024.0 ** 2, err or ""))
                 tot_fix += 0 if err else 1
                 tot_fail += 1 if err else 0
-                print("      · 若同一项还留着封面图（_%s.webp/.jpeg），需要手动清掉"
-                      % "/".join(str(i) for i in lack))
+                print("      · 若同一项还留着旧文件（_%s.webp/.jpeg），需要手动清掉"
+                      % "/".join(str(i) for i in (lack or lowq)))
                 continue
             # --repair：整条进回收站，再用修好的下载器重下，避免残留封面图
             wi = works_index(lib_works, date, desc, nick)

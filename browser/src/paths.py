@@ -64,6 +64,9 @@ FFPROBE = FFMPEG.replace("ffmpeg.exe", "ffprobe.exe")
 DOWNLOADER_DIR = os.path.join(MEDIA_BASE, "DouK-Downloader_V5.8_Windows_X64")
 DOWNLOADER_LIB = os.path.join(DOWNLOADER_DIR, "lib")
 DOWNLOADER_SETTINGS = os.path.join(DOWNLOADER_DIR, "Volume", "settings.json")
+# DouK 自己的下载记录库。里面 download_data 表 = 「这条作品下过」的 aweme_id。
+# 用它判断「本地没有但以前下过」= 用户删掉了，别再补回来（2026-11-08 踩过）。
+DOWNLOADER_DB = os.path.join(DOWNLOADER_DIR, "Volume", "DouK-Downloader.db")
 
 # 用户可配置的设置文件（数据库/FFmpeg/组件地址、更新频率禁用状态等）
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")

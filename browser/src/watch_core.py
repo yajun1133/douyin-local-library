@@ -23,8 +23,11 @@ import json
 import os
 import random
 import re
+import shutil
+import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -75,8 +78,12 @@ DEFAULT_CFG = {
 VIDEO_EXT = ".mp4"
 IMG_EXT_BY_TYPE = {
     "image/jpeg": ".jpeg", "image/jpg": ".jpeg", "image/png": ".png",
-    "image/webp": ".webp", "image/heic": ".heic",
+    "image/webp": ".webp", "image/heic": ".heic", "image/gif": ".gif",
+    "image/avif": ".avif",
 }
+VIDEO_TYPES = ("video/", "application/octet-stream")
+# 判断「这一项本地已经有了」时认可的静态图后缀（动图 webp/gif 也算）
+IMG_EXTS = (".jpeg", ".jpg", ".png", ".webp", ".gif", ".heic", ".avif")
 
 # Windows 文件名不允许的字符。DouK 也没法保留这些，一律换成下划线。
 BAD_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
@@ -193,11 +200,56 @@ def norm_desc(s):
     return re.sub(r"[\s_]+", "", str(s or "")).lower()
 
 
-def work_key(desc, desc_len=64):
-    """判重 key 的统一口径：**先按 DouK 规则清洗截断，再规范化**。
+def _char_width(ch):
+    """DouK 算长度时把中日韩字符当 2 个字宽（跟它 beautify_string 一致）。"""
+    return 2 if "CJK" in unicodedata.name(ch, "") else 1
 
-    顺序不能反。库里存的是文件名里那段（已经截断到 64 字），接口给的是完整描述；
-    如果直接拿完整描述去比，超过 64 字的作品永远对不上，每天都会被当成新的下一遍。
+
+def _trunc_width(s, width):
+    n = 0
+    out = []
+    for ch in s:
+        n += _char_width(ch)
+        if n > width:
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def beautify_desc(s, length=64):
+    """复刻 DouK 5.8 的 `beautify_string`：超长取**头 + 尾**、中间用 `...` 省略。
+
+    为什么要一模一样：库里的老文件名全是这个格式（`前面一段...后面一段`）。我们
+    自己下的时候如果只是「按字数硬切」，同一件作品就会得到**两个不同的名字** ——
+    2026-11-08 就因此多下出 10 条重复（内容一模一样，只是名字不同）。
+    """
+    s = s or ""
+    w = 0
+    for ch in s:
+        w += _char_width(ch)
+        if w > length:
+            break
+    else:
+        return s                       # 没超长，原样
+    half = length // 2
+    return "%s...%s" % (_trunc_width(s, half), _trunc_width(s[::-1], half)[::-1])
+
+
+def name_desc(desc, desc_len=64):
+    """作品名里的「描述段」：DouK 口径（超长头尾省略 + 洗掉非法字符）。"""
+    return clean_part(beautify_desc(desc or "", desc_len))
+
+
+def key_of_desc(desc, desc_len=64):
+    """接口描述 → 判重 key（跟文件名里那段同名同形，能精确对上）。"""
+    return norm_desc(name_desc(desc, desc_len))
+
+
+def work_key(desc, desc_len=64):
+    """判重 key 的**老口径**：按字数截断，再规范化。
+
+    保留它是因为库里还有我们自己早期下载用这个口径命名的文件。新代码一律用
+    `key_of_desc()`；`is_known()` 两个都试。
     """
     return norm_desc(clean_part(desc or "", desc_len))
 
@@ -237,25 +289,47 @@ def _ell_hit(full, pre, suf):
     return True
 
 
+def _pre_hit(full, pre):
+    """只比开头：作者**改过描述尾巴**时，后缀永远对不上，只能靠开头认人。
+
+    门槛故意定得高（规范化后 ≥12 字）：同一天、同一个作者的另外一件作品，
+    开头 12 个字一模一样的概率极低；而 `#卡点舞` 这类短前缀根本进不来。
+    2026-11-08 那 10 条就是这种情况（DouK 当年的名字结尾是 `#卡点`，
+    现在接口给的是 `#卡点舞`，后缀对不上 → 每条都被当成新作品又下了一遍）。
+    """
+    return len(pre) >= 12 and full.startswith(pre)
+
+
 def is_known(local, date_idx, date, desc, desc_len=64):
     """这条作品本地到底有没有（精确 key + 省略号模糊）。
 
     模糊匹配必须限定在**同一天**：`#卡点` 这种短前缀放到全库去比，会把别人的作品
     错认成自己 —— 误判成「已有」就会永远漏下这一条，比重复下载严重得多。
+
+    2026-11-08 补两处（都会导致**重复下载**，不是小事）：
+      1. 精确比对除了老口径，还要试 DouK 口径（头尾省略）—— 我们自己的命名现在
+         跟 DouK 一样了，这样绝大多数作品第一次就能精确命中；
+      2. 模糊比对的后缀要用**未截断的完整描述**去比。按 64 字硬切的话，长描述
+         结尾那段被切掉了，`full.endswith(库里的后缀)` 永远不成立 → 判成新作品
+         又下一遍（2026-11-08 那 10 条就这么重复的）。
     """
     key = work_key(desc, desc_len)
     if (date, key) in local:
         return True
+    bkey = key_of_desc(desc, desc_len)
+    if bkey != key and (date, bkey) in local:
+        return True
     same = date_idx.get(date) or ()
     if not same:
         return False
+    full = norm_desc(desc or "")          # 不截断：后缀必须贴住真正的结尾
     # 方向一：库里那条被省略了，接口给的是完整描述（绝大多数情况走这条）
     for k in same:
         sp = ellipse_split(k)
-        if sp and _ell_hit(key, sp[0], sp[1]):
+        if sp and (_ell_hit(full, sp[0], sp[1]) or _pre_hit(full, sp[0])):
             return True
     # 方向二：接口给的被省略了，库里留着完整的那条
-    sp = ellipse_split(key)
+    sp = ellipse_split(bkey)
     if sp:
         for k in same:
             if _ell_hit(k, sp[0], sp[1]):
@@ -333,6 +407,29 @@ def load_library_index():
             s.add((date, work_key(desc)))
         idx[uid] = s
     return idx, folders
+
+
+def douk_downloaded_ids():
+    """DouK 下载记录里的全部 aweme_id（只读，读不到就返回空集）。
+
+    用途：本地没有、但 DouK 记录里有 → 说明**用户自己删掉了**，补下载工具不能
+    把它当「历史漏抓」再补回来。2026-11-08 就因为这个把 10 条已被删的老作品
+    又下了一遍（用户删作品是为了不要它们，不是等它回来）。
+    """
+    ids = set()
+    try:
+        import sqlite3
+        if not os.path.exists(paths.DOWNLOADER_DB):
+            return ids
+        con = sqlite3.connect("file:%s?mode=ro" % paths.DOWNLOADER_DB, uri=True, timeout=10)
+        try:
+            for (aid,) in con.execute("select * from download_data"):
+                ids.add(str(aid))
+        finally:
+            con.close()
+    except Exception as e:
+        log("· 读 DouK 下载记录失败（不影响下载，只是判重少一层）：%s" % e)
+    return ids
 
 
 def parse_desc_from_name(name):
@@ -732,24 +829,34 @@ class Douyin(object):
 # ---------------------------------------------------------------------------
 
 def pick_url(url_list):
-    """url_list 一般有 2~3 个镜像，取第一个能用的（调用方负责失败重试下一个）。"""
-    return [u for u in (url_list or []) if isinstance(u, str) and u.startswith("http")]
+    """url_list 里的地址按清晰度升序排，**取最后一个**才是高画质那份。
+
+    抖音图文作品的 url_list 通常长这样：[webp 预览, webp 预览(mirror), jpeg 原图]
+    —— 2026-11-08 实测同一张图：前两个 9.2 KB（1320×258 的糊图），最后一个 19.8 KB
+    的 jpeg 才是真正的图。DouK 5.8 也是取 [-1]（`IMAGE_INDEX = -1` / `VIDEO_INDEX = -1`），
+    所以这里倒序遍历，后面的地址优先。失败重试时还会依次试剩下的镜像。
+    """
+    return [u for u in reversed(url_list or [])
+            if isinstance(u, str) and u.startswith("http")]
 
 
 def pick_best_video(video):
-    """挑最高码率的 play_addr。
+    """挑清晰度最高的那条流。
 
-    抖音返回的 video.bit_rate 里按码率排了一串，play_addr 是「默认清晰度」。
-    追更下的量不大，尽量拿好的那个：先看 bit_rate，再退回 play_addr。
+    抖音返回的 video.bit_rate 是按码率排的一串，play_addr 是「默认清晰度」。
+    排序口径跟 DouK 5.8 一致：(长边, 帧率, 码率, 体积) 取最大 —— 单纯比体积会
+    被「小尺寸高码率」骗过去。追更下的量不大，尽量拿好的那个。
     """
-    best, best_score = None, -1
+    best, best_score = None, None
     for br in (video.get("bit_rate") or []):
         addr = br.get("play_addr") or {}
         urls = pick_url(addr.get("url_list"))
         if not urls:
             continue
-        score = (addr.get("data_size") or 0) or br.get("bit_rate") or 0
-        if score > best_score:
+        score = (max(int(addr.get("height") or 0), int(addr.get("width") or 0)),
+                 int(br.get("FPS") or 0), int(br.get("bit_rate") or 0),
+                 int(addr.get("data_size") or 0))
+        if best_score is None or score > best_score:
             best_score, best = score, urls
     if best:
         return best
@@ -761,13 +868,141 @@ def _ext_from_type(ct):
     return IMG_EXT_BY_TYPE.get(ct, "")
 
 
-def save_stream(cr, urls, dest, referer, retry=3):
-    """把 urls（按顺序试）流式写到 dest。先写 .part 再改名。
+def is_anim_webp(head):
+    """判断 webp 是不是「动图」：容器里有 ANIM 块（RIFF/WEBP + VP8X + ANIM）。
 
-    为什么要 .part：scanner 和 DouK 都在监听目录，半截文件被扫进去会记成
-    「下载失败」或算错体积。改名是原子的，写完才让它出现。
+    DouK 5.8 不看这个，它只按 Content-Type 定后缀；所以 DouK 下的动图会存成
+    .webp 一张 —— 在 Windows 照片/很多播放器里只显示第一帧，看起来就是「不动」。
+    这里单独认出来，转成 mp4 才能真正播放（2026-11-08 用户要求）。
     """
-    tmp = dest + ".part"
+    if not head or head[:4] != b"RIFF" or b"WEBP" not in head[:16]:
+        return False
+    return b"ANIM" in head[:128] or b"ANMF" in head[:128]
+
+
+def is_anim(head):
+    return bool(head) and (head[:4] == b"GIF8" or is_anim_webp(head))
+
+
+def find_ffmpeg():
+    """找 ffmpeg：先 PATH，再 DouK 自带的（DouK 的实况合成就是用它）。"""
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    for cand in (
+        os.path.join(paths.DOWNLOADER_DIR, "ffmpeg.exe"),
+        os.path.join(paths.DOWNLOADER_DIR, "ffmpeg", "ffmpeg.exe"),
+        os.path.join(paths.MEDIA_BASE, "ffmpeg.exe"),
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _ffmpeg_run(exe, args, timeout=180):
+    try:
+        r = subprocess.run([exe, "-y", "-loglevel", "error"] + args,
+                           capture_output=True, timeout=timeout,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return r.returncode, (r.stderr or b"").decode("utf-8", "replace")
+    except Exception as e:
+        return -1, "%s: %s" % (type(e).__name__, e)
+
+
+def anim_to_mp4(src, dst):
+    """动图（动态 webp / GIF）转 mp4。成功返回文件字节数，失败返回 0。
+
+    两条路：
+      1. ffmpeg 直接读 —— GIF 可以，**动态 webp 不行**（ffmpeg 的 webp 解码器
+         不支持多帧，实测 8.1 报 `image data not found`）；
+      2. 动态 webp 退回 Pillow 拆帧，再以 image2pipe 喂给 ffmpeg 编码。
+         帧间隔按每帧自带的 duration 折算成 30fps 的重复次数，播放速度才不走样。
+    """
+    exe = find_ffmpeg()
+    if not exe:
+        return 0
+    enc = ["-movflags", "+faststart", "-pix_fmt", "yuv420p",
+           # 动图常见奇数宽高，h264 要求偶数，不补就报错
+           "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+           "-an", dst]
+    # 本机 ffmpeg 是 LGPL 版，没有 libx264，但带 libopenh264（同为 h264，
+    # 浏览器/播放器都认）；万一这版没有，再退回默认编码器（mpeg4，兼容性差些）
+    encs = [["-c:v", "libopenh264", "-b:v", "4M"] + enc, enc]
+    err = ""
+    for extra in encs:
+        rc, err = _ffmpeg_run(exe, ["-i", src] + extra)
+        if rc == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 1024:
+            return os.path.getsize(dst)
+    n = _frames_to_mp4(exe, src, dst, encs)
+    if n:
+        return n
+    log("  ! 动图转 mp4 失败：%s" % err.strip()[:140])
+    return 0
+
+
+def _frames_to_mp4(exe, src, dst, encs):
+    """Pillow 拆帧 → ffmpeg 编码。没有 Pillow 或文件不是动图就返回 0。"""
+    try:
+        from PIL import Image
+    except Exception:
+        return 0
+    try:
+        im = Image.open(src)
+        if not getattr(im, "is_animated", False) or im.n_frames < 2:
+            return 0
+        base_fps = 30
+        plan = []                      # [(frame, 重复次数)]
+        for i in range(im.n_frames):
+            im.seek(i)
+            dur = im.info.get("duration") or 0
+            plan.append((im.convert("RGBA").copy(), max(1, int(round(dur / (1000.0 / base_fps))))))
+            if sum(p[1] for p in plan) > base_fps * 60:      # 最长 60 秒，别把内存吃光
+                break
+        import io
+        blobs = []
+        for frame, times in plan:
+            buf = io.BytesIO()
+            frame.save(buf, "PNG")
+            blobs.append((buf.getvalue(), times))
+        for extra in encs:
+            if os.path.exists(dst):
+                try:
+                    os.remove(dst)
+                except OSError:
+                    pass
+            cmd = [exe, "-y", "-loglevel", "error", "-f", "image2pipe",
+                   "-vcodec", "png", "-framerate", str(base_fps), "-i", "-"] + extra
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            for data, times in blobs:
+                for _ in range(times):
+                    try:
+                        proc.stdin.write(data)
+                    except Exception:
+                        break
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            proc.wait(timeout=180)
+            if proc.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 1024:
+                return os.path.getsize(dst)
+    except Exception as e:
+        log("  ! 动图拆帧异常：%s: %s" % (type(e).__name__, e))
+    return 0
+
+
+def save_item(cr, urls, base, referer, retry=3):
+    """下一个「作品项」到 base + 真实后缀。返回 (字节数, 后缀, 错误)。
+
+    做法对齐 DouK 的 `_extract_content`：**后缀由服务器回的 Content-Type 决定**。
+    这么做的原因：
+      * 抖音图片 URL 里没有可靠后缀，猜 URL 经常把 webp 存成 .jpeg；
+      * 实况/动图项的 URL 有时是图片域名的样子，实际回的是 video/mp4；
+      * 动图（GIF / 动态 webp）需要认出来单独处理，否则「存了但不会动」。
+    """
+    tmp = base + ".part"
     last = ""
     for attempt in range(1, retry + 1):
         for u in urls:
@@ -779,31 +1014,58 @@ def save_stream(cr, urls, dest, referer, retry=3):
                     last = "HTTP %s" % r.status_code
                     r.close()
                     continue
+                ctype = (r.headers.get("content-type") or "").split(";")[0].strip().lower()
                 total = 0
+                head = b""
                 with open(tmp, "wb") as f:
                     for chunk in r.iter_content(262144):
-                        if chunk:
-                            f.write(chunk)
-                            total += len(chunk)
+                        if not chunk:
+                            continue
+                        if len(head) < 128:
+                            head += chunk[:128 - len(head)]
+                        f.write(chunk)
+                        total += len(chunk)
                 r.close()
                 if total < 1024:
                     last = "只拿到 %d 字节" % total
+                    continue
+                ext = _ext_from_type(ctype)
+                if not ext:
+                    ext = VIDEO_EXT if ctype.startswith("video/") else ""
+                if not ext:
+                    ext = ".gif" if head[:4] == b"GIF8" else ".jpeg"
+                if ext in (".gif", ".webp") and is_anim(head):
+                    # 动图：转成 mp4 才真能播（Windows 照片、大部分播放器都不放动图 webp）
+                    dst = base + VIDEO_EXT
+                    if anim_to_mp4(tmp, dst):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+                        return os.path.getsize(dst), VIDEO_EXT, ""
+                    # 转不了就原样留着，至少内容没丢
+                    log("  ! %s 是动图但没转成 mp4，按原格式保留" % os.path.basename(base))
+                os.replace(tmp, base + ext)
+                return total, ext, ""
+            except Exception as e:
+                last = "%s: %s" % (type(e).__name__, str(e)[:80])
+            finally:
+                if os.path.exists(tmp):
                     try:
                         os.remove(tmp)
                     except OSError:
                         pass
-                    continue
-                os.replace(tmp, dest)
-                return total, ""
-            except Exception as e:
-                last = "%s: %s" % (type(e).__name__, str(e)[:80])
-                try:
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-                except OSError:
-                    pass
         time.sleep(attempt * 2)
-    return 0, last
+    return 0, "", last
+
+
+def existing_of(base, exts):
+    """base 已经下过、且后缀在 exts 里的那个文件（没有返回空串）。"""
+    for e in exts:
+        p = base + e
+        if os.path.exists(p) and os.path.getsize(p) > 1024:
+            return p
+    return ""
 
 
 def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
@@ -812,7 +1074,9 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
     if not ct:
         return 0, 0, "没有 create_time"
     date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
-    desc = clean_part(aweme.get("desc") or "", desc_len) or str(aweme.get("aweme_id") or "")
+    # 名字里的描述段按 DouK 口径生成（超长取头尾 + `...`），跟库里老文件名同形，
+    # 不然同一件作品会出现两种名字 → 判重对不上 → 重复下载（2026-11-08 踩过）
+    desc = name_desc(aweme.get("desc") or "", desc_len) or str(aweme.get("aweme_id") or "")
     nick = clean_part(nickname) or "未知作者"
     referer = "https://www.douyin.com/video/%s" % (aweme.get("aweme_id") or "")
 
@@ -825,16 +1089,15 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
     if images:
         for i, img in enumerate(images, 1):
             img = img or {}
-            # 实况/动图（live photo）：这一项本身就是一段视频，url_list 只是它的封面帧。
-            # 只下封面会得到一张静态图 —— 播放器里永远"显示图片、播不出来"（2026-11-08 踩过）。
-            # 判定就一条：这一项有没有 video.play_addr，有就是视频，跟 aweme_type 无关。
+            # 图文作品的**每一项**都可能是会动的：实况/动图。判定只看一条 ——
+            # 这一项有没有 video.play_addr，有就是一段视频，url_list 只是封面帧。
+            # （DouK 5.8 也是这么分的：任意一项有 video，整条作品就按「实况」走。）
             live = pick_best_video(img.get("video") or {})
             if live:
-                name = "%s-%s-%s_%d%s" % (date, nick, desc, i, VIDEO_EXT)
-                dest = os.path.join(author_dir, name)
-                if os.path.exists(dest) and os.path.getsize(dest) > 1024:
+                base = os.path.join(author_dir, "%s-%s-%s_%d" % (date, nick, desc, i))
+                if existing_of(base, (VIDEO_EXT,)):
                     continue
-                n, err = save_stream(dy.cr, live, dest, referer)
+                n, ext, err = save_item(dy.cr, live, base, referer)
                 if n:
                     files += 1
                     size += n
@@ -844,18 +1107,12 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
             urls = pick_url(img.get("url_list"))
             if not urls:
                 continue
-            # 扩展名：先按 URL 猜，猜不到就用 content-type 兜底（save_stream 之后才知道）
-            ext = ".jpeg"
-            low = urls[0].lower()
-            for cand in (".jpeg", ".jpg", ".png", ".webp", ".heic"):
-                if cand in low:
-                    ext = ".jpeg" if cand == ".jpg" else cand
-                    break
-            name = "%s-%s-%s_%d%s" % (date, nick, desc, i, ext)
-            dest = os.path.join(author_dir, name)
-            if os.path.exists(dest) and os.path.getsize(dest) > 1024:
+            base = os.path.join(author_dir, "%s-%s-%s_%d" % (date, nick, desc, i))
+            # 静态图：后缀交给真实 Content-Type 定（可能存成 webp/gif；
+            # 真拿到动图会转 mp4，见 save_item）
+            if existing_of(base, IMG_EXTS + (VIDEO_EXT,)):
                 continue
-            n, err = save_stream(dy.cr, urls, dest, referer)
+            n, ext, err = save_item(dy.cr, urls, base, referer)
             if n:
                 files += 1
                 size += n
@@ -866,11 +1123,10 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64):
         urls = pick_best_video(video)
         if not urls:
             return 0, 0, "没有可用的视频地址"
-        name = "%s-%s-%s%s" % (date, nick, desc, VIDEO_EXT)
-        dest = os.path.join(author_dir, name)
-        if os.path.exists(dest) and os.path.getsize(dest) > 1024:
+        base = os.path.join(author_dir, "%s-%s-%s" % (date, nick, desc))
+        if existing_of(base, (VIDEO_EXT,)):
             return 0, 0, ""          # 已经在了，不算失败
-        n, err = save_stream(dy.cr, urls, dest, referer)
+        n, ext, err = save_item(dy.cr, urls, base, referer)
         if n:
             files, size = 1, n
         else:
@@ -1275,7 +1531,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 st["last_new"] = time.time()
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 seen.add(aid)
-                k_new = (date, work_key(desc, dl))
+                k_new = (date, key_of_desc(desc, dl))
                 local.add(k_new)
                 date_idx.setdefault(date, []).append(k_new[1])
                 log("  ↓ %s  %s (%.1f MB)"

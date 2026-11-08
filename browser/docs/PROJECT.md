@@ -47,8 +47,8 @@ D:/ai_Project/douyin-local-library/browser/          ← 项目根（只放启�
 │   ├── clean_cache.py     # 清缩略图/转码缓存（--wipe 全清，--status 只看）
 │   ├── clean_index.py     # 把 data.json 里混进去的标注字段剥掉（--dry 只看；写前自动备份）
 │   ├── restore_backup.py  # 从备份恢复标注（--list / --latest / --file）
-│   ├── backfill_author.py # **按作者全量对齐**：拉主页全部作品、按库索引判重补下（不受追更基线限制）
-│   ├── backfill_live.py    # **补实况视频**：图文作品里被当成静态图下掉的实况项，按「该序号有没有 mp4」补（--repair 整条重下）
+│   ├── backfill_author.py # **按作者全量对齐**：拉主页全部作品、按库索引判重补下（不受追更基线限制；DouK 记录里有但本地没有的视为用户删过，不补）
+│   ├── backfill_live.py    # **修图文项**：实况/动图被下成静态图、或下成低画质 webp 的，整条重下（--repair）
 │   ├── blacklist.py       # 黑名单（不下载名单）公共模块
 │   ├── block_author.py     # 把作者加入黑名单（--delete 连本地文件夹一起删）
 │   ├── downloaded.py      # 「哪些作品已下载」索引
@@ -508,6 +508,11 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 2. **基线时间** —— `last_ts` 之前的老作品一律不看（所以追更**补不到历史**，要补老作品用下面的 `tools/backfill_author.py`）。
 3. **库索引** —— `(date, work_key(desc))` 命中 `data.json` 对应 uid 的作品集合就算已有。
 
+补下载工具（`backfill_author.py`）还多一层：**DouK 下载记录**（`Volume/DouK-Downloader.db` 的
+`download_data` 表）。记录里有、本地却没有 = **用户自己删掉的**，一律不补（`W.douk_downloaded_ids()`）。
+理由：用户删作品就是为了不要它，补下载工具替他「恢复」等于跟用户对着干；而这层记录是判断
+「下过又没了」的唯一凭据（本地文件删了就没有别的痕迹）。
+
 第 3 层有个坑：老版本下载器把过长的描述**用省略号吃掉中段**（`我真的特别爱你 #... #是你喜欢的身材吗`），接口返回的却是完整描述 → `work_key` 全等永远对不上 → **对老作者做全量扫会重复下载**。全库 30 万条作品里约 **2.9 万条（9.6%）**是这种描述，涉及 1463 位作者。
 
 现在由 `is_known()` 兜住（2026-11-07 修）：
@@ -526,27 +531,60 @@ workKindOf(w)    // 按动图段数归类：1 段 → live_single，≥2 段 →
 
 实测（2026-11-07）：构造用例 5 条全过；真实库 27,042 组「同作者同日多条」里模糊命中 261 对，逐条核对**全部是同一作品的描述变体，真实误判 0**。
 
-#### 下载时怎么判断「这一项是图还是视频」（2026-11-08 踩过）
+#### 下载时怎么判断「这一项是图还是视频、存成什么后缀」（2026-11-08 踩过两次）
 
-**唯一判据：这一项有没有 `video.play_addr`，跟 `aweme_type` 无关。**
+**判据一：这一项有没有 `video.play_addr`，跟 `aweme_type` 无关。**
 
 抖音图文作品（`aweme_type=68`）的 `images[]` 里，**每一项都可能是实况/动图**：那一项自带
-`video.play_addr`（`live_photo_type` / `clip_type`），而它的 `url_list` 只是**封面帧**。
-只取 `url_list` 会得到一张静态图 —— 界面上就是「第一条是图、第二条还是图」，怎么点都播不出来。
+`video.play_addr`（`live_photo_type` / `clip_type`：2=静图、4=会动的那一项），而它的 `url_list`
+只是**封面帧**。只取 `url_list` 会得到一张静态图 —— 界面上就是「第一条是图、第二条还是图」，
+怎么点都播不出来。
 
 ```python
-live = pick_best_video((img or {}).get("video") or {})   # 有值 → 下 _N.mp4
+live = pick_best_video((img or {}).get("video") or {})   # 有值 → 下 _N.mp4（实况 / 动图都走这条）
 urls = pick_url((img or {}).get("url_list"))             # 没值 → 下 _N.jpeg/.webp
 ```
 
 一处例外，别搞混：图文作品的**顶层** `aweme.video` 也有 `play_addr`（抖音把整组图拼成的那条
 轮播视频），那不是要下的东西 —— 只认 `images[i].video`。
 
-命名照旧 `_1/_2…`，所以一个「1 静图 + 1 实况」的作品落地就是 `_1.webp` + `_2.mp4`，
+**判据二：后缀由服务器回的 `Content-Type` 定，不按 URL 猜**（`save_item()`，对齐 DouK 5.8 的
+`_extract_content`）。抖音图片 URL 里没有可信后缀，同一个地址可能回 `image/webp` 也可能回
+`image/jpeg`；按 URL 猜会把 webp 存成 `.jpeg`。
+
+**判据三（2026-11-08 新增）：`url_list` 取**最后一个**。**
+抖音的 `url_list` 是按清晰度**升序**排的，实测同一张图：
+
+| 位置 | 内容 | 大小 | 尺寸 |
+|---|---|---|---|
+| `url_list[0]` / `[1]` | webp 缩略预览（两个镜像） | 9.2 KB | 1320×258（糊） |
+| `url_list[-1]` | jpeg 原图 | 19.8 KB | 正常 |
+
+DouK 5.8 的 `IMAGE_INDEX = -1` / `VIDEO_INDEX = -1` 就是取最后一份。之前取 `[0]` 导致追更下出来的
+图全是 9 KB 的糊图（全库 77 个 `.webp` 都是这么来的），`pick_url()` 现在**倒序**返回。
+
+**动图（GIF / 动态 webp）单独处理，不能原样存 `.webp`。**
+`save_item()` 写完前 128 字节会嗅一下：`GIF8` 开头或 webp 里有 `ANIM` 块 = 动图，走
+`anim_to_mp4()` 转成 `_N.mp4` 再落地（Windows 照片、大部分播放器都不放动图 webp，看起来就是
+「又是张不动的图」）。转码两条路：
+
+1. `ffmpeg -i x.webp` 直接转 —— **动态 webp 不行**，ffmpeg 的 webp 解码器不支持多帧
+   （实测 8.1 报 `image data not found`），GIF 可以；
+2. 退回 Pillow 拆帧 → `image2pipe` 喂给 ffmpeg。每帧按自带 `duration` 折成 30 fps 的重复次数，
+   播放速度才不走样。本机 ffmpeg 是 LGPL 版没有 libx264，用 `libopenh264` 编 h264
+   （浏览器认；没有就退回默认 mpeg4，兼容性差些）。
+   两条都失败就原样留 `.webp` 并记日志 —— 内容不丢，只是不会动。
+
+命名照旧 `_1/_2…`，所以一个「1 静图 + 1 实况」的作品落地就是 `_1.jpeg` + `_2.mp4`，
 前端 `mediaItemsOf()` 按扩展名分 kind，`live_single/live_multi` 分支会自动当视频播。
 
-已经下错的用 `tools/backfill_live.py <uid> --repair` 修：它会比对接口与本地，把缺视频的作品
-整条移进回收站再重下（不留多余的封面图）。
+已经下错的用 `tools/backfill_live.py <uid> --repair` 修：它比对接口与本地，两种问题都报 ——
+
+* **缺视频**：接口说这一项有 video，本地只有图；
+* **低画质**：本地这一项是静态 `.webp`，且比接口最高画质那份小 15% 以上（真动图不算）。
+
+命中就整条移进回收站再用修好的下载器重下（不留多余的封面图）。2026-11-08 用它修了 11 条
+（其中一条 17 项的图文帖）。
 
 ---
 

@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261108c155">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261108c155">
-    <link rel="stylesheet" href="style.css?v=20261108c155">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c156">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c156">
+    <link rel="stylesheet" href="style.css?v=20261109c156">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -40,14 +40,14 @@
                 <kbd class="search-kbd" aria-hidden="true">/</kbd>
                 <button id="searchClear" class="search-clear hidden" title="清空搜索">×</button>
             </span>
-            <button id="searchBtn" title="搜索">🔍</button>
+            <button id="searchBtn" title="搜索"><i class="si" data-ico="search" aria-hidden="true"></i></button>
         </div>
         <div class="topbar-actions">
             <span class="stat" id="statInfo">加载中...</span>
-            <button id="rescanBtn" class="ghost-btn" title="重新扫描目录">🔄 重新扫描</button>
+            <button id="rescanBtn" class="ghost-btn" title="重新扫描目录"><i class="si" data-ico="refresh" aria-hidden="true"></i>重新扫描</button>
             <button id="annotateBtn" class="ghost-btn"
                     title="标注台：在页面上框一下、画个箭头，写清哪儿想改，存下来我照着改"
-                    onclick="window.open('/annotate.html','_blank')">✏️ 标注</button>
+                    onclick="window.open('/annotate.html','_blank')"><i class="si" data-ico="pen" aria-hidden="true"></i>标注</button>
         </div>
     </header>
 
@@ -58,21 +58,21 @@
             <div class="side-section">
                 <div class="side-title">功能</div>
                 <ul class="side-list" id="featureList">
-                    <li class="side-item" data-action="batchProfile" title="后台批量获取昵称/抖音号/简介；点开始后可以关掉面板继续浏览，跑完自动提示">🧰 批量获取资料 <span class="batch-prog hidden" id="batchProgress"></span> <span class="count zero" id="batchBadge">0</span></li>
-                    <li class="side-item" data-action="fetchFavorites" title="抓取抖音最近收藏/喜欢的作者，按黑名单/已下载/未下载分类，可一键加入黑名单">💗 获取最近收藏</li>
-                    <li class="side-item" data-action="exportAuthors" title="把作者信息导出成表格：等级、标签、状态等都可以先选好范围，预览后再导出">📤 导出作者信息</li>
-                    <li class="side-item" data-action="newDownloads" title="只看最近下载下来的文件：按作者分组、组内按作品发布时间排，每张卡片下面标作者和发布时间">🆕 新下载 <span class="count zero" id="newDlBadge">0</span></li>
-                    <li class="side-item" data-action="watch" title="追更：盯住一批重点作者，发现新作品就自动下载（名单可按热/温/冷/静档筛选）">📡 追更 <span class="count zero" id="watchBadge">0</span></li>
-                    <li class="side-item" data-action="files" title="改文件夹名（让文件夹跟着你标注的昵称走）、清理合并产生的重复文件">📁 文件管理</li>
-                    <li class="side-item" data-action="settings" title="设置：更新频率禁用状态、文件地址、缓存管理">⚙️ 设置</li>
+                    <li class="side-item" data-action="batchProfile" title="后台批量获取昵称/抖音号/简介；点开始后可以关掉面板继续浏览，跑完自动提示"><i class="si" data-ico="users" aria-hidden="true"></i><span class="si-t">批量获取资料</span><span class="batch-prog hidden" id="batchProgress"></span> <span class="count zero" id="batchBadge">0</span></li>
+                    <li class="side-item" data-action="fetchFavorites" title="抓取抖音最近收藏/喜欢的作者，按黑名单/已下载/未下载分类，可一键加入黑名单"><i class="si" data-ico="heart" aria-hidden="true"></i><span class="si-t">获取最近收藏</span></li>
+                    <li class="side-item" data-action="exportAuthors" title="把作者信息导出成表格：等级、标签、状态等都可以先选好范围，预览后再导出"><i class="si" data-ico="upload" aria-hidden="true"></i><span class="si-t">导出作者信息</span></li>
+                    <li class="side-item" data-action="newDownloads" title="只看最近下载下来的文件：按作者分组、组内按作品发布时间排，每张卡片下面标作者和发布时间"><i class="si" data-ico="download" aria-hidden="true"></i><span class="si-t">新下载</span> <span class="count zero" id="newDlBadge">0</span></li>
+                    <li class="side-item" data-action="watch" title="追更：盯住一批重点作者，发现新作品就自动下载（名单可按热/温/冷/静档筛选）"><i class="si" data-ico="radar" aria-hidden="true"></i><span class="si-t">追更</span> <span class="count zero" id="watchBadge">0</span></li>
+                    <li class="side-item" data-action="files" title="改文件夹名（让文件夹跟着你标注的昵称走）、清理合并产生的重复文件"><i class="si" data-ico="folder" aria-hidden="true"></i><span class="si-t">文件管理</span></li>
+                    <li class="side-item" data-action="settings" title="设置：更新频率禁用状态、文件地址、缓存管理"><i class="si" data-ico="settings" aria-hidden="true"></i><span class="si-t">设置</span></li>
                 </ul>
             </div>
             <div class="side-section">
                 <div class="side-title">分类</div>
                 <ul class="side-list" id="categoryList">
                     <li class="side-item active" data-category="all">全部作者</li>
-                    <li class="side-item" data-category="starred">⭐ 星标</li>
-                    <li class="side-item" data-view="alts" title="按大小号分组管理账号">🔗 大小号 <span class="count" id="altEntryCount">0</span></li>
+                    <li class="side-item" data-category="starred"><i class="si" data-ico="star" aria-hidden="true"></i><span class="si-t">星标</span></li>
+                    <li class="side-item" data-view="alts" title="按大小号分组管理账号"><i class="si" data-ico="link" aria-hidden="true"></i><span class="si-t">大小号</span> <span class="count" id="altEntryCount">0</span></li>
                     <li class="side-item status-item" data-status="私密账号" title="只显示被标记为「私密账号」的账号">私密账号 <span class="count" id="statusCount_私密账号">0</span></li>
                     <li class="side-item status-item" data-status="注销" title="只显示被标记为「注销」的账号">注销 <span class="count" id="statusCount_注销">0</span></li>
                     <li class="side-item status-item" data-status="禁言/封号" title="只显示被标记为「禁言/封号」的账号">禁言/封号 <span class="count" id="statusCount_禁言/封号">0</span></li>
@@ -80,7 +80,7 @@
                     <li class="side-item status-item" data-status="卖号" title="只显示被标记为「卖号」的账号">卖号 <span class="count" id="statusCount_卖号">0</span></li>
                     <li class="side-item status-item" data-status="不好看了" title="只显示被标记为「不好看了」的账号">不好看了 <span class="count" id="statusCount_不好看了">0</span></li>
                     <li class="side-item status-item" data-status="待修改" title="只显示被标记为「待修改」的账号">待修改 <span class="count" id="statusCount_待修改">0</span></li>
-                    <li class="side-item" data-view="blacklist" title="不下载的博主名单（可编辑、查看主页）">🚫 黑名单 <span class="count" id="blacklistCount">0</span></li>
+                    <li class="side-item" data-view="blacklist" title="不下载的博主名单（可编辑、查看主页）"><i class="si" data-ico="ban" aria-hidden="true"></i><span class="si-t">黑名单</span> <span class="count" id="blacklistCount">0</span></li>
                 </ul>
             </div>
             <div class="side-section">
@@ -244,7 +244,7 @@
                             <option value="level">作者等级</option>
                         </select>
                         <button class="btn" id="sortDirBtn" onclick="toggleSortDir()" title="切换正序 / 倒序">↑ 正序</button>
-                        <button class="btn hidden" id="exportBtn" onclick="exportSecUids()" title="把当前界面的作者（含所在大小号组）的 SEC_UID 导出成完整主页链接 txt">📤 导出 SECID</button>
+                        <button class="btn hidden" id="exportBtn" onclick="exportSecUids()" title="把当前界面的作者（含所在大小号组）的 SEC_UID 导出成完整主页链接 txt"><i class="si" data-ico="upload" aria-hidden="true"></i>导出 SECID</button>
                     </div>
                 </div>
                 <!-- 筛选结果的人话：放在筛选面板**外面**（用户 2026-11-05 要求），
@@ -271,7 +271,7 @@
                 <div class="view-header">
                     <h2>大小号 <span class="view-sub" id="altViewSub"></span></h2>
                     <div class="view-sort">
-                        <button class="btn" onclick="loadAltGroups()" title="重新读取分组（改过大小号后可用）">🔄 刷新</button>
+                        <button class="btn" onclick="loadAltGroups()" title="重新读取分组（改过大小号后可用）"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                     </div>
                 </div>
                 <div class="alt-folder-grid" id="altFolderGrid">
@@ -285,7 +285,7 @@
                     <h2>黑名单 <span class="view-sub" id="blacklistViewSub"></span></h2>
                     <div class="view-sort">
                         <button class="btn btn-primary" onclick="addBlacklistAccount()" title="手动添加一个不下载的博主">＋ 添加账号</button>
-                        <button class="btn" onclick="loadBlacklist()" title="重新读取黑名单">🔄 刷新</button>
+                        <button class="btn" onclick="loadBlacklist()" title="重新读取黑名单"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                     </div>
                 </div>
                 <div class="blacklist-wrap" id="blacklistBody">
@@ -298,7 +298,7 @@
                 <div class="view-header">
                     <h2>获取最近收藏 <span class="view-sub" id="favoritesViewSub"></span></h2>
                     <div class="view-sort">
-                        <button class="btn" onclick="clearFavoritesResult()" title="清空已获取的作者列表">🗑 清空</button>
+                        <button class="btn" onclick="clearFavoritesResult()" title="清空已获取的作者列表"><i class="si" data-ico="trash" aria-hidden="true"></i>清空</button>
                         <button class="btn btn-primary" id="favRunBtn" onclick="runFetchFavorites()">开始获取</button>
                     </div>
                 </div>
@@ -329,7 +329,7 @@
 
                         <!-- 待下载区：由浏览器插件推送过来（2026-11-01 从顶部整块挪进左栏，宽度跟着栏走） -->
                         <div class="export-panel queue-panel" id="queuePanel">
-                            <h3>📥 待下载区 <span class="export-panel-sub" id="queueSub">读取中…</span></h3>
+                            <h3><i class="si" data-ico="inbox" aria-hidden="true"></i> 待下载区 <span class="export-panel-sub" id="queueSub">读取中…</span></h3>
                             <div class="queue-body" id="queueBody"></div>
                             <div class="export-foot-row queue-foot">
                                 <button class="btn btn-mini" onclick="queueTogglePreview()" id="queuePreviewBtn"
@@ -455,7 +455,7 @@
                                 <span class="douk-note" id="exportDoukNote">不生成文件 · 写完直接开 DouK 就能下</span>
                                 <button class="btn btn-primary" onclick="confirmExport()">导出</button>
                                 <button class="btn btn-douk" onclick="confirmExportToDouk()"
-                                        title="不再生成文件：把选中的作者直接写进 DouK 的 Volume\settings.json（整份替换账号队列，旧文件先备份到 backup\）">⚡ 一键写入 DouK</button>
+                                        title="不再生成文件：把选中的作者直接写进 DouK 的 Volume\settings.json（整份替换账号队列，旧文件先备份到 backup\）"><i class="si" data-ico="bolt" aria-hidden="true"></i>一键写入 DouK</button>
                             </div>
                         </div>
                     </div>
@@ -478,14 +478,14 @@
                     <!-- 追更模式才显示：从「追更 → 累计追更下载」点进来时，这里替换掉时间范围条 -->
                     <div class="view-sort hidden" id="ndWatchBar">
                         <button class="btn" onclick="openNewDownloadsView()" title="回到「新下载」：全部作者、按时间范围看">← 全部下载</button>
-                        <button class="btn" onclick="refreshWatchDownloads()" title="重新读一遍追更的下载流水">🔄 刷新</button>
+                        <button class="btn" onclick="refreshWatchDownloads()" title="重新读一遍追更的下载流水"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                     </div>
                     <div class="view-sort nd-range" id="ndRangeBar">
                         <button class="btn on" data-range="today" onclick="ndPickRange('today')" title="只算今天（0 点以后）落盘的文件">今天</button>
                         <button class="btn" data-range="3d" onclick="ndPickRange('3d')" title="最近 72 小时">近 3 天</button>
                         <button class="btn" data-range="7d" onclick="ndPickRange('7d')" title="最近 7 天">近 7 天</button>
                         <button class="btn" data-range="30d" onclick="ndPickRange('30d')" title="最近 30 天">近 30 天</button>
-                        <button class="btn" onclick="refreshNewDownloads(true)" title="重新读一遍下载记录库">🔄 刷新</button>
+                        <button class="btn" onclick="refreshNewDownloads(true)" title="重新读一遍下载记录库"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                         <!-- 按作者筛选：和「📤 导出作者信息」那一栏完全同一套口径
                              （等级 / 标签 / 状态 / 更新频率 / 最后下载时间，每行自带 ＋/－ 组合开关），
                              筛选在服务端做，翻页取到的也都是筛完的结果 -->
@@ -570,7 +570,7 @@
                         <button class="btn btn-primary" id="wvStart" onclick="wvStart()"
                                 title="启动追更进程：按档位间隔挨个查主页，发现新作品就下">开始追更</button>
                         <button class="btn" id="wvStop" onclick="wvStop()" title="停止追更（已经下载的文件不受影响）">停止</button>
-                        <button class="btn" onclick="wvRefresh()" title="立刻重读一遍名单和运行状态">🔄 刷新</button>
+                        <button class="btn" onclick="wvRefresh()" title="立刻重读一遍名单和运行状态"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                     </div>
                 </div>
                 <div class="wv-body">
@@ -729,7 +729,7 @@
                 <div class="view-header">
                     <h2>文件管理 <span class="view-sub" id="filesViewSub"></span></h2>
                     <div class="view-sort">
-                        <button class="btn" onclick="refreshFilesView()" title="重新读一遍磁盘状态">🔄 刷新</button>
+                        <button class="btn" onclick="refreshFilesView()" title="重新读一遍磁盘状态"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                     </div>
                 </div>
                 <div class="page-opts files-body" id="filesBody">读取中…</div>
@@ -742,12 +742,12 @@
                     <div class="view-sort">
                         <button class="btn btn-primary" id="batchRunBtn" onclick="runBatchProfiles()">开始获取</button>
                         <button class="btn hidden" id="batchStopBtn" onclick="stopBatchProfiles()">停止</button>
-                        <button class="btn" onclick="refreshBatchView()" title="重新读取后台任务状态">🔄 刷新</button>
+                        <button class="btn" onclick="refreshBatchView()" title="重新读取后台任务状态"><i class="si" data-ico="refresh" aria-hidden="true"></i>刷新</button>
                         <button class="btn" id="countBtn" onclick="startCountRefresh()"
-                                title="慢速读取抖音上的当前作品数（约 1.6 秒一个，可随时停）">📈 数作品</button>
+                                title="慢速读取抖音上的当前作品数（约 1.6 秒一个，可随时停）"><i class="si" data-ico="chart" aria-hidden="true"></i>数作品</button>
                         <button class="btn hidden" id="countStopBtn" onclick="stopCountRefresh()">停止数作品</button>
                         <button class="btn" id="latestBtn" onclick="startLatestRefresh()"
-                                title="联网查「抖音最新作品发布时间」（登录态签名接口，约 3.5 秒一个、每 25 个停 30 秒，单轮最多 100 个，7 天内查过的跳过）">🕗 查发布时间</button>
+                                title="联网查「抖音最新作品发布时间」（登录态签名接口，约 3.5 秒一个、每 25 个停 30 秒，单轮最多 100 个，7 天内查过的跳过）"><i class="si" data-ico="clock" aria-hidden="true"></i>查发布时间</button>
                         <button class="btn hidden" id="latestStopBtn" onclick="stopLatestRefresh()">停止查时间</button>
                     </div>
                 </div>
@@ -837,12 +837,12 @@
                             <span class="detail-bar-title" id="detailBarTitle"></span>
                             <div class="sel-actions hidden" id="selActions">
                                 <span class="sel-count" id="selCount">已选 0 个</span>
-                                <button class="btn sel-date" onclick="toggleDateBar()" title="按发布日期区间批量选作品（比一个个点快）">📅 时间段</button>
+                                <button class="btn sel-date" onclick="toggleDateBar()" title="按发布日期区间批量选作品（比一个个点快）"><i class="si" data-ico="calendar" aria-hidden="true"></i>时间段</button>
                                 <button class="btn sel-del" onclick="deleteSelectedWorks()" title="把选中的作品移入回收站（文件搬到 browser\recycle-bin，随时可以恢复）">移入回收站</button>
                                 <button class="btn" onclick="exitWorkSelect()">取消</button>
                             </div>
                             <button class="btn sel-btn" id="workSelBtn" onclick="enterWorkSelect()"
-                                    title="点一下进入多选，勾选不想要的作品后可以移入回收站">🗑</button>
+                                    title="点一下进入多选，勾选不想要的作品后可以移入回收站"><i class="si" data-ico="trash" aria-hidden="true"></i></button>
                             <button class="btn bar-top-btn" onclick="scrollToTop()" title="回到顶部">↑ 顶部</button>
                         </div>
                         <!-- ② 按时间段选作品：多选模式下点「📅 时间段」才展开，
@@ -910,7 +910,7 @@
             </div>
             <div class="alt-picker-tools">
                 <button class="btn btn-mini" onclick="detachCurrentAlt()" title="解除当前账号和它所在组里其他所有账号的关联">解除本号全部关联</button>
-                <button class="btn btn-mini" onclick="createAuthorPrompt()" title="粘贴一个新作者的主页链接（SEC-UID），自动查 UID、建档并和当前账号关联">➕ 新建作者</button>
+                <button class="btn btn-mini" onclick="createAuthorPrompt()" title="粘贴一个新作者的主页链接（SEC-UID），自动查 UID、建档并和当前账号关联"><i class="si" data-ico="plus" aria-hidden="true"></i>新建作者</button>
             </div>
             <input class="alt-picker-input" id="altPickerInput"
                    placeholder="搜备注 / 昵称 / 抖音号 / UID / sec_uid / 简介，也可以直接粘贴 UID 回车"
@@ -963,6 +963,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261108c155"></script>
+    <script src="app.js?v=20261109c156"></script>
 </body>
 </html>

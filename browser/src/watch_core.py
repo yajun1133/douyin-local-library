@@ -1642,6 +1642,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
     # 真正跑的时候就被永久跳过 —— 这是会丢作品的严重问题，不是小事。
     def _save():
         if not dry:
+            # 顺着刷一下心跳：一轮扫描可能跑十几分钟（翻页 + 下载），
+            # 只在循环开头刷的话，网页会误报「没在跑」（阈值 180 秒）。
+            state["heartbeat"] = time.time()
             save_state(state)
 
     def _sync_quota():

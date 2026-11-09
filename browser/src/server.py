@@ -3411,7 +3411,10 @@ def safe_media_path(rel):
 # ===========================================================================
 
 WATCH_PID_FILE = os.path.join(paths.DATA_DIR, "watch.pid")
-WATCH_HEARTBEAT_LIMIT = 180     # 秒：超过这么久没心跳就算没在跑
+# 秒：超过这么久没心跳就算没在跑。
+# 2026-11-09 从 180 提到 300：单个作者的下载偶尔就要几分钟（几十 MB 的视频 + 重试），
+# 阈值太紧会让网页在正常工作时显示「停」。（scan_round 现在每处理完一位作者也会刷心跳）
+WATCH_HEARTBEAT_LIMIT = 300
 
 
 def _watch_pid():

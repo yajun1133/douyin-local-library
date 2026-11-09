@@ -268,8 +268,79 @@ def beautify_desc(s, length=64):
 
 
 def name_desc(desc, desc_len=64):
-    """作品名里的「描述段」：DouK 口径（超长头尾省略 + 洗掉非法字符）。"""
+    """作品名里的「描述段」：DouK 口径（超长头尾省略 + 洗掉非法字符）。
+
+    ⚠️ 2026-11-09 起**不再用它拼文件名**（DouK 是拿「日期-昵称-描述」整串去清洗
+    和截断的，见 douk_detail_name）。这里保留是因为判重 key 还按这个口径算，
+    库里大量老文件名也是这个形状。
+    """
     return clean_part(beautify_desc(desc or "", desc_len))
+
+
+# ---------------------------------------------------------------------------
+# DouK 口径的文件名（2026-11-09）
+#
+# 为什么要一字不差地复刻：DouK 判断「这条下过没」除了看 download_data 表，
+# 还会看**目标文件在不在**。追更下的名字只要跟 DouK 生成的不一样，DouK 就会
+# 当成新作品再下一份 —— 用户就是这么看到重复的。
+#
+# 规则全部来自 DouK 5.8 的 pyc（已反汇编核对，并用它自己的代码跑过对照）：
+#   generate_detail_name (lib/src/downloader/download.pyc)
+#     = beautify_string(filter_name(split.join([data[f] for f in name_format]), data['id']),
+#                       length=name_length)
+#   filter_name (lib/src/tools/cleaner.pyc)
+#     = ':' → '.'  →  删非法字符  →  删表情  →  连续空格压成一个  →  strip()  →  strip('.')
+#       清完为空就用作品 ID
+#   beautify_string (lib/src/tools/truncate.pyc)：按显示宽度（CJK 算 2）超过 length
+#     才截断，取「头 length//2 + '...' + 尾 length//2」
+# 配置默认值（lib/src/config/settings.pyc）：name_length=128、split='-'、
+# name_format='create_time type nickname desc'，用户实际配的是
+# 'create_time nickname desc'（没有 type 段）。
+# ---------------------------------------------------------------------------
+DOUK_NAME_LENGTH = 128
+DOUK_NAME_SPLIT = "-"
+
+# 非法字符是**直接删掉**，不是换成下划线（DouK 的 rule 里每个值都是空串）。
+# 控制字符整段一起删（含 \t \n \r）—— 它们要是留到后面被 \s+ 压成空格，
+# 名字就和 DouK 不一样了（DouK 是删掉，`a\tb` 得到 `ab` 而不是 `a b`）。
+_ILLEGAL_NAME_CHARS = re.compile(r'[/\\|<>"?*\x00-\x1f\x7f]')
+
+try:                      # DouK 用的是 emoji 库的 replace_emoji(默认替换成空串)
+    import emoji as _emoji_lib
+except Exception:         # 3.13 那边没装；退回自己的正则，覆盖 99% 以上
+    _emoji_lib = None
+
+
+def drop_emoji(text):
+    """删掉表情符号。优先用 emoji 库（和 DouK 同一个库，结果一致）。"""
+    s = str(text or "")
+    if _emoji_lib is not None:
+        try:
+            return _emoji_lib.replace_emoji(s, "")
+        except Exception:
+            pass
+    return DECO_RE.sub("", s)
+
+
+def douk_filter_name(text, default=""):
+    """复刻 DouK 的 Cleaner.filter_name。顺序不能改，改一步名字就不一样。"""
+    t = str(text or "").replace(":", ".")        # ① 冒号换成点
+    t = _ILLEGAL_NAME_CHARS.sub("", t)           # ② 非法字符直接删
+    t = drop_emoji(t)                            # ③ 表情直接删
+    t = re.sub(r"\s+", " ", t).strip()           # ④ 空白归一 + 去首尾空白
+    t = t.strip(".")                             # ⑤ 再去首尾的点
+    return t or str(default or "")               # ⑥ 空了才拿作品 ID 兜底
+
+
+def douk_detail_name(date, nickname, desc, aid="", length=DOUK_NAME_LENGTH):
+    """按 DouK 的规则拼出作品文件名（不含扩展名、不含序号）。
+
+    注意是**整串** `日期-昵称-描述` 一起清洗、一起按 128 宽截断，
+    不是分段处理 —— 分段和整串截断在长描述上会得到完全不同的名字。
+    """
+    joined = DOUK_NAME_SPLIT.join([str(date or ""), str(nickname or ""), str(desc or "")])
+    return beautify_desc(douk_filter_name(joined, aid), length)
+
 
 
 def key_of_desc(desc, desc_len=64):
@@ -633,6 +704,40 @@ def douk_id_set(ttl=60):
         _DOUK_IDS_CACHE["ts"] = now
         _DOUK_IDS_CACHE["ids"] = ids
     return ids
+
+
+def douk_mark_downloaded(aid):
+    """把作品 ID 记进 DouK 的下载记录表（download_data.ID 是 TEXT 主键）。
+
+    为什么必须做：DouK 判重是两条 —— ① ID 在 download_data 里；② 目标文件存在。
+    追更下的文件天然不会进这张表，于是只剩「文件名」这一条依据；而文件名在
+    **作者改过昵称或改过文案**之后必然对不上（库里 08蓉 的老文件还叫
+    `08蓉（上学版）`，现在昵称是 `08蓉`），DouK 就会把同一件作品再下一份。
+    写成 ID 以后，DouK 认的是作品本身，跟名字无关。
+
+    失败不抛错：DouK 可能正在跑、库可能被独占，这时退回文件名校验即可，
+    不能因为记一笔账就让整条下载流程失败。
+    """
+    aid = str(aid or "").strip()
+    if not aid:
+        return False
+    try:
+        import sqlite3
+        if not os.path.exists(paths.DOWNLOADER_DB):
+            return False
+        con = sqlite3.connect(paths.DOWNLOADER_DB, timeout=10)
+        try:
+            con.execute("INSERT OR IGNORE INTO download_data(ID) VALUES (?)", (aid,))
+            con.commit()
+        finally:
+            con.close()
+        # 让这一轮的判重缓存立刻看到新 ID
+        _DOUK_IDS_CACHE["ids"].add(aid)
+        return True
+    except Exception as e:
+        log("· 写入 DouK 下载记录失败（不影响下载，只是 DouK 那边少一条判重依据）：%s"
+            % str(e)[:100])
+        return False
 
 
 def parse_desc_from_name(name):
@@ -1280,20 +1385,24 @@ def aweme_kind(aweme):
     return "video"
 
 
-def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
+def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
     """下一条作品到 author_dir。返回 (文件数, 字节数, 错误)。
 
     out：传一个 list 进来，会把真落盘的文件绝对路径追加进去（给「下载明细」用）。
     不传就完全不影响老行为 —— backfill_*.py 那边还是三个返回值。
+
+    desc_len：**已废弃，保留只为兼容位置调用**。文件名现在按 DouK 的
+    `name_length=128` 对整串截断（见 douk_detail_name），不再单独截描述。
     """
     ct = int(aweme.get("create_time") or 0)
     if not ct:
         return 0, 0, "没有 create_time"
     date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
-    # 名字里的描述段按 DouK 口径生成（超长取头尾 + `...`），跟库里老文件名同形，
-    # 不然同一件作品会出现两种名字 → 判重对不上 → 重复下载（2026-11-08 踩过）
-    desc = name_desc(aweme.get("desc") or "", desc_len) or str(aweme.get("aweme_id") or "")
-    nick = clean_part(nickname) or "未知作者"
+    # 文件名必须和 DouK 生成的一字不差，否则 DouK 下次跑这个作者时，
+    # 「目标文件已存在」这一关过不去，会把同一件作品再下一份。
+    # DouK 的做法是：`日期-昵称-描述` 拼成一串 → 清洗 → 整串截断到 128 宽。
+    name = douk_detail_name(date, nickname, aweme.get("desc") or "",
+                            aweme.get("aweme_id") or "")
     referer = "https://www.douyin.com/video/%s" % (aweme.get("aweme_id") or "")
 
     os.makedirs(author_dir, exist_ok=True)
@@ -1310,7 +1419,7 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
             # （DouK 5.8 也是这么分的：任意一项有 video，整条作品就按「实况」走。）
             live = pick_best_video(img.get("video") or {})
             if live:
-                base = os.path.join(author_dir, "%s-%s-%s_%d" % (date, nick, desc, i))
+                base = os.path.join(author_dir, "%s_%d" % (name, i))
                 if existing_of(base, (VIDEO_EXT,)):
                     continue
                 n, ext, err = save_item(dy.cr, live, base, referer)
@@ -1325,7 +1434,7 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
             urls = pick_url(img.get("url_list"))
             if not urls:
                 continue
-            base = os.path.join(author_dir, "%s-%s-%s_%d" % (date, nick, desc, i))
+            base = os.path.join(author_dir, "%s_%d" % (name, i))
             # 静态图：后缀交给真实 Content-Type 定（可能存成 webp/gif；
             # 真拿到动图会转 mp4，见 save_item）
             if existing_of(base, IMG_EXTS + (VIDEO_EXT,)):
@@ -1343,8 +1452,10 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
         urls = pick_best_video(video)
         if not urls:
             return 0, 0, "没有可用的视频地址"
-        base = os.path.join(author_dir, "%s-%s-%s" % (date, nick, desc))
+        base = os.path.join(author_dir, name)
         if existing_of(base, (VIDEO_EXT,)):
+            # 已经在了：把 ID 补进 DouK 的记录表，让 DouK 以后也认这一条
+            douk_mark_downloaded(aweme.get("aweme_id"))
             return 0, 0, ""          # 已经在了，不算失败
         n, ext, err = save_item(dy.cr, urls, base, referer)
         if n:
@@ -1355,7 +1466,13 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=64, out=None):
             errs.append(err)
 
     if files == 0 and not errs:
+        # 每个文件都已经存在（作品本来就在库里）→ 同样补记 ID
+        douk_mark_downloaded(aweme.get("aweme_id"))
         return 0, 0, ""
+    if files:
+        # 下成功了：记进 DouK 的记录表，以后 DouK 跑这个作者会按 ID 跳过，
+        # 不必依赖文件名对得上（作者改昵称/改文案时名字必然不同）
+        douk_mark_downloaded(aweme.get("aweme_id"))
     return files, size, "; ".join(errs[:2])
 
 

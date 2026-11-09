@@ -3616,9 +3616,25 @@ def _watch_downloads():
     }
 
 
+_WATCH_START_LOCK = threading.Lock()
+
+
 def _watch_start():
+    # 串行化：服务启动 6 秒后会自动续跑，用户这时也可能正点「开始追更」。
+    # 两个请求同时进这里，都会因为「心跳还没写出来」判定成没在跑，
+    # 于是各拉一个常驻进程 —— 请求频率直接翻倍，最容易撞限流。
+    # 2026-11-09 实测撞出过两个 watch.py。
+    with _WATCH_START_LOCK:
+        return _watch_start_locked()
+
+
+def _watch_start_locked():
     st = _watch_status()
     if st.get("running"):
+        return {"ok": False, "error": "追更已经在跑了"}
+    # 心跳有延迟（进程刚起来还没写），再看一眼 pid 文件里的进程在不在
+    pid = _watch_pid()
+    if pid and _watch_alive(pid):
         return {"ok": False, "error": "追更已经在跑了"}
     if not st.get("python312_ok"):
         return {"ok": False,

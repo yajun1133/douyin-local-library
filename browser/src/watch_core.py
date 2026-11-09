@@ -214,6 +214,24 @@ def norm_desc(s):
     return re.sub(r"[\s_]+", "", str(s or "")).lower()
 
 
+# 描述里只是「装饰」的字符：表情、符号、变体选择符、零宽连接符、©®™。
+# 抖音上改文案加/删一个表情太常见了，而**话题 # 和提及 @ 不在此列**（那是内容的一部分）。
+DECO_RE = re.compile(
+    "[\U0001F000-\U0001FAFF"      # 表情 / 交通 / 补充符号
+    "\u2600-\u27BF"               # 杂项符号、装饰（☀✂✅ 之类）
+    "\u2B00-\u2BFF"               # 箭头、星形
+    "\uFE00-\uFE0F"               # 变体选择符（️）
+    "\u200D\u20E3"                # 零宽连接符、键帽
+    "\u00A9\u00AE\u2122"          # © ® ™
+    "]+"
+)
+
+
+def deco_strip(s):
+    """剥掉描述里的装饰性表情/符号，只留文字与话题标记。判重用，不用于文件名。"""
+    return DECO_RE.sub("", str(s or ""))
+
+
 def _char_width(ch):
     """DouK 算长度时把中日韩字符当 2 个字宽（跟它 beautify_string 一致）。"""
     return 2 if "CJK" in unicodedata.name(ch, "") else 1
@@ -347,6 +365,18 @@ def is_known(local, date_idx, date, desc, desc_len=64):
     if sp:
         for k in same:
             if _ell_hit(k, sp[0], sp[1]):
+                return True
+    # 方向三：两边只差装饰性表情（2026-11-09 的「🥲#卡点舞」）
+    #
+    #   DouK 11-07 下的文件名是 `-糊涂思^-#卡点舞.mp4`，接口现在给的描述是
+    #   `🥲#卡点舞` → 名字不同 → 判成新作品，又下了一份 1.39MB 的。
+    #   抖音上给旧作品改文案、加个表情太常见，文件名对不上不代表作品不一样。
+    #   剥掉表情后完全相同才算同一条；剥完太短的（<4 字）不参与，
+    #   否则同一天两三条 `#卡点舞` / `#变装` 会被认成一条，那是漏下，比重复更糟。
+    bare = deco_strip(bkey)
+    if len(bare) >= 4 and bare != bkey:
+        for k in same:
+            if deco_strip(k) == bare:
                 return True
     return False
 
@@ -508,6 +538,36 @@ def download_count():
 # 本地库索引：判断「这条作品是不是早就有了」
 # ---------------------------------------------------------------------------
 
+def strip_nick_prefix(desc, nick):
+    """把混进描述里的作者昵称剥掉。
+
+    文件名是 `日期-昵称-描述.ext`，昵称自己带 `-` 的时候（比如 `-糊涂思^`）
+    就变成 `2026-11-07--糊涂思^-#卡点舞.mp4`，按 `-` 切分会把昵称的一部分
+    切进描述里 —— 索引里那条记成 `糊涂思^-#卡点舞`，而接口给的是 `#卡点舞`，
+    两边永远对不上 → 同一件作品被判成新作品，又下一份。
+    2026-11-09 的「🥲#卡点舞」重复就是这么来的（emoji 只是表层，错位才是根）。
+
+    **只在剥完紧跟一个分隔符时才认定是错位**：`糊涂思^-#卡点舞` → `#卡点舞`（剥）。
+    而 `冬日雪#宅男` 这种「描述本身就以昵称开头」的，剥完直接是 `#宅男`、没有
+    分隔符 → 不剥，否则会把本来能对上的作品判成新作品（漏判比重复更糟）。
+    """
+    d = str(desc or "")
+    n = str(nick or "").strip()
+    if not d or not n:
+        return d
+    for cand in (n, n.lstrip("-—_–")):
+        cand = cand.strip()
+        if len(cand) < 2:
+            continue
+        if d.startswith(cand):
+            rest = d[len(cand):]
+            # 只认横线类分隔符。空格不行：`冬日雪 真好看`（描述本身以昵称开头、
+            # 后面接空格）会被误剥成 `真好看`，接口给的是完整句 → 反而漏判。
+            if rest[:1] in ("-", "—", "–"):
+                return rest.lstrip("-—_– ")
+    return d
+
+
 def load_library_index():
     """返回 {uid: {(date, norm_desc)}, {uid: folder}}。
 
@@ -519,6 +579,7 @@ def load_library_index():
     for uid, a in (d.get("accounts") or {}).items():
         uid = str(uid)
         folders[uid] = a.get("folder") or ""
+        nick = a.get("nickname") or ""
         s = set()
         for w in (a.get("works") or []):
             date = str(w.get("date") or "")
@@ -527,7 +588,7 @@ def load_library_index():
                 # scanner 有些老记录把 desc 存在文件名里，用 files 兜底
                 rel = ((w.get("files") or [{}])[0] or {}).get("rel") or ""
                 desc = parse_desc_from_name(rel.split("/")[-1])
-            s.add((date, work_key(desc)))
+            s.add((date, work_key(strip_nick_prefix(desc, nick))))
         idx[uid] = s
     return idx, folders
 
@@ -552,6 +613,25 @@ def douk_downloaded_ids():
             con.close()
     except Exception as e:
         log("· 读 DouK 下载记录失败（不影响下载，只是判重少一层）：%s" % e)
+    return ids
+
+
+_DOUK_IDS_CACHE = {"ts": 0.0, "ids": set()}
+
+
+def douk_id_set(ttl=60):
+    """DouK 下载记录（aweme_id 集合），60 秒内复用。
+
+    追更每轮都会看一遍这个表：DouK 是按 **ID** 判重的，不受文件名影响，
+    比我们按描述比名字可靠得多。读失败返回空集，此时退回纯文件名判重。
+    """
+    now = time.time()
+    if _DOUK_IDS_CACHE["ids"] and now - _DOUK_IDS_CACHE["ts"] <= ttl:
+        return _DOUK_IDS_CACHE["ids"]
+    ids = douk_downloaded_ids()
+    if ids:
+        _DOUK_IDS_CACHE["ts"] = now
+        _DOUK_IDS_CACHE["ids"] = ids
     return ids
 
 
@@ -1404,9 +1484,16 @@ def _pace(cfg):
     return base * (1 + float(cfg.get("gap_jitter") or 0.3) * random.random())
 
 
-def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None):
-    """扫一轮。返回统计 dict。"""
+def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
+               douk_ids=None):
+    """扫一轮。返回统计 dict。
+
+    douk_ids：DouK 下载记录里的 aweme_id 集合，传 None 就自己读一次（带 60 秒缓存）。
+    这一层比文件名可靠：DouK 按 ID 判重，追更以前只看描述，描述被改过就会重下。
+    """
     cfg = watch["settings"]
+    if douk_ids is None:
+        douk_ids = douk_id_set()
     stats = {"authors": 0, "checked": 0, "new": 0, "downloaded": 0,
              "bytes": 0, "failed": 0, "skipped": 0, "errors": [],
              "paused": "", "requests": 0, "would": 0, "empty": 0, "net": 0}
@@ -1655,6 +1742,15 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
             aid = str(a.get("aweme_id") or "")
             ct2 = int(a.get("create_time") or 0)
             if not aid or aid in seen:
+                continue
+            # DouK 已经下过这一条：不管它当时存的文件名是什么、现在描述改没改，
+            # 都不再下一份。记录里有而磁盘上找不到，说明是用户自己删的 ——
+            # 按「删了就别再补回来」处理（和 tools/backfill_author.py 同一口径）。
+            # 2026-11-09 的「🥲#卡点舞」就是这么重复的：DouK 那份叫 `#卡点舞`，
+            # 接口把描述改成了带表情的版本，只比文件名永远对不上。
+            if douk_ids and aid in douk_ids:
+                seen.add(aid)
+                stats["skipped"] += 1
                 continue
             if not bulk and ct2 <= last_ts:
                 continue

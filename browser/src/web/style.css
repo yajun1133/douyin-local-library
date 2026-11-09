@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261109c157';
+    content: 'v20261109c158';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -7178,3 +7178,118 @@ details > summary:focus-visible {
     .wv-main .wv-tbl th:nth-child(4),
     .wv-main .wv-tbl td:nth-child(4) { display: none; }
 }
+
+/* =====================================================================
+   追更标记（2026-11-09）
+   ---------------------------------------------------------------------
+   ① 网格卡：左上角一枚「追更」角标，压在封面之上；
+   ② 「每作者一行」：作者名前一枚同色小徽章。
+   数据来源：后端 /api/authors 每条自带 watch 布尔（读 data/watch.json 名单，按 uid 认人）。
+   ===================================================================== */
+.author-card { position: relative; }
+.watch-badge {
+    position: absolute;
+    left: 8px;
+    top: 8px;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: .02em;
+    color: #fff;
+    background: var(--primary);
+    box-shadow: 0 2px 6px rgba(254, 44, 85, .38);
+    pointer-events: none;
+}
+.watch-chip {
+    display: inline-block;
+    margin-right: 5px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    color: #fff;
+    background: var(--primary);
+    vertical-align: 1px;
+}
+
+/* =====================================================================
+   追更页布局重排（2026-11-09）
+   ---------------------------------------------------------------------
+   只动容器位置与留白，不改配色/字号体系：
+   · KPI 六张 → 三张，请求用量收进「节奏与安全」；
+   · 「加作者」从通栏大面板收成名单标题栏的按钮，点开才展开输入条；
+   · 账号池挪到右栏、默认折叠；
+   · 左右两栏间距 14 → 18，右栏内部 14 → 12（两块更贴，跨栏更透气）。
+   ===================================================================== */
+.wv-split { gap: 18px; }
+.wv-side { gap: 12px; }
+.wv-cards { gap: 12px; }
+
+/* 名单标题栏里的「＋ 加作者」按钮：展开时保持按下感 */
+#wvAddBtn.active { border-color: var(--primary); color: var(--primary); background: #fff0f3; }
+
+/* 展开后的输入条：贴着名单标题下面，浅底和筛选条同一种处理 */
+.wv-addbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 16px;
+    background: #fbfcfd;
+    border-bottom: 1px solid var(--border);
+}
+.wv-addbar .wv-grow { flex: 1 1 auto; min-width: 0; }
+
+/* 请求用量行（原「今日已用请求」「按当前档位估算」两张卡） */
+.wv-usage {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin: 10px 0 12px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: #f8fafc;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+.wv-usage-k { color: var(--text-muted); }
+.wv-usage-sep { color: #cbd5e1; }
+.wv-usage-v { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.wv-usage.over .wv-usage-v { color: #dc2626; }
+
+/* 账号池折叠：收起时只留一行标题，展开才铺表格 */
+.wv-acc-det > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-top: 1px solid var(--border);
+    list-style: none;
+}
+.wv-acc-det > summary::-webkit-details-marker { display: none; }
+.wv-acc-det > summary::before { content: "▸"; font-size: 11px; }
+.wv-acc-det[open] > summary::before { content: "▾"; }
+.wv-acc-det > summary:hover { color: var(--text); }
+/* 右栏只有 392px：号池表格窄，给一层横向滚动兜底，别顶出面板 */
+#wvAccBody { overflow-x: auto; }
+#wvAccBody .wv-tbl { font-size: 12px; }
+
+/* 修：.wv-addbar{display:flex} 写在 .hidden 后面，同权重把 hidden 顶掉了，
+   加作者输入条会一直露在外面。这里按元素自身组合提高优先级。 */
+.wv-addbar.hidden { display: none !important; }
+
+/* 账号池在右栏（392px）里：说明文字太长会把「账号池」三个字挤成竖排，
+   收进 title 提示，头部只留标题 + 两颗按钮。 */
+.wv-hd-acc { flex-wrap: wrap; row-gap: 6px; }
+.wv-hd-acc .hint { display: none; }

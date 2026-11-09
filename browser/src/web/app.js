@@ -91,7 +91,7 @@ const state = {
     // latestFrom / latestTo：自定义区间的起止日期（YYYY-MM-DD，可只填一端）
     // matchMap：每行左侧的圆钮 —— or=＋包含（默认）/ not=－排除（2026-11-05 用户口径）
     filters: {
-        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
         level: [], cover: [], status: [], freq: [],
         matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
     },
@@ -322,6 +322,8 @@ async function loadAuthors(reset) {
     // 筛选面板：sec_uid 有/无、星标 是/否、封面（多选）
     if (state.filters.sec_uid) params.set('sec_uid', state.filters.sec_uid);
     if (state.filters.starred) params.set('starred', state.filters.starred);
+    // 追更：yes / no（名单以 data/watch.json 为准，后端按 uid 判定）
+    if (state.filters.watch) params.set('watch', state.filters.watch);
     const covers = state.filters.cover || [];
     if (covers.length) params.set('cover', covers.join(','));
     // 最后更新时间：预设区间（最近 N 天）或自定义起止日期
@@ -557,7 +559,7 @@ function authorRowHtml(a) {
     <div class="author-row" data-uid="${escapeHtml(a.uid)}">
         <div class="ar-head" onclick="openAuthor('${onClickArg(a.uid)}')" title="点击进入作者详情页">
             <span class="ar-dot"></span>
-            <span class="ar-name">${a.starred ? '⭐' : ''}${nameHtml(a)}</span>
+            <span class="ar-name">${a.starred ? '⭐' : ''}${a.watch ? '<span class="watch-chip" title="在追更名单里">追更</span>' : ''}${nameHtml(a)}</span>
             <span class="ar-chips">${chips}</span>
             <span class="ar-side">${dlHtml}<span class="ar-cnt">${a.work_count} 个作品</span></span>
         </div>
@@ -897,8 +899,14 @@ function authorCardHtml(a) {
     const coverHtml = cover
         ? `<img class="author-cover cm-${state.coverMode}" src="${cover}" loading="lazy" alt="" onerror="coverBroken(this)">`
         : `<div class="author-cover placeholder cm-${state.coverMode}" style="display:flex;align-items:center;justify-content:center;font-size:32px">📱</div>`;
+    // 追更标记：左上角一枚小角标。判据是后端 /api/authors 逐条带的 watch 字段
+    // （直接来自 data/watch.json 名单，按 uid 认人），前端不用再单独请求一次名单。
+    const watchBadge = a.watch
+        ? `<span class="watch-badge" title="在追更名单里：这位作者发新作品会自动下载">追更</span>`
+        : '';
     return `
-    <div class="author-card" data-uid="${escapeHtml(a.uid)}" onclick="openAuthor('${onClickArg(a.uid)}')">
+    <div class="author-card${a.watch ? ' is-watch' : ''}" data-uid="${escapeHtml(a.uid)}" onclick="openAuthor('${onClickArg(a.uid)}')">
+        ${watchBadge}
         ${coverHtml}
         <div class="author-info">
             <div class="author-name">${star}${nameHtml(a)}</div>
@@ -4578,6 +4586,7 @@ function syncFilterPanelFromState() {
     };
     set('fSec', f.sec_uid || '');
     set('fStar', f.starred || '');
+    set('fWatch', f.watch || '');
     set('fLatest', f.latest || '');
     setMulti('fLevel', f.level);
     setMulti('fCover', f.cover);
@@ -4594,7 +4603,7 @@ function syncFilterPanelFromState() {
 // 从面板当前勾选读出一份 filters（不关闭面板）
 function readFilterPanel() {
     const f = {
-        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
         level: [], cover: [], status: [], freq: [],
         // 圆钮状态不是从勾选框读的，沿用当前这份（点圆钮时 already 改过了）
         matchMap: Object.assign({ level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
@@ -4613,6 +4622,7 @@ function readFilterPanel() {
     };
     f.sec_uid = val('fSec');
     f.starred = val('fStar');
+    f.watch = val('fWatch');
     f.latest = val('fLatest');
     f.level = valMulti('fLevel');
     f.cover = valMulti('fCover');
@@ -4711,6 +4721,9 @@ function authorSentence() {
     if (f.sec_uid === 'none') inc.push('没有 SEC_UID');
     if (f.starred === 'yes') inc.push('已星标');
     if (f.starred === 'no') inc.push('未星标');
+    // 追更：布尔三选，和星标一样直接并进包含段
+    if (f.watch === 'yes') inc.push('追更中');
+    if (f.watch === 'no') inc.push('不在追更');
 
     let s = inc.length ? inc.join(' 或 ') : '全部作者';
     if (exc.length) s += '，去掉 ' + exc.join('、');
@@ -4737,7 +4750,7 @@ function applyFilterPanel() {
 // 重置：恢复全部筛选为默认值（不限），并立即应用
 function resetFilterPanel() {
     state.filters = {
-        sec_uid: '', starred: '', latest: '', latestFrom: '', latestTo: '',
+        sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
         level: [], cover: [], status: [], freq: [],
         matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
     };
@@ -4751,7 +4764,7 @@ function resetFilterPanel() {
 // 筛选面板有生效条件时，筛选按钮上亮一个小圆点
 function updateFilterDot() {
     const f = state.filters || {};
-    const active = !!(f.sec_uid || f.starred || f.latest
+    const active = !!(f.sec_uid || f.starred || f.watch || f.latest
         || (f.level && f.level.length) || (f.cover && f.cover.length)
         || (f.status && f.status.length) || (f.freq && f.freq.length));
     const dot = document.getElementById('filterDot');
@@ -6791,13 +6804,13 @@ async function addFavoriteToBlacklist(btn) {
 
 // ===== 导出作者信息（左：选作者 / 右：DouK 参数 + 导出格式） =====
 const exportState = {
-    level: [], tag: [], status: [], freq: [], cover: [],
+    level: [], tag: [], status: [], freq: [], watch: [], cover: [],
     latest: '', latestFrom: '', latestTo: '',
     // 每行左侧的圆钮（2026-11-05 用户口径）：
     //   or  = ＋ 包含：这一行勾中的值属于「我要的」
     //   not = － 排除：这一行勾中的值属于「我要去掉的」
     // 全是 ＋ 就是纯并集；全都不勾 = 全部作品。
-    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', cover: 'or', latest: 'or' },
+    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', watch: 'or', cover: 'or', latest: 'or' },
     uids: null, previewed: false,
     stale: false,            // 预览之后又改了筛选 → 旧名单作废，但提示要留着
     // 2026-11-01：导出对象有两个来源 ——
@@ -7127,6 +7140,9 @@ async function openExportView() {
             [['__unset', '未设置']].concat(EXPORT_STATUS_LIST.map((s) => [s, s])), exportState.status],
         ['exportFreqRadios', 'expFreq', 'freq',
             [['__unset', '未设置'], ['day', 'day'], ['3天', '3天'], ['周', '周'], ['月', '月']], exportState.freq],
+        // 追更：布尔，勾「追更中」= 只要名单里的；勾「不追更」= 只要名单外的；两个都勾 = 全部
+        ['exportWatchRadios', 'expWatch', 'watch',
+            [['yes', '追更中'], ['no', '不追更']], exportState.watch],
         ['exportCoverRadios', 'expCover', 'cover',
             [['has', '有封面'], ['none', '无封面']], exportState.cover],
     ];
@@ -7150,7 +7166,7 @@ async function openExportView() {
             const t = e.target;
             if (!t) return;
             const n = t.name || '';
-            if (/^exp(Level|Tag|Status|Freq|Cover|Latest)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
+            if (/^exp(Level|Tag|Status|Freq|Watch|Cover|Latest)$/.test(n) || t.id === 'exportLatestFrom' || t.id === 'exportLatestTo') {
                 markExportDirty();
                 refreshExportSentence();
             }
@@ -7207,10 +7223,10 @@ function restoreExportUI() {
 // 「清空」：把选作者的条件、预览列表、已选名单一次性清掉（只有点它才清）
 function clearExportAll() {
     exportState.level = []; exportState.tag = []; exportState.status = []; exportState.freq = [];
-    exportState.cover = [];
+    exportState.watch = []; exportState.cover = [];
     exportState.latest = ''; exportState.latestFrom = ''; exportState.latestTo = '';
     // 每行的 ＋/－ 回到默认：全 ＋（包含）
-    exportState.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', cover: 'or', latest: 'or' };
+    exportState.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', watch: 'or', cover: 'or', latest: 'or' };
     exportState.uids = null; exportState.previewed = false; exportState.stale = false;
     exportState.source = 'filter'; exportState.secUids = [];
     exportPreviewHtml = '';
@@ -7271,7 +7287,8 @@ function toggleExportMatch(key) {
 
 // ===== 「① 选作者」的一行：勾选框 + 全选 + 一句人话描述（用户 2026-11-05 要求） =====
 const EXP_CHECK_STATE = {
-    expLevel: 'level', expTag: 'tag', expStatus: 'status', expFreq: 'freq', expCover: 'cover',
+    expLevel: 'level', expTag: 'tag', expStatus: 'status', expFreq: 'freq',
+    expWatch: 'watch', expCover: 'cover',
 };
 
 function expCheckHtml(name, value, label, checked) {
@@ -7300,13 +7317,15 @@ function exportRowAll(name) {
 }
 
 const EXP_ROW_LABEL = {
-    level: '等级', tag: '标签', status: '账号状态', freq: '更新频率',
+    level: '等级', tag: '标签', status: '账号状态', freq: '更新频率', watch: '追更',
     cover: '封面', latest: '最后下载时间',
 };
 
 function expValText(key, v) {
     if (v === '__unset') return '未设置';
     if (v === '__notag') return '没有标签';
+    if (v === 'yes' && key === 'watch') return '追更中';
+    if (v === 'no' && key === 'watch') return '不追更';
     if (key === 'cover') return v === 'has' ? '有封面' : '无封面';
     return v;
 }
@@ -7331,13 +7350,14 @@ function expRowText(key) {
     if (key === 'status') return '状态：' + vals;
     if (key === 'tag') return vals + '标签';
     if (key === 'freq') return '频率：' + vals;
+    if (key === 'watch') return '追更：' + vals;
     return vals;
 }
 
 // 拼成一句给用户看的话：「全部作品，去掉 纹身标签」/「等级是 夯，去掉 注销」
 function exportSentence() {
     const inc = [], exc = [];
-    ['level', 'tag', 'status', 'freq', 'cover', 'latest'].forEach((key) => {
+    ['level', 'tag', 'status', 'freq', 'watch', 'cover', 'latest'].forEach((key) => {
         const t = expRowText(key);
         if (!t) return;
         const isNot = (exportState.matchMap || {})[key] === 'not';
@@ -7397,6 +7417,8 @@ function exportFilterParams() {
     if (exportState.tag.length) params.set('tag', exportState.tag.join(','));
     if (exportState.status.length) params.set('status', exportState.status.join(','));
     if (exportState.freq.length) params.set('freq', exportState.freq.join(','));
+    // 追更：后端只认单值 yes/no；两个都勾（= 全部）或都没勾（= 不限）时不传
+    if (exportState.watch.length === 1) params.set('watch', exportState.watch[0]);
     if (exportState.cover && exportState.cover.length) params.set('cover', exportState.cover.join(','));
     // 每行自己的开关：match_x=not 表示这一行是「排除」；不传 = 包含（默认）
     Object.keys(exportState.matchMap || {}).forEach((k) => {
@@ -7920,13 +7942,14 @@ const newDlState = { range: 'today', data: null, loading: false, loadingMore: fa
 // 筛选放在服务端做（/api/new_downloads 复用 /api/authors 的判定函数 _build_attr_tests），
 // 所以翻页取到的也都是「筛完之后」的结果，不会翻着翻着冒出没勾的作者。
 const ndFilter = {
-    level: [], tag: [], status: [], freq: [], latest: '',
-    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' },
+    level: [], tag: [], status: [], freq: [], watch: [], latest: '',
+    matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', watch: 'or', latest: 'or' },
 };
 
 function ndFilterActive() {
     const f = ndFilter;
-    return !!(f.level.length || f.tag.length || f.status.length || f.freq.length || f.latest);
+    return !!(f.level.length || f.tag.length || f.status.length || f.freq.length
+        || f.watch.length || f.latest);
 }
 
 function updateNdFilterDot() {
@@ -7962,6 +7985,8 @@ function renderNdFilter() {
         .map(([v, t]) => ck('ndStatus', v, ndFilter.status, t)).join(''));
     box('ndFreqOpts', ['__unset', 'day', '3天', '周', '月']
         .map((v) => ck('ndFreq', v, ndFilter.freq, v === '__unset' ? '未设置' : v)).join(''));
+    box('ndWatchOpts', [['yes', '追更中'], ['no', '不追更']]
+        .map(([v, t]) => ck('ndWatch', v, ndFilter.watch, t)).join(''));
     box('ndLatestOpts', EXPORT_LATEST_LIST.filter(([v]) => v !== 'custom')
         .map(([v, label]) => '<label><input type="radio" name="ndLatest" value="' + v + '" ' +
             (v === (ndFilter.latest || '') ? 'checked' : '') + ' onchange="ndFilterChange()"> ' +
@@ -7989,6 +8014,7 @@ function ndFilterChange() {
     ndFilter.tag = pick('ndTag');
     ndFilter.status = pick('ndStatus');
     ndFilter.freq = pick('ndFreq');
+    ndFilter.watch = pick('ndWatch');
     const ll = document.querySelector('#ndFilterPanel input[name="ndLatest"]:checked');
     ndFilter.latest = ll ? ll.value : '';
     updateNdFilterDot();
@@ -8003,8 +8029,9 @@ function ndToggleMatch(key) {
 
 function ndResetFilter() {
     ndFilter.level = []; ndFilter.tag = []; ndFilter.status = []; ndFilter.freq = [];
+    ndFilter.watch = [];
     ndFilter.latest = '';
-    ndFilter.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', latest: 'or' };
+    ndFilter.matchMap = { level: 'or', tag: 'or', status: 'or', freq: 'or', watch: 'or', latest: 'or' };
     renderNdFilter();
     refreshNewDownloads(true);
 }
@@ -8016,6 +8043,8 @@ function ndFilterParams() {
     if (ndFilter.tag.length) p.set('tag', ndFilter.tag.join(','));
     if (ndFilter.status.length) p.set('status', ndFilter.status.join(','));
     if (ndFilter.freq.length) p.set('freq', ndFilter.freq.join(','));
+    // 追更：只勾「追更中」或只勾「不追更」才筛；两个都勾（= 全部）不传
+    if (ndFilter.watch.length === 1) p.set('watch', ndFilter.watch[0]);
     Object.keys(ndFilter.matchMap || {}).forEach((k) => {
         if (ndFilter.matchMap[k] === 'not') p.set('match_' + k, 'not');
     });
@@ -9854,7 +9883,6 @@ document.addEventListener('DOMContentLoaded', () => {
 // 'down' / 'off' 不是档位，是两个常用的查看口径（有下载 / 已停用）。
 const WV_FILTERS = [
     ['all', '全部', '名单里的全部作者'],
-    ['hot', '热档', '2 天内发过作品'],
     ['warm', '温档', '7 天内发过作品'],
     ['cold', '冷档', '30 天内发过作品'],
     ['idle', '静档', '30 天以上没动静'],
@@ -10035,6 +10063,9 @@ function wvRender() {
     const d = wvState.data;
     if (!d) return;
     const rowsAll = d.authors || [];
+    // 档位按钮少了一个（热档 2026-11-09 撤掉）：会话里残留的 filter='hot' 要兜回「全部」，
+    // 否则名单会一直按一个已经没有按钮的档位筛着
+    if (!WV_FILTERS.some(([k]) => k === wvState.filter)) wvState.filter = 'all';
     const root = document.getElementById('watchView');
     if (root) root.classList.remove('wv-booting');
     wvSyncStickyTop();
@@ -10055,16 +10086,16 @@ function wvRender() {
     if (bStart) bStart.disabled = !!d.running;
     if (bStop) bStop.disabled = !d.running;
 
-    // 六张概览卡
+    // 三张概览卡（2026-11-09 布局重排：热号删掉，请求用量挪进「节奏与安全」）
     const setV = (id, html) => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = html;
     };
     setV('wvCount', d.count + '<small>位</small>');
-    setV('wvHot', (d.tiers && d.tiers.hot ? d.tiers.hot : 0) + '<small>位</small>');
-    setV('wvReq', (d.req_today || 0) + (d.req_budget ? '<small>/' + d.req_budget + ' 次</small>' : '<small>次</small>'));
+    // 这两个数字现在是「节奏与安全」里那一行的小字，只换值、别把整行结构冲掉
+    setV('wvReq', (d.req_today || 0) + (d.req_budget ? ' / ' + d.req_budget : '') + ' 次');
     const est = d.est_daily || 0;
-    setV('wvEst', est + '<small>次</small>');
+    setV('wvEst', est + ' 次/天');
     const estCard = document.getElementById('wvEstCard');
     if (estCard) estCard.classList.toggle('over', !!(d.req_budget && est > d.req_budget));
     setV('wvDl', d.total_downloads + '<small>条</small>');
@@ -10317,6 +10348,21 @@ function wvBindOnce() {
 }
 
 // ---------- 名单 / 设置的写操作 ----------
+// 「＋ 加作者」：默认收起，点一下在名单标题下面展开输入条（用户 2026-11-09：
+// 加作者不重要，别单独占一整块）
+function wvToggleAdd(force) {
+    const bar = document.getElementById('wvAddBar');
+    if (!bar) return;
+    const show = (typeof force === 'boolean') ? force : bar.classList.contains('hidden');
+    bar.classList.toggle('hidden', !show);
+    const btn = document.getElementById('wvAddBtn');
+    if (btn) btn.classList.toggle('active', show);
+    if (show) {
+        const inp = document.getElementById('wvAddInput');
+        if (inp) inp.focus();
+    }
+}
+
 async function wvAdd() {
     const inp = document.getElementById('wvAddInput');
     if (!inp) return;
@@ -10329,7 +10375,10 @@ async function wvAdd() {
     if ((j.skipped || []).length) msg += '，' + j.skipped.length + ' 位已在名单';
     if ((j.errors || []).length) msg += '；' + j.errors[0];
     showToast(msg);
-    if (n) inp.value = '';
+    if (n) {
+        inp.value = '';
+        wvToggleAdd(false);      // 加完就收起来，把版面让回名单
+    }
 }
 
 async function wvStart() {

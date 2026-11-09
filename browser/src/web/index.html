@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c157">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c157">
-    <link rel="stylesheet" href="style.css?v=20261109c157">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c158">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c158">
+    <link rel="stylesheet" href="style.css?v=20261109c158">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -216,6 +216,14 @@
                                         <label><input type="checkbox" name="fFreq" value="月"> 月</label>
                                     </div>
                                 </div>
+                                <div class="filter-group">
+                                    <div class="filter-label">追更</div>
+                                    <div class="filter-opts" data-key="watch">
+                                        <label><input type="radio" name="fWatch" value="" checked> 不限</label>
+                                        <label><input type="radio" name="fWatch" value="yes"> 是</label>
+                                        <label><input type="radio" name="fWatch" value="no"> 不是</label>
+                                    </div>
+                                </div>
                                 <div class="filter-hint">
                                     每行左边的圆钮：<b class="em-plus">＋</b> = <b>包含</b>（勾中的这些是我要的，默认），
                                     点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值始终是「命中任一」；
@@ -371,6 +379,11 @@
                                 <div class="export-radios" id="exportFreqRadios"></div>
                             </div>
                             <div class="export-opt-row">
+                                <div class="export-match" data-key="watch"></div>
+                                <span class="fav-label">追更</span>
+                                <div class="export-radios" id="exportWatchRadios"></div>
+                            </div>
+                            <div class="export-opt-row">
                                 <div class="export-match" data-key="cover"></div>
                                 <span class="fav-label">封面</span>
                                 <div class="export-radios" id="exportCoverRadios"></div>
@@ -514,6 +527,11 @@
                                     <span class="ndf-label">更新频率</span>
                                     <div class="ndf-opts" id="ndFreqOpts"></div>
                                 </div>
+                                <div class="ndf-row" data-key="watch">
+                                    <span class="ndf-match" data-key="watch"></span>
+                                    <span class="ndf-label">追更</span>
+                                    <div class="ndf-opts" id="ndWatchOpts"></div>
+                                </div>
                                 <div class="ndf-row" data-key="latest">
                                     <span class="ndf-match" data-key="latest"></span>
                                     <span class="ndf-label">最后下载</span>
@@ -574,23 +592,13 @@
                     </div>
                 </div>
                 <div class="wv-body">
-                    <!-- 概览：六张 KPI 卡。图标统一 18px / stroke 1.6 线性风格（不用 emoji 当图标） -->
+                    <!-- 概览：三张卡（名单 / 累计追更下载 / 上次动作）。
+                         图标统一 18px / stroke 1.6 线性风格（不用 emoji 当图标）。
+                         「热号」「今日已用请求」「按当前档位估算」2026-11-09 按用户要求撤掉/挪走。 -->
                     <div class="wv-cards">
                         <div class="wv-card">
                             <span class="wv-ico i-slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 19v-1.6a3.4 3.4 0 0 0-3.4-3.4H6.4A3.4 3.4 0 0 0 3 17.4V19"/><circle cx="9.5" cy="7.5" r="3.2"/><path d="M20.5 19v-1.6a3.4 3.4 0 0 0-2.6-3.3"/><path d="M15.4 4.4a3.2 3.2 0 0 1 0 6.2"/></svg></span>
                             <div class="wv-kv"><div class="k">名单</div><div class="v" id="wvCount">0<small>位</small></div></div>
-                        </div>
-                        <div class="wv-card">
-                            <span class="wv-ico i-primary" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.07-2.14-.22-4.05 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.15.43-2.29 1-3a2.5 2.5 0 0 0 2.5 2.5Z"/></svg></span>
-                            <div class="wv-kv"><div class="k">热号 · 2 天内发过</div><div class="v" id="wvHot">0<small>位</small></div></div>
-                        </div>
-                        <div class="wv-card">
-                            <span class="wv-ico i-amber" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 12.5h3.2l2.1-5.4 3.2 10 2.2-6.2 1.6 3.2h4.7"/></svg></span>
-                            <div class="wv-kv"><div class="k">今日已用请求</div><div class="v" id="wvReq">0<small>次</small></div></div>
-                        </div>
-                        <div class="wv-card" id="wvEstCard">
-                            <span class="wv-ico i-slate" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3.5 16.5 9 11l3.2 3.2L20.5 6"/><path d="M15.6 6h4.9v4.9"/></svg></span>
-                            <div class="wv-kv"><div class="k">按当前档位估算 / 天</div><div class="v" id="wvEst">0<small>次</small></div></div>
                         </div>
                         <!-- 这张卡是入口：点进去看「追更下到的作品」，版式照「新下载」 -->
                         <div class="wv-card wv-card-link" id="wvDlCard" onclick="openWatchDownloadsView()"
@@ -609,53 +617,23 @@
                     <!-- 风控提示条（冷却 / 额度用尽 / 估算超限时才出现） -->
                     <div class="wv-guard hidden" id="wvGuard"></div>
 
-                    <!-- ① 顶部一块搞定：加作者 + 账号池。
-                         用户 2026-11-08：账号池原来压在页面最底下，要滚半天才看到；
-                         现在跟「加作者」合成同一块，进页面第一眼就能管号。 -->
-                    <div class="wv-panel">
-                        <div class="wv-hd">加作者<span class="hint">uid / SEC_UID / 主页链接 / 库里唯一的昵称都行，可用逗号或换行分隔</span></div>
-                        <div class="wv-bd">
-                            <div class="wv-row">
-                                <input type="text" id="wvAddInput" class="wv-grow"
-                                       placeholder="例：MS4wLjABAAAA...  或  https://www.douyin.com/user/MS4wLjAB..."
-                                       onkeydown="if(event.key==='Enter')wvAdd()">
-                                <button class="btn btn-primary" onclick="wvAdd()">加入名单</button>
-                            </div>
-                        </div>
-                        <div class="wv-subhd">
-                            <span class="wv-subt">账号池</span>
-                            <span class="hint">查询用哪个号的登录态。一个号被限流就自动换下一个，不在同一个号上反复试</span>
-                            <div class="wv-spacer"></div>
-                            <button class="btn btn-mini" onclick="wvAccSync()" title="把下载器（DouK）当前登录的那个号同步进账号池 —— 你在 DouK 里换了号就点一下">同步下载器</button>
-                            <button class="btn btn-mini" onclick="wvAccToggleForm()">添加账号</button>
-                        </div>
-                        <div class="wv-bd wv-bd-flush" id="wvAccBody">
-                            <div class="wv-empty" style="padding:16px">读取中…</div>
-                        </div>
-                        <div class="wv-bd hidden" id="wvAccForm" style="border-top:1px solid var(--border)">
-                            <div class="wv-row">
-                                <input type="text" id="wvAccLabel" placeholder="备注（例：小号1）" style="width:180px">
-                            </div>
-                            <div class="wv-row" style="margin-top:8px">
-                                <textarea id="wvAccCookie" class="wv-grow" rows="3"
-                                          placeholder="把这个号的 cookie 整段粘进来：sessionid=xxx; ttwid=xxx; ...&#10;（浏览器 F12 → Network → 任意 douyin.com 请求 → 复制 Cookie 整行）"></textarea>
-                            </div>
-                            <div class="wv-row" style="margin-top:8px">
-                                <span class="wv-note">至少要有 sessionid，否则不算登录态</span>
-                                <div class="wv-spacer"></div>
-                                <button class="btn btn-mini" onclick="wvAccToggleForm(true)">取消</button>
-                                <button class="btn btn-mini btn-primary" onclick="wvAccSave()">存进账号池</button>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- ② 左右两栏：左边名单（收窄），右边「追更内容 → 节奏与安全 → 运行日志」。
                          名单一行一行的，横向用不到那么宽；日志放右边就能一边看名单一边看它在动。
                          窄屏（≤1180px）自动叠成一列，名单在上、日志在下。 -->
                     <div class="wv-split">
                         <!-- 名单 + 档位筛选（筛选样式与作者详情页的作品分类完全同一套分段控件） -->
                         <div class="wv-panel wv-main">
-                            <div class="wv-hd">名单<span class="hint" id="wvTblHint"></span></div>
+                            <div class="wv-hd">名单<span class="hint" id="wvTblHint"></span>
+                                <div class="wv-spacer"></div>
+                                <button class="btn btn-mini" id="wvAddBtn" onclick="wvToggleAdd()"
+                                        title="把作者加进追更名单：uid / SEC_UID / 主页链接 / 库里唯一的昵称都行">＋ 加作者</button>
+                            </div>
+                            <div class="wv-addbar hidden" id="wvAddBar">
+                                <input type="text" id="wvAddInput" class="wv-grow"
+                                       placeholder="例：MS4wLjABAAAA...  或  https://www.douyin.com/user/MS4wLjAB..."
+                                       onkeydown="if(event.key==='Enter')wvAdd()">
+                                <button class="btn btn-primary btn-mini" onclick="wvAdd()">加入名单</button>
+                            </div>
                             <div class="wv-filter-bar">
                                 <div class="wall-filters" id="wvFilter" role="tablist" aria-label="按档位筛选追更作者"></div>
                             </div>
@@ -684,6 +662,14 @@
                             <!-- 节奏与安全设置（放在运行日志上面） -->
                             <div class="wv-panel">
                                 <div class="wv-bd wv-pad-sm">
+                                    <!-- 请求用量（原来是两张 KPI 卡）：放 details 外面，一直看得见 -->
+                                    <div class="wv-usage" id="wvEstCard">
+                                        <span class="wv-usage-k">今日已用请求</span>
+                                        <b class="wv-usage-v" id="wvReq">0</b>
+                                        <span class="wv-usage-sep">·</span>
+                                        <span class="wv-usage-k">按当前档位估算</span>
+                                        <b class="wv-usage-v" id="wvEst">0</b>
+                                    </div>
                                     <details>
                                         <summary>节奏与安全设置（改完立刻生效，正在跑的进程下一轮就会读到）</summary>
                                         <div class="wv-fgrid">
@@ -710,6 +696,40 @@
                                         </div>
                                     </details>
                                 </div>
+                            </div>
+
+                            <!-- 账号池：从顶部的通栏大面板收进右栏。
+                                 头部两颗按钮始终可点；号池表格平时收起来，只占一行，不抢版面。 -->
+                            <div class="wv-panel">
+                                <div class="wv-hd wv-hd-acc" title="查询用哪个号的登录态：一个号被限流就自动换下一个">
+                                    账号池
+                                    <span class="hint" id="wvAccHint">查询用哪个号的登录态，一个号被限流就自动换下一个</span>
+                                    <div class="wv-spacer"></div>
+                                    <button class="btn btn-mini" onclick="wvAccSync()"
+                                            title="把下载器（DouK）当前登录的那个号同步进账号池 —— 你在 DouK 里换了号就点一下">同步下载器</button>
+                                    <button class="btn btn-mini" onclick="wvAccToggleForm()">添加账号</button>
+                                </div>
+                                <details class="wv-acc-det">
+                                    <summary>展开号池（各号今天用了多少次、成没成）</summary>
+                                    <div class="wv-bd wv-bd-flush" id="wvAccBody">
+                                        <div class="wv-empty" style="padding:16px">读取中…</div>
+                                    </div>
+                                    <div class="wv-bd hidden" id="wvAccForm" style="border-top:1px solid var(--border)">
+                                        <div class="wv-row">
+                                            <input type="text" id="wvAccLabel" placeholder="备注（例：小号1）" style="width:180px">
+                                        </div>
+                                        <div class="wv-row" style="margin-top:8px">
+                                            <textarea id="wvAccCookie" class="wv-grow" rows="3"
+                                                      placeholder="把这个号的 cookie 整段粘进来：sessionid=xxx; ttwid=xxx; ...&#10;（浏览器 F12 → Network → 任意 douyin.com 请求 → 复制 Cookie 整行）"></textarea>
+                                        </div>
+                                        <div class="wv-row" style="margin-top:8px">
+                                            <span class="wv-note">至少要有 sessionid，否则不算登录态</span>
+                                            <div class="wv-spacer"></div>
+                                            <button class="btn btn-mini" onclick="wvAccToggleForm(true)">取消</button>
+                                            <button class="btn btn-mini btn-primary" onclick="wvAccSave()">存进账号池</button>
+                                        </div>
+                                    </div>
+                                </details>
                             </div>
 
                             <!-- 运行日志：从页面最下面挪到名单右边，改设置/看名单时能同时盯着它 -->
@@ -963,6 +983,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261109c157"></script>
+    <script src="app.js?v=20261109c158"></script>
 </body>
 </html>

@@ -384,6 +384,28 @@ def load_state():
     d.setdefault("consec_fail", 0)
     d.setdefault("cool_until", 0)
     d.setdefault("cool_level", 0)
+    # 一次性迁移（2026-11-09）：旧算法把首次基线取成「本地最后作品那天 23:59:59」，
+    # 于是当天更早发布、但当时没下到的作品全被划进「老作品」，永远补不下来。
+    # 真实作品推进的 last_ts 不可能正好落在 23:59:59，按这个特征回退到当天 00:00，
+    # 让这批作者把当天重新核对一遍（已下过的由第 3 层判重挡掉，不会重复下）。
+    if not d.get("base_dayfix"):
+        fixed = 0
+        for _st in (d.get("authors") or {}).values():
+            try:
+                _lt = int(_st.get("last_ts") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not _lt:
+                continue
+            _t = time.localtime(_lt)
+            if (_t.tm_hour, _t.tm_min, _t.tm_sec) == (23, 59, 59):
+                _st["last_ts"] = int(time.mktime(
+                    (_t.tm_year, _t.tm_mon, _t.tm_mday, 0, 0, 0, 0, 0, -1)))
+                fixed += 1
+        d["base_dayfix"] = True
+        if fixed:
+            print("[watch] 基线修正：%d 位作者的 last_ts 从「当天 23:59:59」回退到「当天 00:00」" % fixed)
+        save_state(d)
     return d
 
 
@@ -1552,29 +1574,34 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
         seen = set(st.get("seen") or [])
         last_ts = int(st.get("last_ts") or 0)
 
-        # 首次加入名单：基线定在「本地库里最新那件作品」，不是「现在」。
-        # 这样你点完「自动追更」，本地缺的近期作品会补下来（这才叫追更）；
-        # 只有本地一件都没有的作者才退化成「从现在开始」，免得一加进来就爆下上千条。
+        # 首次加入名单：基线定在「本地库里最后一件作品的**那一天 00:00**」。
+        # 为什么不是「那天 23:59:59」，也不是「今天」：
+        #   如果最后一件是今天下的、基线就变成今天 23:59:59，那今天更早发布、
+        #   但当时根本没下到的那些，ct <= 基线 → 直接当老作品跳过，从此永远补不下来。
+        #   取当天起点最保守：当天作品全部重新核对，已下过的由第 3 层判重挡掉，不会重复下。
+        # 本地一件作品都没有：基线归零 → 抖音上现有作品全量过一遍（这才叫"追更"）。
+        #   一轮有下载上限，几千条的作者不会一次全拉，last_ts 随下载推进，下轮接着下。
         if last_ts == 0:
             local_set = lib_idx.get(uid) or set()
             lib_latest = max((d for d, _k in local_set), default="")
-            base = newest
             if lib_latest:
                 try:
-                    base = int(time.mktime(time.strptime(lib_latest, "%Y-%m-%d")) + 86400 - 1)
+                    base = int(time.mktime(time.strptime(lib_latest, "%Y-%m-%d")))
                 except ValueError:
-                    base = newest
+                    base = 0
+            else:
+                base = 0
             st["last_ts"] = int(base)
             # 只把「基线之前」的作品记成处理过；比基线新的留着当候选去下载
             st["seen"] = [str(a.get("aweme_id")) for a in al
                           if int(a.get("create_time") or 0) <= base][:int(cfg["seen_keep"])]
             st["last_new"] = 0
             miss = sum(1 for a in al if int(a.get("create_time") or 0) > base)
-            log("＋ %s 建立基线：%s（%d 条）%s"
-                % (nick,
-                   datetime.fromtimestamp(base).strftime("%m-%d %H:%M") if base else "—",
-                   len(al),
-                   "，本地缺 %d 条会马上补下" % miss if miss else "，之后有新作品就下"))
+            say_base = (datetime.fromtimestamp(base).strftime("%m-%d 00:00")
+                        if base else "全量（本地还没有作品）")
+            log("＋ %s 建立基线：%s（这页 %d 条）%s"
+                % (nick, say_base, len(al),
+                   "，缺 %d 条会马上补下" % miss if miss else "，之后有新作品就下"))
             _save()   # 必须存：不存的话下次重启又把基线当 0，白查一遍
             last_ts = int(base)
             seen = set(st.get("seen") or [])

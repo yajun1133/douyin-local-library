@@ -504,6 +504,7 @@ def _build_attr_tests(q):
     q_freq = _one("freq").strip()
     q_tag = _one("tag").strip()
     q_cover = _one("cover").strip()
+    q_watch = _one("watch").strip().lower()      # yes | no | ""（2026-11-09 新增）
     q_latest_after = _one("latest_after").strip()
     q_latest_before = _one("latest_before").strip()
     q_match = _one("match").strip().lower()
@@ -580,6 +581,16 @@ def _build_attr_tests(q):
                 return False
             return True
         tests.append(("latest", _t_latest))
+    if q_watch in ("yes", "no"):
+        # 「是不是追更名单里的」：名单以 data/watch.json 为准，按 uid 认人。
+        # 不做 ＋/－ 双开关 —— 布尔只有两面，前端给「不限 / 是 / 不是」三选就够。
+        try:
+            _wset = {str(x.get("uid") or "") for x in (WC.load_watch().get("authors") or [])}
+        except Exception:
+            _wset = set()
+        def _t_watch(item, a, _s=_wset, _want=q_watch):
+            return (str(item.get("uid") or "") in _s) == (_want == "yes")
+        tests.append(("watch", _t_watch))
 
     return [(k, fn, _attr_mode(k)) for k, fn in tests]
 
@@ -4906,6 +4917,12 @@ class Handler(BaseHTTPRequestHandler):
         # 抽成公共函数：「新下载」页要做成和「导出作者信息」一模一样的筛选，两边必须同口径。
         accounts = CACHE["accounts"]
         attr_test_modes = _build_attr_tests(q)
+        # 追更名单（一次读进内存）：卡片左上角的「追更」角标靠它，
+        # 免得前端为了一个标记再额外请求一遍 /api/watch/status。
+        try:
+            _watch_uids = {str(x.get("uid") or "") for x in (WC.load_watch().get("authors") or [])}
+        except Exception:
+            _watch_uids = set()
 
         result = []
         for item in lst:
@@ -4974,6 +4991,7 @@ class Handler(BaseHTTPRequestHandler):
             result.append({**item,
                            "alias": item.get("alias") or "",
                            "starred": bool(a and a.get("starred")),
+                           "watch": str(item.get("uid") or "") in _watch_uids,
                            "status": (a or {}).get("status", ""),
                            "level": (a or {}).get("level", ""),
                            "update_freq": (a or {}).get("update_freq", ""),

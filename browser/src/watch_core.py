@@ -62,6 +62,10 @@ DEFAULT_CFG = {
     "cold_days": 30,
     "per_author_pages": 1,      # 每个作者翻几页（每页 18~20 条）；1 页够覆盖绝大多数日更
     "backfill_pages": 4,        # 补漏时最多往下翻几页（只有"整页都比上次新"才会用上）
+    # 「本地一件作品都没有」的作者，第一次要把现有作品整体补一遍 ——
+    # 只翻 1 页只能看到最近 20 条，更老的永远补不到。这里给一个较深的上限，
+    # 一页 20 条算，10 页 ≈ 200 条，够覆盖绝大多数账号；翻不满说明到底了。
+    "bulk_pages": 10,
     "gap": 2.0,                 # 两次作者之间的间隔（秒），带抖动
     "gap_jitter": 0.3,
     # —— 节奏与账号安全 ——
@@ -1591,6 +1595,10 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                     base = 0
             else:
                 base = 0
+                # 本地一件都没有 = 需要「首次全量补齐」：见下面 st["bulk"] 的处理。
+                # 不能只靠 last_ts=0 那一轮：候选按时间升序下，下到最新的那条之后
+                # last_ts 就被推到最新，比它更老的（第 2 页往后）永远 ct <= last_ts 被跳过。
+                st["bulk"] = True
             st["last_ts"] = int(base)
             # 只把「基线之前」的作品记成处理过；比基线新的留着当候选去下载
             st["seen"] = [str(a.get("aweme_id")) for a in al
@@ -1612,14 +1620,43 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
         date_idx = build_date_index(local)
         folder = lib_folders.get(uid) or ""
         author_dir = os.path.join(paths.SCAN_ROOT, folder) if folder else ""
+        # 老状态补丁（2026-11-09）：已经有基线、但本地一件作品都没有的作者，
+        # 基线是旧算法按「抖音最新那条」定的 → 永远不会有候选（ct <= last_ts 全跳过）。
+        # 首轮遇到就转成一次性「全量补齐」；bulk_done 标记保证只做一次。
+        # 两个前提：① lib_idx 非空（索引没建好时不能判断，否则会把全名单都标成全量）；
+        #          ② 有作者文件夹（没文件夹就没地方落盘，补了也是白补）。
+        if (not st.get("bulk") and not local and lib_idx and author_dir
+                and not st.get("bulk_done")):
+            st["bulk"] = True
+            st["last_ts"] = 0
+            st["seen"] = []
+            last_ts = 0
+            seen = set()
+            log("· %s 本地一件作品都没有，改成先把现有作品整体补一遍" % nick)
 
-        # 候选：比基线新、且没处理过的
+        # 首次全量补齐（本地一件作品都没有的作者）：多翻几页，把现有作品整体过一遍。
+        # 作者还没有文件夹时不深翻 —— 下了也没地方放，白白多打几枪接口。
+        if st.get("bulk") and author_dir:
+            try:
+                more = dy.author_works(sec, pages=int(cfg.get("bulk_pages") or 10))
+                if len(more) > len(al):
+                    al = more
+                    cts = [int(x.get("create_time") or 0) for x in more]
+                    newest = max(cts) if cts else newest
+                    log("· %s 首次全量：往下翻到 %d 条作品" % (nick, len(al)))
+            except Exception as e:
+                log("· %s 全量翻页失败（不影响本轮，下轮再补）：%s" % (nick, str(e)[:60]))
+
+        # 候选：比基线新、且没处理过的（「首次全量」阶段不看基线，只看有没有处理过）
         want_content = str(cfg.get("content") or "all").lower()
+        bulk = bool(st.get("bulk"))
         cand = []
         for a in al:
             aid = str(a.get("aweme_id") or "")
             ct2 = int(a.get("create_time") or 0)
-            if not aid or aid in seen or ct2 <= last_ts:
+            if not aid or aid in seen:
+                continue
+            if not bulk and ct2 <= last_ts:
                 continue
             if (st.get("fails") or {}).get(aid, 0) >= int(cfg.get("fail_limit") or 3):
                 seen.add(aid)
@@ -1635,20 +1672,27 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
         cand.sort(key=lambda x: x[0])   # 老的先下，顺序跟时间线一致
 
         if not cand:
-            # 没有比基线更新的作品：什么也不用记，位置留着
+            # 没有可下的作品（正常模式：没有比基线更新的；首次全量：这一批都处理过了）
+            if st.get("bulk") and not dry:
+                st["bulk"] = False
+                st["bulk_done"] = True
+                st["last_ts"] = max(int(st.get("last_ts") or 0), newest)
+                log("✔ %s 首次全量补齐完成（现有作品都过了一遍），之后按新作品追" % nick)
             _save()
             time.sleep(_pace(cfg))
             continue
 
         stats["new"] += len(cand)
-        log("★ %s 发现 %d 条新作品（最新 %s）"
-            % (nick, len(cand),
+        log("★ %s 发现 %d 条%s（最新 %s）"
+            % (nick, len(cand), "待补作品" if bulk else "新作品",
                datetime.fromtimestamp(max(c[0] for c in cand)).strftime("%m-%d %H:%M")))
 
         no_folder = False
+        budget_hit = False
         for ct2, a in cand:
             if budget <= 0:
                 log("· 本轮达到下载上限（%d 条），剩下的下一轮再下" % cfg["max_per_round"])
+                budget_hit = True
                 break
             aid = str(a.get("aweme_id") or "")
             date = datetime.fromtimestamp(ct2).strftime("%Y-%m-%d")
@@ -1715,6 +1759,25 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 % (nick, len(cand)))
             if not dry:
                 st["next_check"] = time.time() + 3600
+            # 连文件夹都没有：这次全量补不了，把标记摘掉。
+            # last_ts 仍是 0，等它真的进库后，下一轮会重新建基线 → 那时才走全量。
+            if st.get("bulk"):
+                st["bulk"] = False
+                st["bulk_done"] = True
+
+        # 「首次全量」收尾：
+        #   这一轮没被下载额度打断 → 现有作品都过了一遍，切回正常追更（基线推到最新）；
+        #   被打断 → 5 分钟后再来一批，别让它按档位睡到十几小时后才补下一批。
+        #   作者还没有文件夹（no_folder）时不动它：等它进库了再补。
+        if st.get("bulk") and not dry and not no_folder:
+            if budget_hit:
+                st["next_check"] = time.time() + 300
+                log("· %s 首次全量还没补完，5 分钟后接着补" % nick)
+            else:
+                st["bulk"] = False
+                st["bulk_done"] = True
+                st["last_ts"] = max(int(st.get("last_ts") or 0), newest)
+                log("✔ %s 首次全量补齐完成（现有作品都过了一遍），之后按新作品追" % nick)
 
         # 记忆裁剪
         st["seen"] = list(seen)[-int(cfg.get("seen_keep") or 400):]

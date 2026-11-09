@@ -29,6 +29,11 @@ douyin-author-marker/local-service/service.log
 # （probe_latest.py 是早期入库的，不受影响 —— 已被跟踪的文件不会被 ignore 规则移除）
 browser/tools/probe_*.py
 
+# 重复核对的过程产物：里面是真实昵称、UID 目录名、本机文件路径，只在本地用
+browser/tools/dup_candidates*.json
+browser/tools/dup_visual_result.json
+browser/tmp/
+
 # ============================================================
 #  Python
 # ============================================================

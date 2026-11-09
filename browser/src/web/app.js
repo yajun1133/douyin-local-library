@@ -1777,7 +1777,7 @@ function renderDetailTop() {
     // 数量直接写在每个分类后面（原来的「共 N 条」并到「全部作品」里，不再单独占一行标题）
     const typeCounts = workTypeCounts(a);
     let filters = [
-        ['all', '全部作品'], ['video', '▶ 视频'], ['image', '图文'],
+        ['all', '全部作品'], ['video', '▶ 视频'], ['image', '🖼 图文'],
         ['image_single', '单图'], ['image_multi', '多图'],
         ['live_single', '单动图'], ['live_multi', '多动图'],
     ].map(([t, label]) =>
@@ -1787,7 +1787,7 @@ function renderDetailTop() {
     // 纯净赏图：所有图文作品的图铺成一面墙（不跟当前分类走，永远是「全部图」）
     const gCount = galleryCountOf(a);
     filters += `<button class="btn gallery-btn${gCount ? '' : ' disabled'}" onclick="${gCount ? 'openGallery()' : 'showToast(\'这位作者没有图文作品\')'}"
-        title="纯净赏图：把这位作者所有图文作品的图片铺成一整面照片墙">${DSI('image')}赏图${gCount ? `<b class="wf-n">${gCount}</b>` : ''}</button>`;
+        title="纯净赏图：把这位作者所有图文作品的图片铺成一整面照片墙">🖼 赏图${gCount ? `<b class="wf-n">${gCount}</b>` : ''}</button>`;
     filters += `<button class="btn work-dir-btn" id="workDirBtn" onclick="toggleWorkDir()" title="作品排序：最新在前 / 最早在前">${workDirLabel}</button>`;
 
     document.getElementById('detailTop').innerHTML = `
@@ -2620,7 +2620,7 @@ function stageFootHtml(w, rel, extra, showMode) {
             <div class="player-title" title="${escapeHtml(w.desc || '')}">${w.date || ''} · ${escapeHtml(w.desc || '')}</div>
             ${extra || ''}
             ${showMode ? playModeBtnHtml() : ''}
-            <button class="btn" data-rel="${escapeHtml(rel)}" onclick="setHomeCover(this.dataset.rel)">${DSI('image')}设为封面</button>
+            <button class="btn" data-rel="${escapeHtml(rel)}" onclick="setHomeCover(this.dataset.rel)">🖼 设为封面</button>
         </div>
         <div class="player-hint" id="playerHint"></div>`;
 }
@@ -4806,7 +4806,7 @@ function updateExportBtn() {
     const info = exportTypeInfo();
     if (!info) { btn.classList.add('hidden'); return; }
     btn.classList.remove('hidden');
-    btn.innerHTML = DSI('upload') + '导出「' + info.type + '」SECID';
+    btn.textContent = '📤 导出「' + info.type + '」SECID';
     btn.title = info.exclude
         ? '导出当前界面（含右上角筛选条件）的账号及其所在大小号组的 SEC_UID；自动排除注销/禁言封号/卖号/不好看了'
         : '导出该类型全部账号（含所在大小号组）的 SEC_UID';
@@ -5496,14 +5496,14 @@ async function startCountRefresh() {
         }).then((x) => x.json());
         if (!r.ok) {
             showToast(r.already ? '上一轮还在跑' : ('启动失败：' + (r.error || '未知')));
-            if (btn) { btn.disabled = false; btn.innerHTML = DSI('chart') + '数作品'; }
+            if (btn) { btn.disabled = false; btn.textContent = '📈 数作品'; }
             return;
         }
         showToast(`开始数作品：${limit} 个，约 ${Math.round(limit * 1.6 / 60)} 分钟`);
         startCountPolling();
     } catch (e) {
         showToast('启动失败：' + e.message);
-        if (btn) { btn.disabled = false; btn.innerHTML = DSI('chart') + '数作品'; }
+        if (btn) { btn.disabled = false; btn.textContent = '📈 数作品'; }
     }
 }
 
@@ -5515,10 +5515,10 @@ function startCountPolling() {
         const btn = document.getElementById('countBtn');
         const stopBtn = document.getElementById('countStopBtn');
         if (s.running) {
-            if (btn) { btn.disabled = true; btn.innerHTML = DSI('chart') + `${s.done}/${s.total}`; }
+            if (btn) { btn.disabled = true; btn.textContent = `📈 ${s.done}/${s.total}`; }
             if (stopBtn) stopBtn.classList.remove('hidden');
         } else {
-            if (btn) { btn.disabled = false; btn.innerHTML = DSI('chart') + '数作品'; }
+            if (btn) { btn.disabled = false; btn.textContent = '📈 数作品'; }
             if (stopBtn) stopBtn.classList.add('hidden');
             stopCountPolling();
             if (s.done) {
@@ -5579,7 +5579,7 @@ async function startLatestRefresh() {
         }).then((x) => x.json());
         if (!r.ok) {
             showToast(r.already ? '上一轮还在跑' : ('启动失败：' + (r.error || '未知')));
-            if (btn) { btn.disabled = false; btn.innerHTML = DSI('clock') + '查发布时间'; }
+            if (btn) { btn.disabled = false; btn.textContent = '🕗 查发布时间'; }
             return;
         }
         const mins = Math.ceil((limit * 3.5 + Math.floor(limit / 25) * 30) / 60);
@@ -5587,7 +5587,7 @@ async function startLatestRefresh() {
         startLatestPolling();
     } catch (e) {
         showToast('启动失败：' + e.message);
-        if (btn) { btn.disabled = false; btn.innerHTML = DSI('clock') + '查发布时间'; }
+        if (btn) { btn.disabled = false; btn.textContent = '🕗 查发布时间'; }
     }
 }
 
@@ -5602,11 +5602,11 @@ function startLatestPolling() {
             if (btn) {
                 btn.disabled = true;
                 // ⏸ = 正在「每 25 个停 30 秒」的空档里，不做个记号会像卡死了
-                btn.innerHTML = DSI('clock') + `${s.done}/${s.total}${s.pausing ? ' ⏸' : ''}`;
+                btn.textContent = `🕗 ${s.done}/${s.total}${s.pausing ? ' ⏸' : ''}`;
             }
             if (stopBtn) stopBtn.classList.remove('hidden');
         } else {
-            if (btn) { btn.disabled = false; btn.innerHTML = DSI('clock') + '查发布时间'; }
+            if (btn) { btn.disabled = false; btn.textContent = '🕗 查发布时间'; }
             if (stopBtn) stopBtn.classList.add('hidden');
             stopLatestPolling();
             if (s.done || s.error) {
@@ -9760,12 +9760,6 @@ async function saveSettings() {
 }
 
 // ===== 工具 =====
-// 线性图标（与侧边栏同一套 .si + mask 实现）。动态生成的按钮不再用 emoji，
-// 统一走这里，保证「按钮里的图标」和左侧导航是同一族线条图标。
-function DSI(name) {
-    return '<i class="si" data-ico="' + name + '" aria-hidden="true"></i>';
-}
-
 function escapeHtml(str) {
     return String(str ?? '').replace(/[&<>"']/g, c => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'

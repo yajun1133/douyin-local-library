@@ -7932,10 +7932,10 @@ async function openSettingsView() {
 // 为什么单独一页：DouK 一跑就是几百上千个文件，散在各位作者的作品墙里根本看不出
 // 「这一次到底新增了什么」。数据不是靠扫目录猜的——服务端读 data/download_log.db
 // 的 file 表，mtime 就是文件落盘时间（≈ 下载完成时间），所以「今天」就是真·今天下载的。
-// mode：这个视图还会被借用两次 —— '' 是「新下载」本体，'watch' 是「追更下的作品」，
-// 'day' 是「扫频率档下的作品」。三者数据源不同，但渲染、播放、灯箱全部复用，
-// 所以观感和「新下载」逐像素一样。
-const newDlState = { range: 'today', data: null, loading: false, loadingMore: false, mode: '' };
+// watchOnly：这个视图被「追更 → 累计追更下载」借用来显示追更下到的作品。
+// 数据源不同（/api/watch/downloads 而不是 /api/new_downloads），但渲染、播放、
+// 灯箱全部复用，所以观感和「新下载」逐像素一样。
+const newDlState = { range: 'today', data: null, loading: false, loadingMore: false, watchOnly: false };
 
 // 「按作者筛选」——和「📤 导出作者信息」那一栏完全同一套口径：
 // 作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间，每行自带一个 ＋/－ 组合开关。
@@ -8100,31 +8100,23 @@ async function openNewDownloadsView() {
 // 用户要的是「点累计追更下载 → 看到追更下到的作品，界面和新下载一样」。
 // 与其复制一套列表，不如把 newView 切成「追更模式」：隐藏时间范围条，
 // 顶部换成一条「← 全部下载」的返回条，数据走 /api/watch/downloads。
-function applyNdWatchMode(mode) {
-    // 传 true/false 也认（老调用点），统一折成 ''|'watch'|'day'
-    if (mode === true) mode = 'watch';
-    if (mode === false || mode == null) mode = '';
-    newDlState.mode = mode;
-    const on = !!mode;
+function applyNdWatchMode(on) {
+    newDlState.watchOnly = !!on;
     const title = document.getElementById('newViewTitle');
     const bar = document.getElementById('ndRangeBar');
     const wbar = document.getElementById('ndWatchBar');
-    if (bar) bar.classList.toggle('hidden', on);
+    if (bar) bar.classList.toggle('hidden', !!on);
     if (wbar) wbar.classList.toggle('hidden', !on);
     // 标题单独一个 span：#newViewSub 要留给 renderNewDownloads() 写统计，不能一起清掉
-    if (title) {
-        title.textContent = mode === 'day' ? '扫档下载' : (mode === 'watch' ? '追更下载' : '新下载');
-    }
+    if (title) title.textContent = on ? '追更下载' : '新下载';
 }
 
 async function refreshWatchDownloads() {
     const body = document.getElementById('newBody');
     if (!body) return;
-    const mode = newDlState.mode === 'day' ? 'day' : 'watch';
     body.innerHTML = '<div class="loading">读取中…</div>';
     try {
-        const url = mode === 'day' ? '/api/day_scan/downloads' : '/api/watch/downloads';
-        const d = await fetch(url, { cache: 'no-store' }).then((r) => r.json());
+        const d = await fetch('/api/watch/downloads', { cache: 'no-store' }).then((r) => r.json());
         if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败');
         // 结构照 /api/new_downloads 造：has_more=false 后台就不会去翻页
         newDlState.data = {
@@ -8142,7 +8134,7 @@ async function refreshWatchDownloads() {
     }
 }
 
-async function openWatchDownloadsView(mode) {
+async function openWatchDownloadsView() {
     forceCloseDetail();
     rememberViewScroll();
     state.view = 'watchDl';
@@ -8157,12 +8149,12 @@ async function openWatchDownloadsView(mode) {
     const eb = document.getElementById('exportBtn');
     if (eb) eb.classList.add('hidden');
     restoreViewScroll('watchDl');
-    applyNdWatchMode(mode || 'watch');
+    applyNdWatchMode(true);
     await refreshWatchDownloads();
 }
 
 function refreshWatchDownloadsClick() {
-    if (newDlState.mode) refreshWatchDownloads();
+    if (newDlState.watchOnly) refreshWatchDownloads();
     else refreshNewDownloads(true);
 }
 
@@ -8836,13 +8828,13 @@ function renderNewDownloads(opts) {
         sub.textContent = total
             ? total + ' 个作品' + (d.has_more ? '（往下滚继续加载）' : '')
                 + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者' + filtered
-            : (newDlState.mode
+            : (newDlState.watchOnly
                 ? '追更还没下到过作品 —— 等它发现新作品就会自动出现在这里'
                 : (ndFilterActive()
                     ? '筛选后这个范围里没有作品，把条件放宽试试'
                     : '这个范围内没有新下载'));
     }
-    if (badge && !newDlState.mode) {
+    if (badge && !newDlState.watchOnly) {
         // 追更模式下别动侧栏「新下载」的角标 —— 那个数字是「新下载」自己的口径，
         // 被追更的条数盖掉会让人以为下载器下了 277 个（2026-11-08 实测踩到）
         badge.textContent = total || 0;
@@ -9999,13 +9991,8 @@ async function wvPull(opts) {
         if (!j || j.ok === false) throw new Error((j && j.error) || '读取失败');
         wvState.data = j;
         wvSyncBadge(j.count);
-        // 顺带刷一下「扫频率档」的进度：两条请求一起发，别串行等
-        try {
-            const s2 = await fetch('/api/day_scan/status', { cache: 'no-store' }).then((x) => x.json());
-            if (s2 && s2.ok !== false) { wvScan.st = s2; }
-        } catch (e2) { /* 扫档状态读不到不影响主流程 */ }
         // 拉到数据时如果人已经切走了，就别去动 DOM（下次进来会重新拉）
-        if (state.view === 'watch') { wvRender(); wvScanRender(); }
+        if (state.view === 'watch') wvRender();
     } catch (e) {
         if (!silent && state.view === 'watch') {
             showToast('追更状态读取失败：' + (e && e.message ? e.message : e));
@@ -10410,116 +10397,6 @@ function wvStop() {
 }
 
 function wvRefresh() { wvPull(); }
-
-// ---------- 扫频率档（2026-11-09）----------
-// 把某一档（day / 3天 / 周 / 月）的更新频率作者整体扫一遍，本地没有的作品直接下。
-// 名单规则固定在服务端：先按 user_data 的 update_freq 选档，再**剔除追更名单里的人**，
-// 所以这里不需要也不应该自己筛。
-const wvScan = { st: null, dismissedAt: 0 };
-
-function wvScanRender() {
-    const st = wvScan.st;
-    const btn = document.getElementById('wvScanBtn');
-    const stop = document.getElementById('wvScanStop');
-    const sel = document.getElementById('wvScanFreq');
-    const bar = document.getElementById('wvScanBar');
-    if (!st) return;
-    if (btn) {
-        btn.disabled = !!st.running;
-        btn.textContent = st.running
-            ? ('扫「' + (st.freq || '') + '」' + (st.done || 0) + '/' + (st.total || 0))
-            : '扫这一档';
-    }
-    if (stop) stop.classList.toggle('hidden', !st.running);
-    if (sel) sel.disabled = !!st.running;
-    if (!bar) return;
-    if (!st.running && !st.total) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
-    // 「知道了」关掉过这一次结果：同一个 finished_at 就不再弹回来（否则 5 秒轮询又刷出来）
-    if (!st.running && st.finished_at && st.finished_at === wvScan.dismissedAt) {
-        bar.classList.add('hidden'); bar.innerHTML = ''; return;
-    }
-    bar.classList.remove('hidden');
-    if (st.running) {
-        const pct = st.total ? Math.min(100, Math.round((st.done || 0) * 100 / st.total)) : 0;
-        bar.innerHTML = '<span class="wv-scan-k">正在扫「' + escapeHtml(st.freq || '') + '」档</span>'
-            + '<b class="wv-scan-n">' + (st.done || 0) + ' / ' + (st.total || 0) + '</b>'
-            + '<span class="wv-scan-sub">已下 ' + (st.downloaded || 0) + ' 条</span>'
-            + (st.current ? '<span class="wv-scan-sub">当前：' + escapeHtml(st.current) + '</span>' : '')
-            + '<div class="wv-scan-track"><i style="width:' + pct + '%"></i></div>';
-    } else {
-        const dl = st.downloaded || 0;
-        const cum = st.cum || 0;
-        const note = String(st.note || '');
-        // 「完成：扫了 N 位…」和前面的 done/total 重复，不重复显示；
-        // 「已手动停止」「达到上限」这类才是用户需要看到的原因
-        const reason = (note && note.indexOf('完成：') !== 0) ? note : '';
-        const stopped = note.indexOf('停止') >= 0;
-        bar.innerHTML = '<span class="wv-scan-k">「' + escapeHtml(st.freq || '') + '」档'
-            + (stopped ? '已停止' : '扫完') + '</span>'
-            + '<b class="wv-scan-n">' + (st.done || 0) + '/' + (st.total || 0) + ' 位</b>'
-            + '<span class="wv-scan-sub">' + (dl ? ('本次下到 ' + dl + ' 条')
-                : (cum ? ('累计下到 ' + cum + ' 条') : '本次没下到新作品')) + '</span>'
-            + (reason ? '<span class="wv-scan-sub">· ' + escapeHtml(reason) + '</span>' : '')
-            + ((dl || cum) ? ' <button class="btn btn-mini" onclick="openWatchDownloadsView(\'day\')"'
-                  + ' title="这些是「扫档」下的，和追更下的分开列">看下到的作品</button>' : '')
-            + ' <button class="btn btn-mini" onclick="wvScanBarClose()">知道了</button>';
-    }
-}
-
-function wvScanBarClose() {
-    wvScan.dismissedAt = (wvScan.st && wvScan.st.finished_at) || 0;
-    const bar = document.getElementById('wvScanBar');
-    if (bar) { bar.classList.add('hidden'); bar.innerHTML = ''; }
-}
-
-async function wvScanStart() {
-    const sel = document.getElementById('wvScanFreq');
-    const freq = sel ? sel.value : 'day';
-    // 追更和扫档同时查同一批号 = 请求频率翻倍，最容易撞限流。先停追更再扫。
-    if (wvState.data && wvState.data.running) {
-        if (!confirm('追更正在运行。\n\n要先停掉它再扫「' + freq + '」档吗？\n'
-            + '（扫完不会自动恢复追更，需要你手动点「开始追更」）')) return;
-        await wvPost({ action: 'stop' });
-        await new Promise((r) => setTimeout(r, 1200));
-    }
-    const btn = document.getElementById('wvScanBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '启动中…'; }
-    try {
-        const r = await fetch('/api/day_scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'start', freq }),
-        }).then((x) => x.json());
-        if (!r || !r.ok) {
-            showToast('启动失败：' + ((r && r.error) || '未知错误'));
-            if (btn) { btn.disabled = false; btn.textContent = '扫这一档'; }
-            return;
-        }
-        showToast('开始扫「' + freq + '」档（追更名单里的已自动跳过）');
-        wvScan.st = r.status || null;
-        wvScanRender();
-        wvPull({ silent: true });
-    } catch (e) {
-        showToast('启动失败：' + (e && e.message ? e.message : e));
-        if (btn) { btn.disabled = false; btn.textContent = '扫这一档'; }
-    }
-}
-
-async function wvScanStop() {
-    if (!confirm('停止扫档？已经下载的文件不受影响。')) return;
-    try {
-        const r = await fetch('/api/day_scan', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'stop' }),
-        }).then((x) => x.json());
-        if (!r || !r.ok) { showToast('停止失败：' + ((r && r.error) || '未知错误')); return; }
-        showToast('已停止扫档');
-        wvPull({ silent: true });
-    } catch (e) {
-        showToast('停止失败：' + (e && e.message ? e.message : e));
-    }
-}
 
 function wvSaveCfg(okMsg) {
     const num = (id) => +((document.getElementById(id) || {}).value || 0);

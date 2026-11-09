@@ -428,8 +428,12 @@ def save_state(d):
 _DL_LOCK = __import__("threading").Lock()
 
 
-def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False):
-    """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。"""
+def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False, src="watch"):
+    """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。
+
+    src：这条是哪个任务下的 —— "watch"（追更，默认，老记录没有这个字段也当它）
+    / "day"（「扫 day 档」那次补扫）。前端要能把两者分开列，所以从源头就标清楚。
+    """
     rels = [r for r in (rels or []) if r]
     if not rels:
         return False
@@ -442,6 +446,8 @@ def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=Fal
         "rels": rels,
         "size": int(size or 0),
     }
+    if src and src != "watch":
+        rec["src"] = src
     if backfill:
         rec["backfill"] = True
     try:
@@ -458,8 +464,11 @@ def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=Fal
 _DL_CACHE = {"key": None, "rows": []}
 
 
-def load_downloads():
-    """读回全部下载明细，按落盘时间从新到旧；坏行直接跳过（别让一行坏了整份读不出）。
+def load_downloads(src=None):
+    """读回下载明细，按落盘时间从新到旧；坏行直接跳过（别让一行坏了整份读不出）。
+
+    src=None 全部；"watch" 只要追更下的；"day" 只要「扫 day 档」下的。
+    老记录没有 src 字段，一律算追更的（那时只有追更这一个来源）。
 
     按 (mtime, size) 缓存：这个函数会被 /api/watch/status 5 秒一次调到，
     明细会越攒越多，每次都重解析没必要。文件一变（追加）就自动失效。
@@ -469,39 +478,42 @@ def load_downloads():
         key = (st.st_mtime, st.st_size)
     except OSError:
         return []
-    if _DL_CACHE["key"] == key:
-        return _DL_CACHE["rows"]
+    if _DL_CACHE["key"] != key:
+        out = []
+        seen = set()      # rel -> 已归属，回填和实时记录可能重复，按文件去重
+        with open(DOWNLOADS_FILE, "r", encoding="utf-8", errors="replace") as fp:
+            for ln in fp:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if not isinstance(r, dict):
+                    continue
+                rels = [x for x in (r.get("rels") or []) if isinstance(x, str) and x]
+                rels = [x for x in rels if x not in seen]
+                if not rels:
+                    continue
+                seen.update(rels)
+                r["rels"] = rels
+                r["files"] = len(rels)
+                out.append(r)
+        out.sort(key=lambda r: -(int(r.get("ts") or 0)))
+        _DL_CACHE["key"] = key
+        _DL_CACHE["rows"] = out
+    rows = _DL_CACHE["rows"]
+    if not src:
+        return rows
+    if src == "watch":
+        return [r for r in rows if (r.get("src") or "watch") == "watch"]
+    return [r for r in rows if r.get("src") == src]
 
-    out = []
-    seen = set()          # rel -> 已归属，回填和实时记录可能重复，按文件去重
-    with open(DOWNLOADS_FILE, "r", encoding="utf-8", errors="replace") as fp:
-        for ln in fp:
-            ln = ln.strip()
-            if not ln:
-                continue
-            try:
-                r = json.loads(ln)
-            except ValueError:
-                continue
-            if not isinstance(r, dict):
-                continue
-            rels = [x for x in (r.get("rels") or []) if isinstance(x, str) and x]
-            rels = [x for x in rels if x not in seen]
-            if not rels:
-                continue
-            seen.update(rels)
-            r["rels"] = rels
-            r["files"] = len(rels)
-            out.append(r)
-    out.sort(key=lambda r: -(int(r.get("ts") or 0)))
-    _DL_CACHE["key"] = key
-    _DL_CACHE["rows"] = out
-    return out
 
-
-def download_count():
-    """明细里的作品条数（实时记录 + 回填的合计）。"""
-    return len(load_downloads())
+def download_count(src="watch"):
+    """明细里的作品条数。「累计追更下载」只数追更的，别把「扫 day 档」的算进去。"""
+    return len(load_downloads(src))
 
 
 # ---------------------------------------------------------------------------
@@ -1404,8 +1416,17 @@ def _pace(cfg):
     return base * (1 + float(cfg.get("gap_jitter") or 0.3) * random.random())
 
 
-def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None):
-    """扫一轮。返回统计 dict。"""
+def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None, src="watch",
+               save_fn=None):
+    """扫一轮。返回统计 dict。
+
+    src：这一轮下的东西记成哪个来源（"watch" 追更 / "day" 扫 day 档），
+    只影响下载明细上的标记，扫描与判重逻辑完全一样。
+
+    save_fn：状态往哪儿写。默认写追更的 watch_state.json；「扫频率档」这种
+    自带独立状态文件的任务必须传自己的保存函数 —— 否则会把追更的整份状态
+    覆盖成「这一轮扫到的那几位」（2026-11-09 踩过：268 位名单被写成 13 位）。
+    """
     cfg = watch["settings"]
     stats = {"authors": 0, "checked": 0, "new": 0, "downloaded": 0,
              "bytes": 0, "failed": 0, "skipped": 0, "errors": [],
@@ -1436,9 +1457,11 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
 
     # dry（试运行）绝对不能改动状态：否则"看过"的作品会被记成"已处理"，
     # 真正跑的时候就被永久跳过 —— 这是会丢作品的严重问题，不是小事。
+    _persist = save_fn or save_state
+
     def _save():
         if not dry:
-            save_state(state)
+            _persist(state)
 
     def _sync_quota():
         used = int(getattr(dy, "reqs", 0) or 0) - req0
@@ -1730,7 +1753,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None)
                 try:
                     _rels = [os.path.relpath(p, paths.SCAN_ROOT).replace(os.sep, "/")
                              for p in _got]
-                    record_download(uid, nick, date, desc, _rels, size)
+                    record_download(uid, nick, date, desc, _rels, size, src=src)
                 except Exception as _e:      # 记账失败不影响下载结果
                     print("[watch] 记下载明细失败：%s" % _e)
                 seen.add(aid)

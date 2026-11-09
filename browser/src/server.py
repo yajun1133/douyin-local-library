@@ -3541,9 +3541,12 @@ def _watch_status():
     }
 
 
-def _watch_downloads():
+def _watch_downloads(src="watch"):
     """追更下载明细，按作者分组 —— 结构刻意和 /api/new_downloads 对齐，
     前端直接喂给 renderNewDownloads()，观感和「新下载」完全一样。
+
+    src="day" 时只取「扫 day 档」那次下的（明细里带 src 标记），其余字段一模一样，
+    所以两边共用这一个函数，前端也共用一套渲染。
 
     数据来自 data/watch_downloads.jsonl（追更自己写的流水）。2026-11-08 之前
     只有每个作者的计数、没有逐条记录，历史那份用
@@ -3554,7 +3557,7 @@ def _watch_downloads():
     load_data()
     load_user_data()
     accs = CACHE.get("accounts") or {}
-    recs = WC.load_downloads()
+    recs = WC.load_downloads(src)
 
     groups, order = {}, []
     for r in recs:
@@ -3666,6 +3669,134 @@ def _watch_stop():
         WC.save_state(state)
     except Exception:
         pass
+    return {"ok": True}
+
+
+# ===========================================================================
+# 「扫 day 档」：把更新频率=day、且不在追更名单里的作者整体扫一遍（2026-11-09）
+#
+# 和追更一样是 3.12 的子进程（src/day_scan.py），server 只负责起停 / 读进度。
+# 进度不靠心跳：day_scan.json 里 running 字段 + day_scan.pid 存活一起判断。
+# ===========================================================================
+
+DAY_SCAN_PID_FILE = os.path.join(paths.DATA_DIR, "day_scan.pid")
+DAY_SCAN_PROGRESS = os.path.join(paths.DATA_DIR, "day_scan.json")
+# 和 user_data 里「更新频率」的写法完全一致，别自己发明缩写
+DAY_SCAN_FREQS = ("day", "3天", "周", "月")
+
+
+def _day_scan_read():
+    try:
+        with open(DAY_SCAN_PROGRESS, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _day_scan_write(**kw):
+    d = _day_scan_read()
+    d.update(kw)
+    d["updated"] = time.time()
+    try:
+        tmp = DAY_SCAN_PROGRESS + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, DAY_SCAN_PROGRESS)
+    except OSError:
+        pass
+
+
+def _day_scan_pid():
+    try:
+        with open(DAY_SCAN_PID_FILE, encoding="utf-8") as f:
+            return int((f.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _day_scan_status():
+    prog = _day_scan_read()
+    pid = _day_scan_pid()
+    alive = bool(pid) and _watch_alive(pid)
+    # 进程没了（崩了 / 被强杀）但进度还写着 running：按停了算，别让按钮一直转
+    running = bool(prog.get("running")) and alive
+    return {
+        "ok": True,
+        "running": running,
+        "pid": pid,
+        "total": int(prog.get("total") or 0),
+        "done": int(prog.get("done") or 0),
+        "downloaded": int(prog.get("downloaded") or 0),
+        "current": prog.get("current") or "",
+        "budget": int(prog.get("budget") or 0),
+        "note": prog.get("note") or "",
+        "errors": prog.get("errors") or [],
+        "skip_watch": int(prog.get("skip_watch") or 0),
+        "skip_bad": int(prog.get("skip_bad") or 0),
+        # 累计「扫档」下到的条数：进程被手动停掉时本次计数可能来不及写，
+        # 用它兜底决定「看下到的作品」按钮出不出现
+        "cum": len(WC.load_downloads("day")),
+        "freq": prog.get("freq") or "",
+        "started_at": float(prog.get("started_at") or 0),
+        "finished_at": float(prog.get("finished_at") or 0),
+        "python312_ok": os.path.isfile(paths.PYTHON312),
+    }
+
+
+def _day_scan_start(freq="day"):
+    freq = str(freq or "day").strip()
+    if freq not in DAY_SCAN_FREQS:
+        return {"ok": False, "error": "不认识的档位：%s" % freq}
+    st = _day_scan_status()
+    if st["running"]:
+        return {"ok": False,
+                "error": "已经在扫「%s」档了，先停掉再换档" % (st.get("freq") or "?")}
+    if not st["python312_ok"]:
+        return {"ok": False,
+                "error": "找不到 Python 3.12：%s（抖音签名组件只能在 3.12 里跑）"
+                         % paths.PYTHON312}
+    if _watch_status().get("running"):
+        # 两边同时查同一批号，请求曲线翻倍，最容易撞限流
+        return {"ok": False,
+                "error": "追更正在运行。先停掉追更再扫（两个任务同时查号容易被限流）"}
+    script = os.path.join(paths.SRC_DIR, "day_scan.py")
+    if not os.path.isfile(script):
+        return {"ok": False, "error": "找不到 %s" % script}
+    try:
+        subprocess.Popen([paths.PYTHON312, "-u", script, "--run", "--freq", freq],
+                         cwd=paths.APP_ROOT,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        return {"ok": False, "error": "启动失败：%s: %s" % (type(e).__name__, e)}
+    # 等它把进度写出来（最多 10 秒）：不然后面几秒网页还显示「没在跑」，像没点动
+    for _ in range(20):
+        time.sleep(0.5)
+        if _day_scan_status().get("running"):
+            break
+    st = _day_scan_status()
+    if not st["running"]:
+        return {"ok": False, "error": "进程没起来，看 data/day_scan.log 里的报错"}
+    return {"ok": True, "status": st}
+
+
+def _day_scan_stop():
+    pid = _day_scan_pid()
+    if not pid or not _watch_alive(pid):
+        _day_scan_write(running=False)
+        return {"ok": False, "error": "没有正在跑的扫 day 档任务"}
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                       capture_output=True, timeout=15,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        return {"ok": False, "error": "停止失败：%s" % e}
+    try:
+        os.remove(DAY_SCAN_PID_FILE)
+    except OSError:
+        pass
+    _day_scan_write(running=False, current="", note="已手动停止")
     return {"ok": True}
 
 
@@ -4729,6 +4860,17 @@ class Handler(BaseHTTPRequestHandler):
         # 追更：状态（名单 + 每个作者进度 + 最近日志）
         if path == "/api/watch/status":
             self._send_json(_watch_status())
+            return
+
+        # 扫 day 档：进度 / 下载明细（结构同追更明细，前端共用一套渲染）
+        if path == "/api/day_scan/status":
+            self._send_json(_day_scan_status())
+            return
+        if path == "/api/day_scan/downloads":
+            try:
+                self._send_json(_watch_downloads("day"))
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
             return
 
         # 追更：逐条下载明细（主界面「累计追更下载」点开就是它，观感照「新下载」）
@@ -5981,6 +6123,24 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(_watch_settings(data.get("settings") or {}, av))
                 elif act == "reset":
                     self._send_json(_watch_reset_baseline(data.get("uid")))
+                else:
+                    self._send_json({"ok": False, "error": "不认识的 action：%s" % act})
+            except Exception as e:
+                self._send_json({"ok": False,
+                                 "error": "%s: %s" % (type(e).__name__, e)})
+            return
+
+        # 扫频率档：开始 / 停止（body 里带 freq = day / 3天 / 周 / 月）
+        if path == "/api/day_scan":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8")
+                data = json.loads(body) if body else {}
+                act = (data.get("action") or "start").strip()
+                if act == "stop":
+                    self._send_json(_day_scan_stop())
+                elif act == "start":
+                    self._send_json(_day_scan_start(data.get("freq") or "day"))
                 else:
                     self._send_json({"ok": False, "error": "不认识的 action：%s" % act})
             except Exception as e:

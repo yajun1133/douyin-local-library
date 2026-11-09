@@ -3544,20 +3544,24 @@ def _watch_status():
     }
 
 
-def _watch_downloads():
+def _watch_downloads(since=0):
     """追更下载明细，按作者分组 —— 结构刻意和 /api/new_downloads 对齐，
     前端直接喂给 renderNewDownloads()，观感和「新下载」完全一样。
 
     数据来自 data/watch_downloads.jsonl（追更自己写的流水）。2026-11-08 之前
     只有每个作者的计数、没有逐条记录，历史那份用
     tools/backfill_watch_downloads.py 从 watch.log + download_log.db 回填。
+
+    since：只要 ts（文件落盘时间）>= since 的记录。0 = 全部。
+    2026-11-09 用户要求「仅追更下载也要有时间范围，今天有哪些下载了」，
+    所以这里和 /api/new_downloads 一样按下载时间切，而不是按作品发布日期。
     """
     import scanner as _sc
 
     load_data()
     load_user_data()
     accs = CACHE.get("accounts") or {}
-    recs = WC.load_downloads()
+    recs = [r for r in WC.load_downloads() if int(r.get("ts") or 0) >= int(since or 0)]
 
     groups, order = {}, []
     for r in recs:
@@ -4751,8 +4755,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # 追更：逐条下载明细（主界面「累计追更下载」点开就是它，观感照「新下载」）
+        # since：按**下载落盘时间**过滤（秒），和 /api/new_downloads 同一套口径，
+        # 用户在「仅追更下载」上切「今天/近 3 天」用的就是它
         if path == "/api/watch/downloads":
-            self._send_json(_watch_downloads())
+            try:
+                since = int((parsed_q.get("since") or ["0"])[0] or 0)
+            except ValueError:
+                since = 0
+            self._send_json(_watch_downloads(since))
             return
 
         # 数据体检：账号数 / 封面数 / 最近保存 / 自动备份（用户最怕「数据被弄丢」）

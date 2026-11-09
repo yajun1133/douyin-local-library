@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261109c164';
+    content: 'v20261109c165';
     position: fixed;
     right: 6px;
     bottom: 3px;

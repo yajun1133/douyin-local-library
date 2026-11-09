@@ -8096,15 +8096,15 @@ function applyNdWatchMode(on) {
     if (t) {
         t.classList.toggle('on', !!on);
         t.title = on
-            ? '正在只看追更下到的作品（不受时间范围/作者筛选影响）；再点一下回到全部下载'
+            ? '正在只看追更下到的作品（时间范围照用；作者筛选不适用）；再点一下回到全部下载'
             : '按下：只看追更下到的作品；不按 = 全部下载';
     }
-    // 追更的数据源（watch_downloads.jsonl）没有时间范围、也不接作者属性筛选，
-    // 所以这些控件留着但点不动 —— 比藏起来好，藏起来整行会跳。
+    // 时间范围两种模式都能用（2026-11-09 用户要求「仅追更下载也要有时间范围」），
+    // 追更那边走 /api/watch/downloads?since=，按文件落盘时间切，口径和新下载一致。
     document.querySelectorAll('#ndRangeBar [data-range]').forEach((b) => {
-        b.disabled = !!on;
-        b.classList.toggle('on', !on && b.dataset.range === newDlState.range);
+        b.classList.toggle('on', b.dataset.range === newDlState.range);
     });
+    // 作者属性筛选只有 /api/new_downloads 支持，追更这边暂时不接，按下时点不动
     const fb = document.getElementById('ndFilterBtn');
     if (fb) {
         fb.disabled = !!on;
@@ -8132,7 +8132,10 @@ async function refreshWatchDownloads() {
     if (!body) return;
     body.innerHTML = '<div class="loading">读取中…</div>';
     try {
-        const d = await fetch('/api/watch/downloads', { cache: 'no-store' }).then((r) => r.json());
+        // 和 /api/new_downloads 同一套时间口径：since 是本地 0 点/近 N 天的起点
+        const since = ndSince(newDlState.range);
+        const d = await fetch('/api/watch/downloads?since=' + since, { cache: 'no-store' })
+            .then((r) => r.json());
         if (!d || d.ok === false) throw new Error((d && d.error) || '读取失败');
         // 结构照 /api/new_downloads 造：has_more=false 后台就不会去翻页
         newDlState.data = {
@@ -8843,9 +8846,15 @@ function renderNewDownloads(opts) {
     }
 
     if (!total) {
-        body.innerHTML = '<div class="nd-empty">' + (newDlState.range === 'today'
-            ? '今天还没有新下载。<br>刚跑完 DouK 如果这里是空的，点右上角 <b>🔄 刷新</b>——服务端要等下载安静 5 秒后才会扫到新文件。'
-            : '这个范围里没有新下载，换个时间范围看看。') + '</div>';
+        // 「仅追更下载」也在按时间范围切了（2026-11-09），空态话术要分清是哪个模式
+        const tip = newDlState.watchOnly
+            ? (newDlState.range === 'today'
+                ? '今天追更还没下到作品 —— 追更不是每天都下，切「近 3 天 / 近 7 天」看看。'
+                : '这个时间范围里没有追更下载的作品，换个范围试试。')
+            : (newDlState.range === 'today'
+                ? '今天还没有新下载。<br>刚跑完 DouK 如果这里是空的，点右上角 <b>🔄 刷新</b>——服务端要等下载安静 5 秒后才会扫到新文件。'
+                : '这个范围里没有新下载，换个时间范围看看。');
+        body.innerHTML = '<div class="nd-empty">' + tip + '</div>';
         return;
     }
 

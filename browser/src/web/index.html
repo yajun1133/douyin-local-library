@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c163">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c163">
-    <link rel="stylesheet" href="style.css?v=20261109c163">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c164">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c164">
+    <link rel="stylesheet" href="style.css?v=20261109c164">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -488,12 +488,12 @@
             <section id="newView" class="hidden">
                 <div class="view-header">
                     <h2><span id="newViewTitle">新下载</span> <span class="view-sub" id="newViewSub"></span></h2>
-                    <!-- 追更模式才显示：从「追更 → 累计追更下载」点进来时，这里替换掉时间范围条 -->
-                    <div class="view-sort hidden" id="ndWatchBar">
-                        <button class="btn" onclick="openNewDownloadsView()" title="回到「新下载」：全部作者、按时间范围看">← 全部下载</button>
-                        <button class="btn" onclick="refreshWatchDownloads()" title="重新读一遍追更的下载流水">🔄 刷新</button>
-                    </div>
                     <div class="view-sort nd-range" id="ndRangeBar">
+                        <!-- 追更开关（2026-11-09）：按下 = 只看追更下到的作品，再按一下 = 全部下载。
+                             追更的数据源没有时间范围/作者筛选，按下时下面那些按钮会变灰。 -->
+                        <button class="btn nd-watch-toggle" id="ndWatchToggle" onclick="toggleNdWatchOnly()"
+                                title="按下：只看追更下到的作品；不按 = 全部下载">仅追更下载</button>
+                        <span class="nd-sep" aria-hidden="true"></span>
                         <button class="btn on" data-range="today" onclick="ndPickRange('today')" title="只算今天（0 点以后）落盘的文件">今天</button>
                         <button class="btn" data-range="3d" onclick="ndPickRange('3d')" title="最近 72 小时">近 3 天</button>
                         <button class="btn" data-range="7d" onclick="ndPickRange('7d')" title="最近 7 天">近 7 天</button>
@@ -983,6 +983,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261109c163"></script>
+    <script src="app.js?v=20261109c164"></script>
 </body>
 </html>

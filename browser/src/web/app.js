@@ -1116,9 +1116,7 @@ async function openAuthor(uid, workIndex, transition = 'forward') {
         const inNew = state.view === 'new' || (document.getElementById('newView') && !document.getElementById('newView').classList.contains('hidden'));
         // 从「追更」名单点进来 → 返回时回追更页（筛选档位和滚动位置都还在）
         const inWatch = state.view === 'watch' || (document.getElementById('watchView') && !document.getElementById('watchView').classList.contains('hidden'));
-        // 「追更下载」也借用 newView，但它必须先于 inNew 判 —— 否则返回会掉到「新下载」
-        state.returnView = state.view === 'watchDl' ? 'watchDl'
-            : (inExport ? 'export' : (inWatch ? 'watch' : (inNew ? 'new' : (inBatch ? 'batch' : (inAlts ? 'alts' : (inFav ? 'favorites' : 'authors'))))));
+        state.returnView = inExport ? 'export' : (inWatch ? 'watch' : (inNew ? 'new' : (inBatch ? 'batch' : (inAlts ? 'alts' : (inFav ? 'favorites' : 'authors')))));
     }
     document.getElementById('authorView').classList.add('hidden');
     document.getElementById('altView').classList.add('hidden');
@@ -1372,19 +1370,9 @@ function backToList() {
         const eb2 = document.getElementById('exportBtn');
         if (eb2) eb2.classList.add('hidden');
         state.listScrollTop = state.viewScroll['export'] || 0;
-    } else if (state.returnView === 'watchDl') {
-        // 从「追更下载」点作者进详情：返回时仍停在追更下载（数据和滚动都在内存里，不重新请求）
-        targetViewId = 'newView';
-        hideAllViews();
-        document.getElementById('newView').classList.remove('hidden');
-        clearSideActive();
-        document.querySelectorAll('#featureList .side-item').forEach(i => i.classList.toggle('active', i.dataset.action === 'watch'));
-        const ebw = document.getElementById('exportBtn');
-        if (ebw) ebw.classList.add('hidden');
-        applyNdWatchMode(true);
-        state.listScrollTop = state.viewScroll['watchDl'] || 0;
     } else if (state.returnView === 'new') {
         // 从「新下载」点作者名进详情：返回时还回新下载页（不重新请求，保留原来那批数据和滚动位置）
+        // 「仅追更下载」按下的状态和已渲染的列表都在，不用重新拿数据
         targetViewId = 'newView';
         hideAllViews();
         document.getElementById('newView').classList.remove('hidden');
@@ -8077,7 +8065,7 @@ function ndStamp(ts) {
     return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
 
-async function openNewDownloadsView() {
+async function openNewDownloadsView(opt) {
     forceCloseDetail();
     rememberViewScroll();
     state.view = 'new';
@@ -8090,25 +8078,53 @@ async function openNewDownloadsView() {
     document.querySelectorAll('#featureList .side-item').forEach((i) => i.classList.toggle('active', i.dataset.action === 'newDownloads'));
     const eb = document.getElementById('exportBtn');
     if (eb) eb.classList.add('hidden');
-    restoreViewScroll('new');
-    applyNdWatchMode(false);
+    // 从「追更」页点进来时 opt.top：那一页的滚动位置不属于这里，别一下跳到半路
+    restoreViewScroll(opt && opt.top ? '__top__' : 'new');
+    applyNdWatchMode(!!(opt && opt.watchOnly));
     renderNdFilter();          // 筛选面板的选项（标签来自 meta）+ 上次的勾选状态
-    await refreshNewDownloads(true);
+    if (newDlState.watchOnly) await refreshWatchDownloads();
+    else await refreshNewDownloads(true);
 }
 
-// ---------- 「追更下载」：借用 newView，只换数据源 ----------
-// 用户要的是「点累计追更下载 → 看到追更下到的作品，界面和新下载一样」。
-// 与其复制一套列表，不如把 newView 切成「追更模式」：隐藏时间范围条，
-// 顶部换成一条「← 全部下载」的返回条，数据走 /api/watch/downloads。
+// ---------- 「仅追更下载」开关（2026-11-09 改） ----------
+// 以前「追更 → 累计追更下载」会另开一个 watchDl 视图：标题变「追更下载」、
+// 时间范围条被替换成一条「← 全部下载」。用户要求改成：点进去就是**新下载页**，
+// 页面上只多一个开关按钮，按下只看追更下到的作品，不按就是全部下载。
 function applyNdWatchMode(on) {
     newDlState.watchOnly = !!on;
+    const t = document.getElementById('ndWatchToggle');
+    if (t) {
+        t.classList.toggle('on', !!on);
+        t.title = on
+            ? '正在只看追更下到的作品（不受时间范围/作者筛选影响）；再点一下回到全部下载'
+            : '按下：只看追更下到的作品；不按 = 全部下载';
+    }
+    // 追更的数据源（watch_downloads.jsonl）没有时间范围、也不接作者属性筛选，
+    // 所以这些控件留着但点不动 —— 比藏起来好，藏起来整行会跳。
+    document.querySelectorAll('#ndRangeBar [data-range]').forEach((b) => {
+        b.disabled = !!on;
+        b.classList.toggle('on', !on && b.dataset.range === newDlState.range);
+    });
+    const fb = document.getElementById('ndFilterBtn');
+    if (fb) {
+        fb.disabled = !!on;
+        fb.title = on ? '仅在追更下载里：不支持按作者筛选，取消「仅追更下载」后再用'
+            : '按作者等级 / 标签 / 账号状态 / 更新频率 / 最后下载时间筛选（和「导出作者信息」同一套）';
+        if (on) {
+            const fp = document.getElementById('ndFilterPanel');
+            if (fp) fp.classList.add('hidden');
+        }
+    }
+    // 标题固定「新下载」—— 人是从这一页点进来的，不该看起来像换了页
     const title = document.getElementById('newViewTitle');
-    const bar = document.getElementById('ndRangeBar');
-    const wbar = document.getElementById('ndWatchBar');
-    if (bar) bar.classList.toggle('hidden', !!on);
-    if (wbar) wbar.classList.toggle('hidden', !on);
-    // 标题单独一个 span：#newViewSub 要留给 renderNewDownloads() 写统计，不能一起清掉
-    if (title) title.textContent = on ? '追更下载' : '新下载';
+    if (title) title.textContent = '新下载';
+}
+
+function toggleNdWatchOnly() {
+    const on = !newDlState.watchOnly;
+    applyNdWatchMode(on);
+    if (on) refreshWatchDownloads();
+    else refreshNewDownloads(true);
 }
 
 async function refreshWatchDownloads() {
@@ -8135,27 +8151,9 @@ async function refreshWatchDownloads() {
 }
 
 async function openWatchDownloadsView() {
-    forceCloseDetail();
-    rememberViewScroll();
-    state.view = 'watchDl';
-    state.returnView = 'watchDl';
-    hideAllViews();
-    const view = document.getElementById('newView');
-    if (view) view.classList.remove('hidden');
-    animateViewEnter('newView', 'neutral');
-    clearSideActive();
-    // 侧栏保持「追更」高亮：用户是从追更页点进来的，不是从「新下载」
-    document.querySelectorAll('#featureList .side-item').forEach((i) => i.classList.toggle('active', i.dataset.action === 'watch'));
-    const eb = document.getElementById('exportBtn');
-    if (eb) eb.classList.add('hidden');
-    restoreViewScroll('watchDl');
-    applyNdWatchMode(true);
-    await refreshWatchDownloads();
-}
-
-function refreshWatchDownloadsClick() {
-    if (newDlState.watchOnly) refreshWatchDownloads();
-    else refreshNewDownloads(true);
+    // 2026-11-09：不再单开「追更下载」视图 —— 直接落到「新下载」页，
+    // 并顺手把「仅追更下载」开关按下（侧栏高亮也算「新下载」，因为人就在这一页）。
+    await openNewDownloadsView({ watchOnly: true, top: true });
 }
 
 function ndPickRange(range) {
@@ -8165,6 +8163,8 @@ function ndPickRange(range) {
 }
 
 async function refreshNewDownloads(showLoading) {
+    // 「仅追更下载」是按下的状态：这时刷新要读追更的流水，不能把全部下载灌进列表
+    if (newDlState.watchOnly) { await refreshWatchDownloads(); return; }
     const body = document.getElementById('newBody');
     if (!body || newDlState.loading) return;
     newDlState.loading = true;
@@ -8824,7 +8824,8 @@ function renderNewDownloads(opts) {
     if (sub) {
         // 卡片上那个日期是**作品发布时间**，而这一页是按**下载时间**切的，
         // 所以「今天」里出现 2025 年的作品是正常的 —— 说明文字写清楚，别让人以为筛错了。
-        const filtered = ndFilterActive() ? ' · 已按作者筛选' : '';
+        // 追更下载走的是另一条数据源，作者属性筛选根本没生效 —— 别在统计里谎报「已筛选」
+        const filtered = (!newDlState.watchOnly && ndFilterActive()) ? ' · 已按作者筛选' : '';
         sub.textContent = total
             ? total + ' 个作品' + (d.has_more ? '（往下滚继续加载）' : '')
                 + ' · ' + (d.total_files || 0) + ' 个文件 · ' + groups.length + ' 位作者' + filtered

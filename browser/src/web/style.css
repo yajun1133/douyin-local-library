@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261109c163';
+    content: 'v20261109c164';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -5478,6 +5478,11 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     font-weight: 600;
 }
 .nd-range .btn.on:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
+
+/* 「仅追更下载」开关（2026-11-09）：和范围按钮同一行，用一条竖线隔开 ——
+   它换的是**数据源**（追更下到的作品 / 全部下载），不是时间范围，别让人误读成第五个档位。 */
+.nd-watch-toggle { height: 26px; padding: 0 10px; font-size: 12px; }
+.nd-range .nd-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; flex: none; }
 
 /* 「新下载」页的按作者筛选面板：和「导出作者信息」同一套口径（每行一个 ＋/－ 组合开关）。
    故意不复用 .filter-panel —— 那个 class 在本文件里有 4 处视图级覆盖，套过来会串样式。 */
@@ -7067,9 +7072,6 @@ details > summary:focus-visible {
 }
 .wv-card-link { position: relative; }
 .wv-card-link:hover::after { color: var(--primary); transform: translateX(2px); }
-/* 追更模式那条返回栏：和名字/按钮排一行，不换行太挤时自动折 */
-#ndWatchBar { gap: 8px; flex-wrap: wrap; }
-#ndWatchBar .wv-note { margin-left: 2px; }
 
 /* =====================================================================
    侧边栏线条图标（2026-11-09，保留项）

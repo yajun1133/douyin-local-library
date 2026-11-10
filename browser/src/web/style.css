@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261110c166';
+    content: 'v20261110c167';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -7263,6 +7263,7 @@ details > summary:focus-visible {
 }
 .wv-noapi-c { flex: none; color: #b45309; font-variant-numeric: tabular-nums; }
 .wv-noapi-t { flex: none; color: #9a6b3f; font-size: 11.5px; }
+.wv-noapi-empty { color: var(--text-muted); font-size: 12.5px; padding: 4px 2px; }
 
 /* 请求用量行（原「今日已用请求」「按当前档位估算」两张卡） */
 .wv-usage {

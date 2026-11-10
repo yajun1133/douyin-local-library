@@ -10148,11 +10148,12 @@ function wvRenderNoApi(d) {
     if (!panel || !list) return;
     const rows = d.no_api || [];
     if (!rows.length) {
-        panel.classList.add('hidden');
-        list.innerHTML = '';
+        // 空着也留着这块 —— 用户 2026-11-10 找不到它在哪，就是因为「没数据就隐藏」。
+        // 位置固定下来，有作者被隐藏/注销时直接出现在这里。
+        if (hint) hint.textContent = '0 位';
+        list.innerHTML = '<div class="wv-noapi-empty">暂时没有扫不到的作者</div>';
         return;
     }
-    panel.classList.remove('hidden');
     if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
     list.innerHTML = rows.map((r) => {
         const tip = (r.reason || '') + '（试了 ' + (r.tries || 0) + ' 次）';

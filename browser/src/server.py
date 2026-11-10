@@ -3515,6 +3515,22 @@ def _watch_status():
         t = r.get("tier") or ("hot" if r.get("is_hot") else "idle")
         tiers[t] = tiers.get(t, 0) + 1
 
+    # 「扫不到」：本地有作品、但接口连查三次（同号两次 + 换号一次）都空。
+    # 2026-11-10 用户要求把每次扫到的这种作者都列出来，放在名单右边。
+    no_api = []
+    for _uid, rec in (state.get("no_api") or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        no_api.append({
+            "uid": str(_uid),
+            "nickname": rec.get("nickname") or str(_uid),
+            "local": int(rec.get("local") or 0),
+            "tries": int(rec.get("tries") or 0),
+            "ts": float(rec.get("ts") or 0),
+            "reason": rec.get("reason") or "",
+        })
+    no_api.sort(key=lambda r: -r["ts"])
+
     return {
         "ok": True,
         "running": running,
@@ -3535,6 +3551,7 @@ def _watch_status():
         "cool_level": int(state.get("cool_level") or 0),
         "consec_fail": int(state.get("consec_fail") or 0),
         "authors": rows,
+        "no_api": no_api,
         "logs": logs,
         "auto_start": bool(watch.get("auto_start", True)),
         "accounts": acc_rows,

@@ -44,9 +44,10 @@ class FakeDy:
     pages=N 时最多返回 N*20 条，模拟真实翻页；fail_all=True 时全部抛错。
     """
 
-    def __init__(self, works, fail_all=False):
+    def __init__(self, works, fail_all=False, empty_first=0):
         self.works = works
         self.fail_all = fail_all
+        self.empty_first = empty_first      # 前 N 枪返回空列表（模拟软限流）
         self.calls = []
         self.reqs = 0
 
@@ -55,6 +56,8 @@ class FakeDy:
         self.reqs += 1
         if self.fail_all:
             raise RuntimeError("HTTP 444")
+        if len(self.calls) <= self.empty_first:
+            return []
         return (self.works.get(sec_uid) or [])[:max(1, pages) * 20]
 
 
@@ -228,20 +231,53 @@ chk("两个号 4 万额度：2.5 万没超",
 
 print("\n[11] 新加作者：基线定在「本地最新那件」，不跳过本地缺的作品")
 d_old = time.strftime("%Y-%m-%d", time.localtime(now - 3 * 86400))
-w_old = mk_aweme("old1", int(now - 3 * 86400), "老作品")
+w_old = mk_aweme("old1", int(time.mktime(time.strptime(d_old, "%Y-%m-%d"))) - 3600, "老作品")
 w_new = mk_aweme("new1", int(now - 2 * 3600), "本地还没有的新作品")
 st = fresh_state()
 dy = FakeDy({"SECe": [w_new, w_old]})
 w = base_watch(["e"])
 r = W.scan_round(dy, w, st, {"e": {(d_old, W.work_key("老作品"))}}, {"e": "dirE"})
 se = st["authors"]["e"]
-chk("基线 = 本地最新那天，不是现在",
-    abs(int(se["last_ts"]) - (time.mktime(time.strptime(d_old, "%Y-%m-%d")) + 86399)) < 2,
+chk("基线 = 本地最新那天的 00:00（当天作品全部重核，靠判重挡）",
+    abs(int(se["last_ts"]) - time.mktime(time.strptime(d_old, "%Y-%m-%d"))) < 2,
     se["last_ts"])
 chk("本地缺的那条被当候选", r["new"] == 1, "new=%d" % r["new"])
 chk("这一轮就动手下了（不是等到下一轮）", (r["downloaded"] + r["failed"]) == 1,
     "dl=%d failed=%d" % (r["downloaded"], r["failed"]))
 chk("老作品没被重下", "old1" in se["seen"], se["seen"])
+
+print("\n[12] 接口返回空但本地有作品：同号再试一次 + 换号再试一次，三次都空才列进「扫不到」")
+cfg_fast = dict(CFG)
+cfg_fast["gap"] = 0.01
+cfg_fast["gap_jitter"] = 0
+w_fast = base_watch(["x"])
+w_fast["settings"] = cfg_fast
+lib_x = {"x": {("2026-01-01", W.work_key("旧作品"))}}
+
+st = fresh_state()
+dy = FakeDy({"SECx": []})
+W.scan_round(dy, w_fast, st, lib_x, {"x": "dirX"}, douk_ids=set())
+chk("一共打了 3 枪（第 1 次 + 重试 2 次）", len(dy.calls) == 3, len(dy.calls))
+chk("记进 no_api", "x" in (st.get("no_api") or {}), list(st.get("no_api") or {}))
+chk("记了本地条数", (st.get("no_api") or {}).get("x", {}).get("local") == 1,
+    (st.get("no_api") or {}).get("x"))
+
+print("\n[13] 换号后查到了：不进「扫不到」，还会把旧记录摘掉")
+st = fresh_state()
+st["no_api"] = {"x": {"nickname": "Nx", "local": 1, "tries": 3, "ts": 0, "reason": "旧的"}}
+dy = FakeDy({"SECx": [mk_aweme("x1", int(now - 100))]}, empty_first=2)
+W.scan_round(dy, w_fast, st, lib_x, {"x": "dirX"}, douk_ids=set())
+chk("第 3 枪才拿到作品", len(dy.calls) == 3, len(dy.calls))
+chk("旧的「扫不到」记录被摘掉", "x" not in (st.get("no_api") or {}), st.get("no_api"))
+
+print("\n[14] 已判定扫不到的作者：12 小时内只打一枪（别把额度耗在这种作者身上）")
+st = fresh_state()
+st["no_api"] = {"x": {"nickname": "Nx", "local": 1, "tries": 3,
+                      "ts": time.time() - 60, "reason": "连查三次都返回空"}}
+dy = FakeDy({"SECx": []})
+W.scan_round(dy, w_fast, st, lib_x, {"x": "dirX"}, douk_ids=set())
+chk("只打 1 枪", len(dy.calls) == 1, len(dy.calls))
+chk("仍在「扫不到」里", "x" in (st.get("no_api") or {}), st.get("no_api"))
 
 print("\n========================")
 if FAIL:

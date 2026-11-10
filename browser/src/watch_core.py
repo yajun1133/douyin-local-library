@@ -1601,6 +1601,36 @@ def _pace(cfg):
     return base * (1 + float(cfg.get("gap_jitter") or 0.3) * random.random())
 
 
+def _retry_empty(dy, sec, nick, pool, cfg, pages):
+    """「接口返回空但本地有作品」时的补救查询（2026-11-10 用户口径）。
+
+    第 1 次已经由调用方查过、结果是空，这里再补两次：
+      · 第 2 次：还是同一个号 —— 偶发抽风、抖音偶尔给一枪空列表
+      · 第 3 次：换一个号 —— 如果是这个号被软限流，换号就好了
+    三次都拿不到作品 → 返回 ([], 3, 原因)，由调用方列进「扫不到」。
+
+    返回 (作品列表, 实际尝试次数, 失败原因)。
+    """
+    reason = ""
+    tries = 1
+    for attempt in (2, 3):
+        time.sleep(_pace(cfg))
+        if attempt == 3 and pool is not None:
+            if not pool.rotate("同一作者连查两次返回空，换号再试"):
+                reason = "只有一个可用账号，换不了号"
+        try:
+            got = dy.author_works(sec, pages=int(pages))
+        except RetryLater as e:
+            return [], tries, "重试时连不上（%s）" % str(e)[:60]
+        except Exception as e:
+            return [], tries, "重试出错（%s）" % str(e)[:60]
+        tries = attempt
+        if got:
+            log("✓ %s 第 %d 次查到了（%s）" % (nick, attempt, "换号后" if attempt == 3 else "同一个号"))
+            return got, tries, ""
+    return [], tries, reason or "连查三次都返回空"
+
+
 def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                douk_ids=None):
     """扫一轮。返回统计 dict。
@@ -1739,22 +1769,53 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             had_works = len(lib_idx.get(uid) or ())
             if had_works:
                 # 本地明明有几十上百条，接口却返回空 —— 不是"没作品"，多半是这位作者
-                # 改名/隐藏/注销，也可能抖音开始对你软限流（返回 200 + 空列表）。
-                # 单个出现只当提示；连着好几位都这样，就按限流处理（换号 / 停一会儿）。
-                stats["empty"] = int(stats.get("empty") or 0) + 1
-                log("· %s 接口返回空（本地有 %d 条，可能被隐藏/注销；连续 5 位就会换号）"
-                    % (nick, had_works))
-                if stats["empty"] >= 5:
-                    if pool is not None:
-                        pool.mark_fail("连续 %d 位返回空列表" % stats["empty"], cfg=cfg)
-                        pool.rotate("连续空列表，疑似软限流")
-                    stats["empty"] = 0
+                # 改名/隐藏/注销，也可能抖音开始对你这个号软限流（200 + 空列表）。
+                # 2026-11-10 用户口径：同一个号连查两次都空 → 换另一个号再查一次；
+                # 三次都不成才算「扫不到」，列到追更页右边的「扫不到」面板里。
+                # 已经判定过「扫不到」的作者，12 小时内再遇到就只打一枪 ——
+                # 否则每轮都要为他多打两次，几十位这样的作者能把每日额度吃光。
+                # 一旦他恢复（随便一次查到了作品），下面会把记录摘掉、恢复正常节奏。
+                prev = (state.get("no_api") or {}).get(uid) or {}
+                recent = (time.time() - float(prev.get("ts") or 0)) < 43200
+                if recent:
+                    al, tries, why = [], 1, prev.get("reason") or "此前已判定扫不到"
+                else:
+                    al, tries, why = _retry_empty(
+                        dy, sec, nick, pool, cfg, int(cfg.get("per_author_pages") or 1))
+                if not al:
+                    if not dry:      # 试运行不动状态：否则面板会挂一堆"假扫不到"
+                        state.setdefault("no_api", {})[uid] = {
+                            "nickname": nick,
+                            "local": had_works,
+                            "tries": max(tries, int(prev.get("tries") or 0)),
+                            "ts": time.time(),
+                            "reason": why,
+                        }
+                    if recent:
+                        log("· %s 仍扫不到（本地 %d 条，%s）—— 已在「扫不到」里"
+                            % (nick, had_works, why))
+                    else:
+                        stats["empty"] = int(stats.get("empty") or 0) + 1
+                        log("· %s 扫不到（本地 %d 条，试了 %d 次：%s）—— 已列进「扫不到」"
+                            % (nick, had_works, tries, why))
+                        # 连着好几位都这样，基本就是这个号被软限流了，再换一次号 / 歇一会儿
+                        if stats["empty"] >= 5:
+                            if pool is not None:
+                                pool.mark_fail("连续 %d 位扫不到" % stats["empty"], cfg=cfg)
+                                pool.rotate("连续多位扫不到，疑似软限流")
+                            stats["empty"] = 0
             else:
                 log("· %s 没有公开作品" % nick)
+                state.get("no_api", {}).pop(uid, None)
+        # 重试后可能已经拿到作品了 —— 只有真的还空才跳过这一位
+        if not al:
             _save()
             time.sleep(_pace(cfg))
             continue
         stats["empty"] = 0
+        # 这次扫到了：之前记在「扫不到」里的要摘掉，不然面板会一直挂着已经恢复的作者
+        if state.get("no_api", {}).pop(uid, None):
+            _save()
 
         cts = [int(a.get("create_time") or 0) for a in al]
         newest = max(cts) if cts else 0
@@ -1832,7 +1893,8 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 首轮遇到就转成一次性「全量补齐」；bulk_done 标记保证只做一次。
         # 两个前提：① lib_idx 非空（索引没建好时不能判断，否则会把全名单都标成全量）；
         #          ② 有作者文件夹（没文件夹就没地方落盘，补了也是白补）。
-        if (not st.get("bulk") and not local and lib_idx and author_dir
+        # 试运行不改状态：否则一次 --dry 就会把基线清成 0（自检 [8] 就是抓这个）。
+        if (not dry and not st.get("bulk") and not local and lib_idx and author_dir
                 and not st.get("bulk_done")):
             st["bulk"] = True
             st["last_ts"] = 0

@@ -10111,6 +10111,7 @@ function wvRender() {
     setV('wvDl', d.total_downloads + '<small>条</small>');
     const beat = document.getElementById('wvBeat');
     if (beat) beat.textContent = d.heartbeat ? wvAgo(d.heartbeat) : '—';
+    wvRenderNoApi(d);
 
     // 风控提示条：冷却中 / 额度用尽 / 估算超上限，都在这里说清楚
     const gb = document.getElementById('wvGuard');
@@ -10136,6 +10137,31 @@ function wvRender() {
     wvRenderTable(rowsAll);
     wvRenderAccounts(d);
     wvRenderLog(d);
+}
+
+// 「扫不到」面板（2026-11-10）：本地有作品、接口连查三次（同号两次 + 换号一次）都空的作者。
+// 没有就整块收起来，别在右栏占一条空白。
+function wvRenderNoApi(d) {
+    const panel = document.getElementById('wvNoApiPanel');
+    const list = document.getElementById('wvNoApiList');
+    const hint = document.getElementById('wvNoApiHint');
+    if (!panel || !list) return;
+    const rows = d.no_api || [];
+    if (!rows.length) {
+        panel.classList.add('hidden');
+        list.innerHTML = '';
+        return;
+    }
+    panel.classList.remove('hidden');
+    if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
+    list.innerHTML = rows.map((r) => {
+        const tip = (r.reason || '') + '（试了 ' + (r.tries || 0) + ' 次）';
+        return '<div class="wv-noapi-row" title="' + escapeHtml(tip) + '">'
+            + '<span class="wv-noapi-n">' + escapeHtml(r.nickname) + '</span>'
+            + '<span class="wv-noapi-c">本地 ' + (r.local || 0) + ' 条</span>'
+            + '<span class="wv-noapi-t">' + (r.ts ? wvAgo(r.ts) : '') + '</span>'
+            + '</div>';
+    }).join('');
 }
 
 // 设置项回填。用户正在改任意一个输入框时不要回填 —— 否则 5 秒轮询会把

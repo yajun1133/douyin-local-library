@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261109c165">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261109c165">
-    <link rel="stylesheet" href="style.css?v=20261109c165">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261110c166">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261110c166">
+    <link rel="stylesheet" href="style.css?v=20261110c166">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -653,6 +653,15 @@
                         </div>
 
                         <div class="wv-side">
+                            <!-- 「扫不到」（2026-11-10 用户要求）：本地有作品、但接口连查三次
+                                 （同号两次 + 换号一次）都返回空的作者。以前只在日志里写一行，
+                                 现在固定列在名单右边，一眼能看到谁被隐藏/注销了。 -->
+                            <div class="wv-panel hidden" id="wvNoApiPanel">
+                                <div class="wv-hd">扫不到<span class="hint" id="wvNoApiHint"></span></div>
+                                <div class="wv-bd wv-pad-sm">
+                                    <div class="wv-noapi" id="wvNoApiList"></div>
+                                </div>
+                            </div>
                             <!-- 2026-11-08：原来的「追更内容」下拉删掉了。
                                  用户原话：「不需要这个追更内容选择，我刚开始想要的是上面
                                  那个（累计追更下载）能点进去看已下载的」。
@@ -692,7 +701,9 @@
                                         </div>
                                         <div class="wv-note-block">
                                             查询失败时<b>先换号再试一次</b>；单个号连续 2 次不成，它自己歇 5 分钟（再犯翻倍），其它号照常跑。<br>
-                                            所有号都不行、连续 5 位作者都查不动，才整体暂停 10 分钟 —— 这时是真被限流了，停下来才安全。
+                                            所有号都不行、连续 5 位作者都查不动，才整体暂停 10 分钟 —— 这时是真被限流了，停下来才安全。<br>
+                                            接口返回空但本地有作品的：<b>同一个号连查两次、再换号查一次</b>，三次都空才判定「扫不到」，
+                                            列在右上角那块；12 小时内不再反复重试，一旦能查到就自动从那里消失。
                                         </div>
                                     </details>
                                 </div>
@@ -983,6 +994,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261109c165"></script>
+    <script src="app.js?v=20261110c166"></script>
 </body>
 </html>

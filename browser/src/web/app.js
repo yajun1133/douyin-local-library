@@ -4647,7 +4647,8 @@ function clearLatestRange() {
 }
 
 // ===== 「全部作者」页筛选面板：每行一个 ＋/－ 圆钮（2026-11-05，和导出页同一套口径） =====
-// ＋ = 包含（勾中的是我要的）/ － = 排除（勾中的去掉）。不同 ＋ 行取并集，－ 行全部剔除。
+// ＋ = 包含（勾中的是我要的）/ － = 排除（勾中的去掉）。
+// 同一行多值是「命中任一」，不同行之间要同时满足；－ 行整个剔除。
 function renderAuthorMatch() {
     const mm = (state.filters && state.filters.matchMap) || {};
     document.querySelectorAll('#filterPanel .export-match').forEach((box) => {
@@ -4751,7 +4752,7 @@ function authorSentence() {
     if (f.watch === 'yes') inc.push('追更中');
     if (f.watch === 'no') inc.push('不在追更');
 
-    let s = inc.length ? inc.join(' 或 ') : '全部作者';
+    let s = inc.length ? inc.join(' 且 ') : '全部作者';
     if (exc.length) s += '，去掉 ' + exc.join('、');
     return s;
 }
@@ -6836,7 +6837,7 @@ const exportState = {
     // 每行左侧的圆钮（2026-11-05 用户口径）：
     //   or  = ＋ 包含：这一行勾中的值属于「我要的」
     //   not = － 排除：这一行勾中的值属于「我要去掉的」
-    // 全是 ＋ 就是纯并集；全都不勾 = 全部作品。
+    // 行内多值取「命中任一」，不同行之间要同时满足；全都不勾 = 全部作品。
     matchMap: { level: 'or', tag: 'or', status: 'or', freq: 'or', watch: 'or', cover: 'or', latest: 'or' },
     uids: null, previewed: false,
     stale: false,            // 预览之后又改了筛选 → 旧名单作废，但提示要留着
@@ -7390,7 +7391,7 @@ function exportSentence() {
         const isNot = (exportState.matchMap || {})[key] === 'not';
         (isNot ? exc : inc).push(t);
     });
-    let s = inc.length ? inc.join(' 或 ') : '全部作品';
+    let s = inc.length ? inc.join(' 且 ') : '全部作品';
     if (exc.length) s += '，去掉 ' + exc.join('、');
     return s;
 }

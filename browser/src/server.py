@@ -492,8 +492,9 @@ def _build_attr_tests(q):
     每行自带一个开关（match_level=not 之类），语义按用户 2026-11-05 的口径：
         ＋（or）  = 包含：这一行勾中的值属于「我要的」
         －（not） = 排除：这一行勾中的值属于「我要去掉的」
-    整体语义：先剔除所有 － 行命中的人，剩下的人里（存在 ＋ 行时）至少命中一个 ＋ 行。
-    全是 ＋ 就是纯并集；全是 － 就是「全部作品，去掉这些」。默认 ＋。
+    整体语义：先剔除所有 － 行命中的人，剩下的必须**同时满足每一个 ＋ 行**
+    （同一行内多个值仍是「命中任一」）。只有 － 行时就是「全部作品，去掉这些」。
+    默认 ＋。
 
     「导出作者信息」「新下载」「全部作者」三处共用这一份 —— 用户要求三边筛选一模一样。
     """
@@ -607,9 +608,13 @@ def _attr_uids(q, accounts, lst):
     out = set()
     for item in lst:
         a = accounts.get(item["uid"])
-        # ＋ 行（or）：至少命中一个；－ 行（not）：命中就剔除。
-        # 没有 ＋ 行时就是「全部作品，去掉 － 那几样」。
-        excluded, or_any, has_or = False, False, False
+        # 同一行内多个值是「命中任一」（OR）；**不同行之间是「都要满足」（AND）**。
+        # 2026-11-10 订正：以前不同 ＋ 行之间取并集，于是「频率=未设置」和
+        # 「追更=不是」两个条件互相放宽，结果直接变成全库 —— 用户一眼看出不对。
+        # － 行：命中就整个剔除。
+        excluded = False
+        has_or = False
+        all_or = True
         for _key, fn, mode in tests:
             hit = bool(fn(item, a))
             if mode == "not":
@@ -618,9 +623,9 @@ def _attr_uids(q, accounts, lst):
                     break
             else:
                 has_or = True
-                if hit:
-                    or_any = True
-        if not excluded and (not has_or or or_any):
+                if not hit:
+                    all_or = False
+        if not excluded and (not has_or or all_or):
             out.add(item["uid"])
     return out
 
@@ -4996,10 +5001,14 @@ class Handler(BaseHTTPRequestHandler):
             if q_cat == "starred" and not (a and a.get("starred")):
                 continue
             # 属性筛选（只在真的选了属性时才起作用）：
-            #   － 行（not）命中就剔除；＋ 行（or）至少要命中一项。
-            # 全是 ＋ 是纯并集，全是 － 就是「全部作品，去掉这几样」（用户 2026-11-05 口径）。
+            #   同一行内多个值是「命中任一」（OR），**不同行之间是「都要满足」（AND）**，
+            #   － 行命中就整个剔除。
+            #   2026-11-10 订正：以前不同 ＋ 行之间取并集，用户勾「频率=未设置」+
+            #   「追更=不是」，两个条件互相放宽 → 直接返回全库 1145 人。
             if attr_test_modes:
-                excluded, or_any, has_or = False, False, False
+                excluded = False
+                has_or = False
+                all_or = True
                 for _key, _fn, _mode in attr_test_modes:
                     hit = bool(_fn(item, a))
                     if _mode == "not":
@@ -5008,9 +5017,9 @@ class Handler(BaseHTTPRequestHandler):
                             break
                     else:
                         has_or = True
-                        if hit:
-                            or_any = True
-                if excluded or (has_or and not or_any):
+                        if not hit:
+                            all_or = False
+                if excluded or (has_or and not all_or):
                     continue
             # sec_uid 有/无
             sec = (item.get("sec_uid") or "").strip()

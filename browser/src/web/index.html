@@ -6,9 +6,9 @@
     <meta name="theme-color" content="#f7f8fa">
     <title>抖音下载浏览器</title>
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
-    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261110c169">
-    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261110c169">
-    <link rel="stylesheet" href="style.css?v=20261110c169">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261110c170">
+    <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261110c170">
+    <link rel="stylesheet" href="style.css?v=20261110c170">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -231,8 +231,8 @@
                                 </div>
                                 <div class="filter-hint">
                                     每行左边的圆钮：<b class="em-plus">＋</b> = <b>包含</b>（勾中的这些是我要的，默认），
-                                    点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值始终是「命中任一」；
-                                    不同行的 ＋ 之间取并集，－ 行全部剔除。一个都不勾 = 全部作者。
+                                    点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值是「命中任一」；
+                                    不同行之间要<b>同时满足</b>（取交集），－ 行整个剔除。一个都不勾 = 全部作者。
                                 </div>
                                 </div>
                                 <div class="filter-foot">
@@ -405,8 +405,8 @@
                             </div>
                             <div class="export-match-hint">
                                 每行左边的圆钮：<b class="em-plus">＋</b> = <b>包含</b>（勾中的这些是我要的，默认），
-                                点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值始终是「命中任一」；
-                                不同行的 ＋ 之间取并集，－ 行全部剔除。一个都不勾 = 全部作品。
+                                点一下变成 <b class="em-minus">－</b> = <b>排除</b>（勾中的这些去掉）。同一行勾多个值是「命中任一」；
+                                不同行之间要<b>同时满足</b>（取交集），－ 行整个剔除。一个都不勾 = 全部作品。
                             </div>
                             <!-- 筛选结果的人话：用户 2026-11-05 要求「下面要写明筛的是什么」 -->
                             <div class="export-sentence" id="exportSentence"><b>筛选结果：</b>全部作品</div>
@@ -545,7 +545,7 @@
                                 <div class="ndf-hint">
                                     每行左边：<b class="em-plus">＋</b> 包含（勾中的是我要的，默认）·
                                     <b class="em-minus">－</b> 排除（勾中的去掉）。同一行勾多个值永远是「命中任一」；
-                                    不同行的 ＋ 之间取并集，－ 行全部剔除。
+                                    不同行之间要<b>同时满足</b>（取交集），－ 行整个剔除。
                                 </div>
                                 <div class="ndf-foot">
                                     <button class="btn btn-mini" onclick="ndResetFilter()" title="全部恢复默认（不限）">↺ 重置</button>
@@ -999,6 +999,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261110c169"></script>
+    <script src="app.js?v=20261110c170"></script>
 </body>
 </html>

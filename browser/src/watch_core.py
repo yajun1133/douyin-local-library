@@ -957,6 +957,22 @@ class AccountPool(object):
         self.i = self.accounts.index(best)
         return best
 
+    def balance(self, now=None):
+        """按「今日请求最少」挑一个号 —— 每次请求前都挑一次，两个号自然均摊。
+
+        2026-11-10 用户发现：池里明明有两个号，第二个的 ok 是 0，一次都没用过。
+        原因是旧逻辑只在**失败**时 rotate()：第一个号一直没失败，就一直用它，
+        所有请求都压在同一个号上，被限流的风险全挂在它身上。
+        现在改成按 req_today 取最小值（同分时取 ok 少的），请求会严格交替。
+        """
+        now = now or time.time()
+        us = self.usable(now)
+        if not us:
+            return None
+        best = min(us, key=lambda x: (int(x.get("req_today") or 0), int(x.get("ok") or 0)))
+        self.i = self.accounts.index(best)
+        return best
+
     def rotate(self, why="", now=None):
         """换到另一个还能用的号。返回 True 表示换了。"""
         now = now or time.time()
@@ -1049,11 +1065,16 @@ class Douyin(object):
         return (a or {}).get("cookie") or {}
 
     def get(self, url, extra, referer="https://www.douyin.com/"):
-        acct = self.pool.current()
+        # 每次请求前按「今日用得最少」挑号（不是只在失败时才换）：
+        # 两个号交替出手，单个号被盯上的概率直接减半
+        acct = self.pool.balance()
         if acct is None:
             # 号都在冷却 ≠ 号坏了。当成网络类「等会儿再来」，不记账、不熔断
             raise RetryLater("账号池里没有可用的号（都在冷却或没登录）")
-        q = self.ff.build_query(self.bi)
+        # 每个号带自己的 browser_info —— 现在两个号交替出手，
+        # 一直用初始化时那个号的指纹会跟 cookie 对不上
+        bi = acct.get("browser_info") or self.bi
+        q = self.ff.build_query(bi)
         q.update(extra)
         q["a_bogus"] = self.ab.get_value(
             self.ff.urlencode(q), body="",
@@ -1061,7 +1082,7 @@ class Douyin(object):
         self.reqs += 1
         acct["req_today"] = int(acct.get("req_today") or 0) + 1
         return self.cr.get(url, params=q,
-                           headers=self.ff.make_headers(self.current_cookie(), referer),
+                           headers=self.ff.make_headers(acct.get("cookie") or {}, referer),
                            impersonate="chrome146", timeout=25,
                            **NO_PROXY_OPTS)
 
@@ -1648,8 +1669,8 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
     now = time.time()
     # 常驻进程可能跨午夜：每轮先把各号的「今日请求」归零，别让昨天的账算到今天头上
     pool = getattr(dy, "pool", None)
-    if pool is not None:
-        pool.reset_day()
+    if pool is not None and pool.reset_day():
+        save_pool(pool.d)      # 跨天了：归零也要落盘，不然面板还显示昨天的数
     n_acc = len([a for a in (pool.accounts if pool else []) if a.get("enabled", True)]) or 1
 
     # 闸门一：冷却中 / 今日额度用完 → 一个请求都不发
@@ -1676,6 +1697,13 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             # 只在循环开头刷的话，网页会误报「没在跑」（阈值 180 秒）。
             state["heartbeat"] = time.time()
             save_state(state)
+            # 各号今日请求数也要落盘：以前只有失败时才存，面板上两个号永远显示 0，
+            # 根本看不出是不是一直只用一个号（2026-11-10 用户发现的）
+            if pool is not None:
+                try:
+                    save_pool(pool.d)
+                except Exception:
+                    pass
 
     def _sync_quota():
         used = int(getattr(dy, "reqs", 0) or 0) - req0

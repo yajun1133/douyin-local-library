@@ -92,8 +92,8 @@ const state = {
     // matchMap：每行左侧的圆钮 —— or=＋包含（默认）/ not=－排除（2026-11-05 用户口径）
     filters: {
         sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
-        level: [], cover: [], status: [], freq: [],
-        matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+        level: [], tag: [], cover: [], status: [], freq: [],
+        matchMap: { level: 'or', tag: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
     },
     searchQuery: '',
     searchScope: '',     // 搜索范围：''(全部) | nickname | note | signature | works
@@ -305,7 +305,11 @@ async function loadAuthors(reset) {
     const mm = state.filters.matchMap || {};
     const mergeSide = (key, sideVal, arr) => {
         const set = new Set();
-        if (mm[key] !== 'not' && sideVal) set.add(sideVal);
+        // 面板这一行只要勾了值，就以面板为准 —— 侧边栏的分类是「浏览入口」，
+        // 两边的值并在一起会出怪结果：只勾「未设置」的频率，却把侧栏正选着的「周」
+        // 也带进来，列表里就冒出周更的作者（2026-11-10 用户报的）。
+        const hasPanel = !!(arr && arr.length);
+        if (!hasPanel && mm[key] !== 'not' && sideVal) set.add(sideVal);
         (arr || []).forEach((v) => set.add(v));
         return Array.from(set);
     };
@@ -315,8 +319,11 @@ async function loadAuthors(reset) {
     if (levelAll.length) params.set('level', levelAll.join(','));
     const freqAll = mergeSide('freq', state.currentFreq, state.filters.freq);
     if (freqAll.length) params.set('freq', freqAll.join(','));
+    // 标签（多选）：__notag = 一个标签都没有
+    const tagAll = state.filters.tag || [];
+    if (tagAll.length) params.set('tag', tagAll.join(','));
     // 每行自己的圆钮：match_x=not 表示这一行是「排除」；不传 = 包含（默认）
-    ['level', 'status', 'freq', 'cover', 'latest'].forEach((k) => {
+    ['level', 'tag', 'status', 'freq', 'cover', 'latest'].forEach((k) => {
         if (mm[k] === 'not') params.set('match_' + k, 'not');
     });
     // 筛选面板：sec_uid 有/无、星标 是/否、封面（多选）
@@ -4577,6 +4584,8 @@ function syncFilterPanelFromState() {
     set('fWatch', f.watch || '');
     set('fLatest', f.latest || '');
     setMulti('fLevel', f.level);
+    renderFilterTags();          // 标签选项是动态的，先建出来再勾
+    setMulti('fTag', f.tag);
     setMulti('fCover', f.cover);
     setMulti('fStatus', f.status);
     setMulti('fFreq', f.freq);
@@ -4592,9 +4601,9 @@ function syncFilterPanelFromState() {
 function readFilterPanel() {
     const f = {
         sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
-        level: [], cover: [], status: [], freq: [],
+        level: [], tag: [], cover: [], status: [], freq: [],
         // 圆钮状态不是从勾选框读的，沿用当前这份（点圆钮时 already 改过了）
-        matchMap: Object.assign({ level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+        matchMap: Object.assign({ level: 'or', tag: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
             (state.filters || {}).matchMap || {}),
     };
     const val = (name) => {
@@ -4613,6 +4622,7 @@ function readFilterPanel() {
     f.watch = val('fWatch');
     f.latest = val('fLatest');
     f.level = valMulti('fLevel');
+    f.tag = valMulti('fTag');
     f.cover = valMulti('fCover');
     f.status = valMulti('fStatus');
     f.freq = valMulti('fFreq');
@@ -4645,12 +4655,38 @@ function renderAuthorMatch() {
         const mode = mm[key] === 'not' ? 'not' : 'or';
         const isNot = mode === 'not';
         box.dataset.mode = mode;
-        box.innerHTML = `<button type="button" class="em-btn ${mode}" data-mode="${mode}"`
-            + ` title="${isNot ? '－ 排除：勾中的这些要去掉（点一下改回 ＋ 包含）'
-                              : '＋ 包含：勾中的这些是我要的（点一下改成 － 排除）'}"`
-            + ` aria-label="${isNot ? '排除' : '包含'}" onclick="toggleAuthorMatch('${key}')">`
-            + (isNot ? '－' : '＋') + '</button>';
+        // **只改属性、不重建 DOM**：以前用 innerHTML 换按钮，点击时旧按钮被替换、
+        // 脱离文档，冒泡到 document 的「点面板外面就收起」判定里 closest('.filter-wrap')
+        // 直接返回 null —— 于是每点一次 ＋/－ 面板就被关掉（2026-11-10 用户报的）。
+        let btn = box.querySelector('.em-btn');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'em-btn';
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleAuthorMatch(key);
+            });
+            box.appendChild(btn);
+        }
+        btn.className = 'em-btn ' + mode;
+        btn.dataset.mode = mode;
+        btn.textContent = isNot ? '－' : '＋';
+        btn.title = isNot ? '－ 排除：勾中的这些要去掉（点一下改回 ＋ 包含）'
+            : '＋ 包含：勾中的这些是我要的（点一下改成 － 排除）';
+        btn.setAttribute('aria-label', isNot ? '排除' : '包含');
     });
+}
+
+// 标签行：选项是用户自定义的，得动态生成（和导出页同一套：没有标签 / 每个标签一项）
+function renderFilterTags() {
+    const box = document.getElementById('filterTagOpts');
+    if (!box) return;
+    const tags = Object.keys((state.meta && state.meta.tags) || {}).sort();
+    const sel = (state.filters && state.filters.tag) || [];
+    box.innerHTML = [['__notag', '没有标签']].concat(tags.map((t) => [t, t]))
+        .map(([v, t]) => '<label><input type="checkbox" name="fTag" value="' + escapeHtml(v) + '"'
+            + (sel.indexOf(v) >= 0 ? ' checked' : '') + '> ' + escapeHtml(t) + '</label>').join('');
 }
 
 function toggleAuthorMatch(key) {
@@ -4691,6 +4727,8 @@ function authorSentence() {
     const add = (key, text) => { if (text) (mm[key] === 'not' ? exc : inc).push(text); };
     const lv = (f.level || []).map((v) => (v === '__unset' ? '未设置' : v));
     add('level', lv.length ? '等级：' + lv.join('、') : '');
+    const tg = (f.tag || []).map((v) => (v === '__notag' ? '没有标签' : v));
+    add('tag', tg.length ? '标签：' + tg.join('、') : '');
     const st = (f.status || []).map((v) => (v === '__unset' ? '未设置' : v));
     add('status', st.length ? '状态：' + st.join('、') : '');
     const fr = (f.freq || []).map((v) => (v === '__unset' ? '未设置' : v));
@@ -4739,8 +4777,8 @@ function applyFilterPanel() {
 function resetFilterPanel() {
     state.filters = {
         sec_uid: '', starred: '', watch: '', latest: '', latestFrom: '', latestTo: '',
-        level: [], cover: [], status: [], freq: [],
-        matchMap: { level: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
+        level: [], tag: [], cover: [], status: [], freq: [],
+        matchMap: { level: 'or', tag: 'or', cover: 'or', status: 'or', freq: 'or', latest: 'or' },
     };
     syncFilterPanelFromState();
     updateFilterDot();
@@ -4753,7 +4791,8 @@ function resetFilterPanel() {
 function updateFilterDot() {
     const f = state.filters || {};
     const active = !!(f.sec_uid || f.starred || f.watch || f.latest
-        || (f.level && f.level.length) || (f.cover && f.cover.length)
+        || (f.level && f.level.length) || (f.tag && f.tag.length)
+        || (f.cover && f.cover.length)
         || (f.status && f.status.length) || (f.freq && f.freq.length));
     const dot = document.getElementById('filterDot');
     if (dot) dot.classList.toggle('hidden', !active);
@@ -4763,12 +4802,12 @@ function updateFilterDot() {
 function bindFilterPanelEvents() {
     const panel = document.getElementById('filterPanel');
     if (!panel) return;
-    panel.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach((inp) => {
-        inp.addEventListener('change', () => {
-            // 最后更新的模式切换要先展开/收起日期区
-            if (inp.name === 'fLatest') onLatestModeChange();
-            applyFilterPanel();
-        });
+    // 委托到面板上：标签行是动态生成的，逐个绑定会漏掉新加的那些
+    panel.addEventListener('change', (e) => {
+        const inp = e.target;
+        if (!inp || (inp.type !== 'radio' && inp.type !== 'checkbox')) return;
+        if (inp.name === 'fLatest') onLatestModeChange();
+        applyFilterPanel();
     });
     // 自定义日期：改了就生效
     ['latestFrom', 'latestTo'].forEach((id) => {

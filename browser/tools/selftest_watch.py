@@ -217,6 +217,20 @@ chk("这个号一歇，下一个请求就自动用号 2", p.current()["label"] =
 chk("只剩一个可用号时，再换也换不动（不会死循环）", p.rotate("测试") is False)
 chk("可用号只剩 1 个", len(p.usable()) == 1, len(p.usable()))
 
+print("\n[15] 两个号必须交替出手（旧逻辑是「第一个用到死」）")
+_write_pool(2)
+pb = W.AccountPool()
+pb.reset_day()
+seq = []
+for _ in range(6):
+    a = pb.balance()
+    a["req_today"] = int(a.get("req_today") or 0) + 1
+    seq.append(a.get("label"))
+chk("两个号都轮到了", len(set(seq)) == 2, seq)
+chk("严格交替，不会连着两次同一个号",
+    all(seq[i] != seq[i + 1] for i in range(len(seq) - 1)), seq)
+chk("各打 3 次（真正的均摊）", [seq.count(x) for x in sorted(set(seq))] == [3, 3], seq)
+
 _write_pool(1)
 p1 = W.AccountPool()
 p1.mark_fail("x")

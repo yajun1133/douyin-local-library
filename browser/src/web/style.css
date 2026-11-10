@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261110c168';
+    content: 'v20261110c169';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -7312,3 +7312,16 @@ details > summary:focus-visible {
    收进 title 提示，头部只留标题 + 两颗按钮。 */
 .wv-hd-acc { flex-wrap: wrap; row-gap: 6px; }
 .wv-hd-acc .hint { display: none; }
+
+/* 有新版本提示条（2026-11-10）：右下角一个可以点的胶囊，点一下刷新页面 */
+.app-update-tip {
+    position: fixed; right: 18px; bottom: 18px; z-index: 9999;
+    padding: 9px 14px; border-radius: 999px;
+    background: var(--primary); color: #fff;
+    font-size: 13px; line-height: 1; cursor: pointer;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, .18);
+    animation: appTipIn .18s ease-out;
+}
+.app-update-tip b { font-weight: 700; }
+.app-update-tip:hover { filter: brightness(1.06); }
+@keyframes appTipIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

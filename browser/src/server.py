@@ -13,6 +13,7 @@
 import os
 import sys
 import json
+import re
 import hashlib
 import subprocess
 import functools
@@ -3561,6 +3562,20 @@ def _watch_status():
     }
 
 
+def _app_version():
+    """当前前端版本号 —— index.html 里 `app.js?v=xxx` 那串。
+
+    页面每 60 秒拿它跟自己加载时的版本比一次，不一致就提示「有新版本，点此刷新」。
+    没有这个提示，用户不刷新就会一直用旧逻辑，还会以为改了没生效（2026-11-10 踩过）。
+    """
+    try:
+        with open(os.path.join(paths.WEB_DIR, "index.html"), encoding="utf-8") as f:
+            m = re.search(r"app\.js\?v=([0-9A-Za-z]+)", f.read())
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
+
+
 def _watch_downloads(since=0):
     """追更下载明细，按作者分组 —— 结构刻意和 /api/new_downloads 对齐，
     前端直接喂给 renderNewDownloads()，观感和「新下载」完全一样。
@@ -4815,6 +4830,11 @@ class Handler(BaseHTTPRequestHandler):
         # 标签/年份聚合
         if path == "/api/meta":
             self._api_meta()
+            return
+
+        # 前端版本自检：页面用它判断自己加载的是不是旧文件
+        if path == "/api/version":
+            self._send_json({"ok": True, "version": _app_version()})
             return
 
         # 大小号分组：一「组」就是一个文件夹（左侧「大小号」入口用）

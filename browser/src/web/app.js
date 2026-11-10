@@ -10533,3 +10533,32 @@ window.addEventListener('load', () => {
             .catch(() => { });
     }, 1200);
 });
+
+// ===== 版本自检（2026-11-10）=====
+// 改了代码但用户页面一直开着不刷新，还在跑旧逻辑 —— 会以为「改了没生效」。
+// 这里每 60 秒问一次服务器版本，跟本页面加载时的版本比，不一致就弹一条可点的提示。
+(function watchAppVersion() {
+    const tag = document.querySelector('script[src*="app.js"]');
+    const m = tag && tag.src.match(/[?&]v=([0-9A-Za-z]+)/);
+    const mine = m ? m[1] : '';
+    if (!mine) return;
+    let shown = false;
+    const tick = () => {
+        if (shown) return;
+        fetch('/api/version', { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((d) => {
+                if (!d || !d.version || d.version === mine) return;
+                shown = true;
+                const el = document.createElement('div');
+                el.className = 'app-update-tip';
+                el.innerHTML = '有新版本 <b>v' + d.version + '</b> —— 点这里刷新';
+                el.title = '你现在的页面是 v' + mine + '，服务器已经更新';
+                el.onclick = () => location.reload();
+                document.body.appendChild(el);
+            })
+            .catch(() => { });
+    };
+    setTimeout(tick, 3000);
+    setInterval(tick, 60000);
+})();

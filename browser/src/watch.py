@@ -155,13 +155,15 @@ def cmd_add(args):
             "uid": str(uid), "sec_uid": a.get("sec_uid") or "",
             "nickname": a.get("nickname") or "", "added_at": W.now_str(),
             "enabled": True,
+            # 新加入 → 先把现有作品整体扫一遍并下载缺的（2026-11-10 用户要求）
+            "full_scan": True,
         })
         have.add(str(uid))
         added += 1
         print("＋ %s (uid=%s)" % (a.get("nickname"), uid))
     if added:
         W.save_watch(d)
-        print("\n已加入 %d 位。首次扫描只建基线（不补历史），从下一条新作品开始下。" % added)
+        print("\n已加入 %d 位。下一轮会先把 TA 的现有作品整体扫一遍，缺的补下。" % added)
     return 0
 
 
@@ -178,6 +180,7 @@ def cmd_add_top(args):
             "uid": str(uid), "sec_uid": a.get("sec_uid") or "",
             "nickname": a.get("nickname") or "", "added_at": W.now_str(),
             "enabled": True,
+            "full_scan": True,
         })
     if picked:
         W.save_watch(d)
@@ -296,10 +299,43 @@ def cmd_loop(args):
                 continue
             W.log("到点 %d 位，开扫" % len(due))
             lib_idx, lib_folders = W.load_library_index()
-            res = W.scan_round(dy, {"authors": due, "settings": watch["settings"]},
-                               state, lib_idx, lib_folders)
-            W.save_state(state)
-            if (res or {}).get("paused"):
+            # 一轮可能跑十几分钟（几十上百位作者）。用户在这期间新加了作者，
+            # 不能让他干等到整轮结束 —— 2026-11-10 的要求是「加进追更就立刻扫一遍」。
+            # 所以把这一轮切成小块（每块 30 位），块与块之间重新读一次名单，
+            # 把新加进来、还没全量过的作者插到下一块最前面。
+            # 下载额度仍是「整轮共用 max_per_round」：每块按剩余额度递减，
+            # 不然切块会把「单轮最多 40 条」的防爆量限制放大成 40×块数。
+            chunk_size = 30
+            left = int(watch["settings"].get("max_per_round") or 40)
+            queue = list(due)
+            res = {}
+            while queue and left > 0:
+                block, queue = queue[:chunk_size], queue[chunk_size:]
+                try:
+                    fresh = W.which_authors_due(W.load_watch(), state)
+                except Exception:
+                    fresh = []
+                for x in fresh:
+                    u = str(x.get("uid") or "")
+                    st_x = state["authors"].get(u) or {}
+                    if not u or not x.get("full_scan"):
+                        continue
+                    if st_x.get("full_done_for") == (x.get("added_at") or ""):
+                        continue
+                    # 已经在本轮排过的就不重复排
+                    if any(str(y.get("uid")) == u for y in block + queue):
+                        continue
+                    queue.insert(0, x)
+                    W.log("＋ 名单里新加了一位，插到本块前面先扫")
+                cfg2 = dict(watch["settings"])
+                cfg2["max_per_round"] = max(1, left)
+                res = W.scan_round(dy, {"authors": block, "settings": cfg2},
+                                   state, lib_idx, lib_folders) or {}
+                W.save_state(state)
+                left -= int(res.get("downloaded") or 0)
+                if res.get("paused"):
+                    break
+            if res.get("paused"):
                 time.sleep(60)
         except KeyboardInterrupt:
             W.log("已手动停止")

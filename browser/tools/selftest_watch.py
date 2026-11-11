@@ -51,14 +51,18 @@ class FakeDy:
         self.calls = []
         self.reqs = 0
 
-    def author_works(self, sec_uid, pages=1, retry=2):
+    def author_works(self, sec_uid, pages=1, retry=2, with_more=False):
         self.calls.append((sec_uid, pages))
         self.reqs += 1
         if self.fail_all:
             raise RuntimeError("HTTP 444")
         if len(self.calls) <= self.empty_first:
-            return []
-        return (self.works.get(sec_uid) or [])[:max(1, pages) * 20]
+            return ([], False) if with_more else []
+        allw = self.works.get(sec_uid) or []
+        n = max(1, pages) * 20
+        out = allw[:n]
+        # with_more：告诉调用方「翻满页数后还有没有更早的作品」（全量扫要它）
+        return (out, len(allw) > n) if with_more else out
 
 
 def mk_aweme(aid, ts, desc="d"):
@@ -292,6 +296,54 @@ dy = FakeDy({"SECx": []})
 W.scan_round(dy, w_fast, st, lib_x, {"x": "dirX"}, douk_ids=set())
 chk("只打 1 枪", len(dy.calls) == 1, len(dy.calls))
 chk("仍在「扫不到」里", "x" in (st.get("no_api") or {}), st.get("no_api"))
+
+print("\n[16] 新加进追更：立刻把 TA 现有作品整体扫一遍（不只下新的）")
+# 库里已有 d1/d2（老作品），抖音上还有 d3/d4/d5 没下过。
+# 正常追更只会看「比基线新的」，全量必须把老的也捞出来。
+day_a = _dt.fromtimestamp(now - 3 * 86400).strftime("%Y-%m-%d")
+day_b = _dt.fromtimestamp(now - 2 * 86400).strftime("%Y-%m-%d")
+lib_d = {"d": {(day_a, W.work_key("老作品A", CFG["desc_len"])),
+               (day_b, W.work_key("老作品B", CFG["desc_len"]))}}
+st = fresh_state()
+# 已经追了一段时间、基线推到最新 —— 这种情况下普通逻辑一条都不会再下
+st["authors"]["d"] = {"last_ts": int(now), "seen": ["d1", "d2"], "downloads": 2,
+                      "fails": {}, "last_post": int(now)}
+works = {"SECd": [mk_aweme("d5", int(now - 3600), "新作品E"),
+                  mk_aweme("d4", int(now - 86400), "新作品D"),
+                  mk_aweme("d3", int(now - 2 * 86400), "新作品C"),
+                  mk_aweme("d2", int(now - 2 * 86400), "老作品B"),
+                  mk_aweme("d1", int(now - 3 * 86400), "老作品A")]}
+dy = FakeDy(works)
+w = base_watch(["d"])
+w["authors"][0]["full_scan"] = True
+w["authors"][0]["added_at"] = "2026-11-10 13:00:00"
+r = W.scan_round(dy, w, st, lib_d, {"d": "dirD"})
+sd = st["authors"]["d"]
+chk("三条没下过的都进了候选（全量不看基线）", r["new"] == 5, "new=%d" % r["new"])
+chk("本地缺的那 3 条都去下了（假下载器必失败，所以计在 failed）",
+    r["failed"] == 3, "failed=%d" % r["failed"])
+chk("本地已有的那两条算跳过（不重下）", r["skipped"] >= 2, "skip=%d" % r["skipped"])
+chk("记下「已做过全量」的标记", sd.get("full_done_for") == "2026-11-10 13:00:00",
+    sd.get("full_done_for"))
+chk("收尾后不再是 bulk", not sd.get("bulk"), sd.get("bulk"))
+
+# 同一个作者再来一轮：不能又全量一遍
+n0 = len(dy.calls)
+W.scan_round(dy, w, st, lib_d, {"d": "dirD"})
+chk("第二轮不再重复全量（没有新候选）", st["authors"]["d"]["downloads"] == sd["downloads"],
+    st["authors"]["d"]["downloads"])
+
+print("\n[17] 新加的作者插到队首；补不完时不会被立刻反复叫起来")
+w2 = base_watch(["p", "q"])
+w2["authors"][1]["full_scan"] = True
+w2["authors"][1]["added_at"] = "T-NEW"
+due = W.which_authors_due(w2, {"authors": {}})
+chk("新加的那位排在最前", str(due[0]["uid"]) == "q", [x["uid"] for x in due])
+st2 = {"authors": {"q": {"bulk": True, "full_done_for": "",
+                         "next_check": time.time() + 300}}}
+due2 = W.which_authors_due(w2, st2)
+chk("正在补（bulk=True）时不插队，按 next_check 等",
+    all(str(x["uid"]) != "q" for x in due2), [x["uid"] for x in due2])
 
 print("\n========================")
 if FAIL:

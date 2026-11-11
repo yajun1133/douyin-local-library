@@ -1655,7 +1655,8 @@ async function toggleWatch(uid) {
         if (d.watching) a.watch_next = 0;   // 下一轮排期由服务端现算，先别显示旧值
         paintWatchBar();
         showToast(d.watching
-            ? (d.added ? ('已加入追更，名单共 ' + (d.count || 1) + ' 位作者') : '已恢复追更')
+            ? (d.added ? ('已加入追更，正在扫 TA 的全部作品（名单共 ' + (d.count || 1) + ' 位）')
+                       : '已恢复追更')
             : '已取消追更');
     } catch (e) {
         showToast('追更失败：' + (e && e.message ? e.message : e));
@@ -10456,7 +10457,9 @@ async function wvAdd() {
     const j = await wvPost({ action: 'add', token: v });
     if (!j || !j.ok) return;
     const n = (j.added || []).length;
-    let msg = n ? ('加入 ' + n + ' 位') : '没有新增';
+    // 新加的作者会先被整体扫一遍（watch.json 的 full_scan 标记），下一轮就动手，
+    // 所以这里如实说一句，免得用户以为「加了但没动静」
+    let msg = n ? ('加入 ' + n + ' 位，马上开始扫 TA 的全部作品') : '没有新增';
     if ((j.skipped || []).length) msg += '，' + j.skipped.length + ' 位已在名单';
     if ((j.errors || []).length) msg += '；' + j.errors[0];
     showToast(msg);

@@ -3785,6 +3785,10 @@ def _watch_add(tokens):
             "uid": str(uid), "sec_uid": a.get("sec_uid") or "",
             "nickname": a.get("nickname") or "", "added_at": WC.now_str(),
             "enabled": True,
+            # 新加进追更 → 先把他现有作品整体扫一遍并下载缺的（2026-11-10 用户要求）。
+            # 真正的全量逻辑在 watch_core.scan_round 里，这里只留个标记；
+            # 跑完会写 st["full_done_for"]=added_at，标记就不会再生效。
+            "full_scan": True,
         })
         have.add(str(uid))
         added.append({"uid": str(uid), "nickname": a.get("nickname") or ""})
@@ -3867,6 +3871,8 @@ def _watch_add_batch(data):
                 "uid": u, "sec_uid": a.get("sec_uid") or "",
                 "nickname": a.get("nickname") or "", "added_at": WC.now_str(),
                 "enabled": True,
+                # 新加入 → 先把现有作品整体扫一遍（见 _watch_add 里的说明）
+                "full_scan": True,
             }
             if interval:
                 nw["interval"] = interval
@@ -3981,6 +3987,8 @@ def _watch_mark(uid, enabled=True, sec_uid="", nickname="", interval=None):
                 "uid": uid, "sec_uid": sec, "nickname": nick,
                 "added_at": WC.now_str(), "enabled": True,
                 "interval": iv or 0,
+                # 新加入 → 先把现有作品整体扫一遍并下载缺的（2026-11-10 用户要求）
+                "full_scan": True,
             })
         watch["authors"] = authors
         WC.save_watch(watch)

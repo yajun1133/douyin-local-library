@@ -8434,9 +8434,15 @@ function ndAuthorHead(g, gi) {
     if (st) chips.push(st);
     // 分类标签放最后：真放不下时先砍它们，等级/频率/状态优先显示
     sortTags(g.tags || []).forEach((t) => chips.push(`<span class="mini-tag">${escapeHtml(t)}</span>`));
+    // 追更中的作者：名字换底色（2026-11-10 用户要求）。
+    // 以前这里有个 6px 的小红点，用户说「每个作者旁边都有一个红点，很干扰，把它去掉」——
+    // 那个点是给「有内容」做的装饰，没有信息量；真正要看的是「这位在不在追更名单里」。
+    const nameCls = g.watch ? 'nd-name watching' : 'nd-name';
+    const nameTip = g.watch
+        ? escapeHtml((g.nickname || g.uid) + ' · 正在追更')
+        : escapeHtml(g.nickname || g.uid);
     return `<div class="nd-head" onclick="ndOpenAuthor(${gi})" title="点击进入这位作者的详情页">
-        <span class="nd-dot"></span>
-        <span class="nd-name">${escapeHtml(g.nickname || g.uid)}</span>
+        <span class="${nameCls}" title="${nameTip}">${escapeHtml(g.nickname || g.uid)}</span>
         <span class="nd-chips">${chips.join('')}</span>
         <span class="nd-cnt">${g.items.length} 个</span>
     </div>`;
@@ -8857,7 +8863,9 @@ function renderNewDownloads(opts) {
     const groups = (d.groups || []).map((g) => {
         const items = (g.items || []).slice().sort((a, b) =>
             String(b.date || '').localeCompare(String(a.date || '')) || (b.mtime || 0) - (a.mtime || 0));
-        return { uid: g.uid, nickname: g.nickname, count: g.count, items,
+        // watch：这位作者在不在追更名单里（服务端按 watch.json 的 uid 算）。
+        // 这里 map 会重建对象，漏一个字段前端就永远拿不到 —— 2026-11-10 就漏了这个。
+        return { uid: g.uid, nickname: g.nickname, count: g.count, items, watch: !!g.watch,
                  level: g.level || '', freq: g.freq || '', status: g.status || '', tags: g.tags || [] };
     });
     const total = groups.reduce((n, g) => n + g.items.length, 0);

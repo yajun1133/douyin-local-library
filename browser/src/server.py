@@ -4405,6 +4405,12 @@ class Handler(BaseHTTPRequestHandler):
         # 等级 / 更新频率 / 标签都存在 user_data.json 里，叠加进 CACHE 才拿得到
         load_user_data()
         accs = CACHE.get("accounts") or {}
+        # 「这位作者在不在追更名单里」—— 前端要在名字上打标记（2026-11-10）。
+        # 名单很小（几百条），每次请求读一遍 JSON 不心疼；读坏了就当没有，不影响列表。
+        try:
+            _wset = {str(x.get("uid") or "") for x in (WC.load_watch().get("authors") or [])}
+        except Exception:
+            _wset = set()
 
         # 作者属性筛选 —— 和「导出作者信息」那一栏同一套口径（等级/标签/状态/更新频率/
         # 最后下载时间，每行自己一个 ＋/－ 组合开关）。先算出命中的作者，再让 SQL 按 uid 过滤，
@@ -4460,6 +4466,8 @@ class Handler(BaseHTTPRequestHandler):
                         guess = ""
                     nick = guess or f["uid"]
                 g = {"uid": f["uid"], "nickname": nick, "items": [],
+                     # 追更中：前端据此给名字换底色（不再用那个红点）
+                     "watch": f["uid"] in _wset,
                      # 作者身上的标注（播放区下方要显示）：等级 / 更新频率 / 状态 / 标签
                      "level": str(acc.get("level") or "").strip(),
                      "freq": str(acc.get("update_freq") or "").strip(),

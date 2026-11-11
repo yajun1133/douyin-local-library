@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261110c170';
+    content: 'v20261110c171';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -5855,20 +5855,26 @@ button.btn-primary:disabled:hover, button.btn-primary[disabled]:hover {
     overflow: hidden;
 }
 .nd-list .nd-head:hover .nd-name { color: var(--primary); }
-/* 气泡标题左侧的小圆点：同一位作者整块的视觉起点，扫视时有个锚 */
-.nd-list .nd-dot {
-    flex: none;
-    width: 6px; height: 6px;
-    border-radius: 50%;
-    background: var(--primary);
-    opacity: .55;
-}
-.nd-list .nd-head:hover .nd-dot { opacity: 1; }
 .nd-list .nd-name {
     /* 名字可以缩，最长占一半；再长就省略号（用户：「名字如果超出太多可以省略多的部分」） */
     flex: 0 1 auto; min-width: 0; max-width: 50%;
     font-size: 13px; font-weight: 650; color: #1f2937;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 正在追更的作者：名字换底色（2026-11-10 用户要求）。
+   原来这位置是个红点，用户说「每个作者旁边都有红点，很干扰」—— 删掉，改成给名字上色。
+   淡红底 + 主色字，和作者卡的追更胶囊、名单里的追更 chip 同一套色。 */
+.nd-list .nd-name.watching {
+    padding: 1px 6px;
+    border-radius: 5px;
+    color: var(--primary);
+    background: rgba(254, 44, 85, .1);
+    box-shadow: inset 0 0 0 1px rgba(254, 44, 85, .16);
+}
+.nd-list .nd-head:hover .nd-name.watching {
+    color: #fff;
+    background: var(--primary);
+    box-shadow: none;
 }
 .nd-list .nd-head .nd-chips {
     /* 必须 flex:1 占满剩余宽度。用 0 1 auto 的话容器宽度跟着内容缩，

@@ -470,6 +470,12 @@
       '.hbtn:hover{background:rgba(255,255,255,.16);color:#fff}',
       '.tag.lv{background:rgba(168,132,255,.18);color:#c9b4ff}',
       '.tag.fq{background:rgba(255,212,121,.14);color:#e8c477}',
+      /* 正在追更（2026-11-10）：淡红底，和后台「仅追更」同一套色，面板里一眼能挑出来 */
+      '.tag.wt{background:rgba(254,44,85,.16);color:#ff9bae;border:1px solid rgba(254,44,85,.3)}',
+      '.nick.watching{background:rgba(254,44,85,.2);color:#ffd0d9;border-radius:5px;padding:0 5px}',
+      '.bnick.watching{background:rgba(254,44,85,.2);color:#ffd0d9;border-radius:5px;padding:0 5px}',
+      '.bwt{color:#ff9bae;font-size:10.5px;flex:none;padding:0 5px;border-radius:5px;',
+      ' background:rgba(254,44,85,.16);border:1px solid rgba(254,44,85,.3)}',
       '.relv{color:#e9ecf1;font-weight:600}',
       '.tchip.ali{background:rgba(255,255,255,.05);color:#9aa3b2}',
       '.tag.st{background:rgba(46,204,113,.14);color:#83e0aa}',
@@ -577,7 +583,9 @@
     const vid = (d.video && d.video.downloaded) ? '<span class="bvid">✔ 本视频已存</span>' : '';
     return '<div class="hbar" data-act="expand" title="点击展开详情 · 可拖动">' +
       '<span class="dot ' + dot + '"></span>' +
-      '<span class="bnick" title="' + esc(a.nickname) + '">' + esc(a.nickname || '（未填昵称）') + '</span>' +
+      '<span class="bnick' + (a.watch ? ' watching' : '') + '" title="' + esc(a.nickname) + '">' +
+      esc(a.nickname || '（未填昵称）') + '</span>' +
+      (a.watch ? '<span class="bwt" title="正在追更：后台会定时查新作品">追更</span>' : '') +
       '<span class="bsep">·</span>' +
       '<span class="bnum">已存 <b>' + (a.file_count || 0) + '</b></span>' +
       '<span class="bsep">·</span>' +
@@ -629,7 +637,8 @@
         if (/更$/.test(t)) return t;
         return t + '更';
       })(a.update_freq);
-      const badges = (a.level ? '<span class="tag lv">' + esc(a.level) + '</span>' : '') +
+      const badges = (a.watch ? '<span class="tag wt" title="在追更名单里：后台会定时查 TA 的新作品，发现就自动下">正在追更</span>' : '') +
+        (a.level ? '<span class="tag lv">' + esc(a.level) + '</span>' : '') +
         (a.status ? '<span class="tag st">' + esc(a.status) + '</span>' : '') +
         (fqText ? '<span class="tag fq" title="更新频率">' + esc(fqText) + '</span>' : '') +
         (a.starred ? '<span class="tag">★</span>' : '');
@@ -638,7 +647,7 @@
       }).join('') + (a.alias ? '<span class="tchip ali" title="别名">又名 ' + esc(a.alias) + '</span>' : '');
       const tagRow = '<div class="row2">' +
         '<div class="tagwrap" title="' +
-          esc([a.level, a.status, fqText, a.starred ? '星标' : ''].filter(Boolean).join(' · ') +
+          esc([a.watch ? '正在追更' : '', a.level, a.status, fqText, a.starred ? '星标' : ''].filter(Boolean).join(' · ') +
               ((a.tags && a.tags.length) ? '　标签：' + a.tags.join(' ') : '') +
               (a.alias ? '　又名 ' + a.alias : '')) + '">' +
         badges + allChips +
@@ -713,7 +722,8 @@
       const toast = st.toast ? '<div class="toast' + (st.toastErr ? ' err' : '') + '">' +
         esc(st.toast) + '</div>' : '';
 
-      body = '<div class="who"><span class="nick" title="' + esc(a.nickname) + '">' +
+      body = '<div class="who"><span class="nick' + (a.watch ? ' watching' : '') +
+        '" title="' + esc(a.nickname) + (a.watch ? '（正在追更）' : '') + '">' +
         esc(a.nickname || '（未填昵称）') + '</span>' +
         '<span class="hbts">' +
         '<button class="hbtn q" data-act="queue-add" title="推送到管理后台的待下载区">＋待下载</button>' +

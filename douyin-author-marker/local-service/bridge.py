@@ -320,6 +320,26 @@ class AuthorIndex:
                 log("latest_work.json 读取失败：", e)
         self.live = live
 
+        # 4c) 追更名单（browser/data/watch.json）：网页上要标「正在追更」（2026-11-10）。
+        #     和 user_data.json 同目录，每次重建索引读一遍（几百条，几毫秒）。
+        #     按 uid 认人，跟后台 /api/authors 的 watch 判定完全同一套口径。
+        wpath = Path(CFG["user_data"]).parent / "watch.json"
+        wuids: set = set()
+        if wpath.exists():
+            try:
+                raw = json.loads(wpath.read_text("utf-8"))
+                for x in (raw.get("authors") or []):
+                    u = str((x or {}).get("uid") or "").strip()
+                    if u:
+                        wuids.add(u)
+            except Exception as e:
+                log("watch.json 读取失败（追更标记会全灭，其它不受影响）：", e)
+        else:
+            log("找不到 watch.json：", str(wpath))
+        for uid, rec in authors.items():
+            rec["watch"] = uid in wuids
+        self.watch_count = len(wuids)
+
         # 文件清单缓存要作废（索引重建了）
         with self._uf_lock:
             self._ufiles.clear()
@@ -499,6 +519,7 @@ class AuthorIndex:
                 "status": rec.get("status") or "",
                 "level": rec.get("level") or "",
                 "update_freq": rec.get("update_freq") or "",
+                "watch": bool(rec.get("watch")),
                 "alias": rec.get("alias") or "",
                 "tags": rec.get("tags") or [],
                 "file_count": rec.get("file_count") or 0,
@@ -1038,7 +1059,8 @@ START_TS = time.time()
 
 def _mtimes() -> tuple:
     out = []
-    for p in (CFG["download_db"], CFG["user_data"]):
+    watch = str(Path(CFG["user_data"]).parent / "watch.json")
+    for p in (CFG["download_db"], CFG["user_data"], watch):
         try:
             out.append(os.path.getmtime(p))
         except OSError:

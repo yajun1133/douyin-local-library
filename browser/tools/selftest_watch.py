@@ -28,6 +28,11 @@ import watch_core as W  # noqa: E402
 TMP = tempfile.mkdtemp(prefix="watchtest_")
 W.STATE_FILE = os.path.join(TMP, "state.json")
 W.LOG_FILE = os.path.join(TMP, "watch.log")
+# 库根也指到临时目录：2026-11-10 起「作者不在本地库」会自动建作者目录，
+# 不改这里的话自检会往真实库根（E 盘）里撒一堆测试目录
+_REAL_SCAN_ROOT = W.paths.SCAN_ROOT
+W.paths.SCAN_ROOT = os.path.join(TMP, "lib")
+os.makedirs(W.paths.SCAN_ROOT, exist_ok=True)
 
 FAIL = []
 
@@ -178,7 +183,7 @@ chk("没记成已处理（seen/last_ts/下载数/下轮时间都没动）", befo
     "前=%s 后=%s" % (before, after))
 chk("如实报告会下载 1 条", int(r.get("would") or 0) == 1, r.get("would"))
 
-print("\n[9] 作者还不在本地库：跳过，但绝不标记已处理")
+print("\n[9] 作者还不在本地库：按下载器的规则自动建目录并下载")
 st = fresh_state()
 st["authors"]["e"] = {"last_ts": int(now - 86400), "seen": [], "downloads": 0,
                       "fails": {}, "last_post": int(now - 86400)}
@@ -186,11 +191,29 @@ dy = FakeDy({"SECe": [mk_aweme("e1", int(now - 3600)), mk_aweme("e2", int(now - 
 w = base_watch(["e"])
 r = W.scan_round(dy, w, st, {"e": set()}, {})     # 故意不给文件夹
 sa = st["authors"]["e"]
-chk("既没下也没记成失败", r["downloaded"] == 0 and r["failed"] == 0,
-    "dl=%d failed=%d" % (r["downloaded"], r["failed"]))
-chk("两条都没进 seen（作者进库后还能补）", sa["seen"] == [], sa["seen"])
-chk("基线没被推进", int(sa["last_ts"]) == int(now - 86400), sa["last_ts"])
-chk("失败计数没被污染", not (sa.get("fails") or {}), sa.get("fails"))
+made = os.path.join(W.paths.SCAN_ROOT, "UIDe_Ne_发布作品")
+chk("自动建了 UIDe_Ne_发布作品", os.path.isdir(made),
+    os.listdir(W.paths.SCAN_ROOT)[:3])
+chk("两条都去下了（假下载器必失败，所以计在 failed）", r["failed"] == 2,
+    "failed=%d" % r["failed"])
+chk("建目录后不再算 number '作者不在库' 跳过", r["skipped"] == 0, r["skipped"])
+
+# 库根不可用（盘掉线 / 没权限）时：仍然只能跳过，且绝不能标记成已处理
+_ok_root = W.paths.SCAN_ROOT
+W.paths.SCAN_ROOT = os.path.join(TMP, "no_such_lib")     # 不存在 → 建不出来
+W._dir_map = None
+st2 = fresh_state()
+st2["authors"]["e"] = {"last_ts": int(now - 86400), "seen": [], "downloads": 0,
+                       "fails": {}, "last_post": int(now - 86400)}
+r2 = W.scan_round(dy, w, st2, {"e": set()}, {})
+sa2 = st2["authors"]["e"]
+chk("库根不可用：不下也不记失败", r2["downloaded"] == 0 and r2["failed"] == 0,
+    "dl=%d failed=%d" % (r2["downloaded"], r2["failed"]))
+chk("库根不可用：两条都没进 seen（进库后还能补）", sa2["seen"] == [], sa2["seen"])
+chk("库根不可用：基线没被推进", int(sa2["last_ts"]) == int(now - 86400), sa2["last_ts"])
+chk("库根不可用：失败计数没被污染", not (sa2.get("fails") or {}), sa2.get("fails"))
+W.paths.SCAN_ROOT = _ok_root
+W._dir_map = None
 
 print("\n[10] 账号池：一个号失败就换另一个")
 W.ACCOUNTS_FILE = os.path.join(TMP, "accounts.json")

@@ -339,6 +339,62 @@ def douk_filter_name(text, default=""):
     return t or str(default or "")               # ⑥ 空了才拿作品 ID 兜底
 
 
+# ---------------------------------------------------------------------------
+# 作者文件夹：本地还没有时按下载器的命名规则现场建一个
+# ---------------------------------------------------------------------------
+
+_dir_map = None      # uid -> 文件夹名；惰性扫一遍库根，scan_round 每轮重置
+
+
+def _scan_author_dirs():
+    """一次 listdir 建「uid → 文件夹名」映射（库根几千个目录，别每个作者都扫一遍）。"""
+    global _dir_map
+    m = {}
+    try:
+        for name in os.listdir(paths.SCAN_ROOT):
+            hit = re.match(r"^UID(\d+)_", name)
+            if hit:
+                m.setdefault(hit.group(1), name)
+    except OSError:
+        pass
+    _dir_map = m
+    return m
+
+
+def ensure_author_dir(uid, nickname):
+    """本地还没有这位作者的文件夹时，按下载器的规则建一个：`UID{uid}_{昵称}_发布作品`。
+
+    为什么必须和 DouK 同名：DouK 下次跑同一位作者时按「当前昵称」建目录，
+    名字不一样就会另建一个，旧作品留在原地、界面上看不见（scanner 那边还要
+    再做一次 folder_merge）。同名的话两边就是同一个目录，也不会重复下载。
+
+    返回绝对路径；建不出来（库根不存在 / 没权限）返回空串，由调用方按"跳过"处理。
+    """
+    uid = str(uid or "").strip()
+    if not uid or not os.path.isdir(paths.SCAN_ROOT):
+        return ""
+    global _dir_map
+    if _dir_map is None:
+        _scan_author_dirs()
+    hit = (_dir_map or {}).get(uid)
+    if hit:
+        p = os.path.join(paths.SCAN_ROOT, hit)
+        if os.path.isdir(p):
+            return p
+    # 昵称按 DouK 的清洗规则处理（非法字符/表情删掉、空白归一），
+    # 40 字上限是为了别把 Windows 路径顶爆（260 字符）
+    nick = douk_filter_name(nickname, uid)[:40] or uid
+    folder = "UID%s_%s_发布作品" % (uid, nick)
+    p = os.path.join(paths.SCAN_ROOT, folder)
+    try:
+        os.makedirs(p, exist_ok=True)
+    except OSError as e:
+        log("· 建作者目录失败 %s：%s" % (folder, e))
+        return ""
+    _dir_map[uid] = folder
+    return p
+
+
 def douk_detail_name(date, nickname, desc, aid="", length=DOUK_NAME_LENGTH):
     """按 DouK 的规则拼出作品文件名（不含扩展名、不含序号）。
 
@@ -1779,6 +1835,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
     这一层比文件名可靠：DouK 按 ID 判重，追更以前只看描述，描述被改过就会重下。
     """
     cfg = watch["settings"]
+    # 每轮重扫一次库根：上一轮刚建的目录、或 DouK 新下的作者文件夹，这轮就能认出来
+    global _dir_map
+    _dir_map = None
     if douk_ids is None:
         douk_ids = douk_id_set()
     stats = {"authors": 0, "checked": 0, "new": 0, "downloaded": 0,
@@ -2190,12 +2249,22 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 stats["skipped"] += 1
                 continue
             if not author_dir:
-                # 这位作者本地库里还没有文件夹：不建目录（避免和库里的作者对不上），
-                # 但**绝不能算"下载失败"** —— 失败 3 次就会进 fails、被标记已处理，
-                # 那些作品以后永远下不到了。这里只跳过，等作者进库后自然补上。
-                stats["skipped"] += 1
-                no_folder = True
-                continue
+                # 本地库里还没有这位作者的文件夹：按 DouK 的命名规则现场建一个。
+                # 以前这里是「跳过、等它进库后再补」—— 结果是新加进追更、库里从来
+                # 没下过的作者永远下不到（2026-11-10 用户：「加到追更的就全部扫一遍，
+                # 没有的就下」）。试运行不建（不然 --dry 会在库里撒一堆空目录）。
+                if not dry:
+                    author_dir = ensure_author_dir(uid, nick)
+                    if author_dir:
+                        lib_folders[uid] = os.path.basename(author_dir)
+                        log("＋ %s 本地还没有文件夹，已按下载器的命名规则建 "
+                            "「%s」" % (nick, os.path.basename(author_dir)))
+                if not author_dir:
+                    # 建不出来（库根不可写等）：仍然**绝不能算"下载失败"** ——
+                    # 失败 3 次就会进 fails、被标记已处理，那些作品以后永远下不到了
+                    stats["skipped"] += 1
+                    no_folder = True
+                    continue
             if dry:
                 log("  [试运行] 会下载 %s  %s" % (aid, (desc or "")[:30]))
                 stats["would"] = int(stats.get("would") or 0) + 1

@@ -1325,7 +1325,12 @@ class Douyin(object):
             cursor = nxt
             more_left = True     # 这一页之后还有；下一次循环如果翻满了就是「没翻到底」
             time.sleep(1.0)          # 翻页也留点间隔，别一秒打两枪
-        return (out, more_left) if with_more else out
+        if with_more:
+            # 拿到的总数不足一页（20 条）就一定到底了。抖音偶尔对只有十几条作品的
+            # 账号也返回 has_more=1；不加这条，「全量」会每 60 秒重翻 40 页白烧请求
+            # （2026-11-10 实测：小喵米只有 11 条，has_more 却给的是 1）。
+            return out, bool(more_left) and len(out) >= 20
+        return out
 
 
 # ---------------------------------------------------------------------------

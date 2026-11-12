@@ -90,6 +90,9 @@ DEFAULT_CFG = {
     "content": "all",
     "desc_len": 64,             # 描述截断长度，对齐 DouK 的 desc_length
     "fail_limit": 3,            # 同一条作品失败 N 次后放弃，避免卡死
+    # 连续 N 次被判定「扫不到」（接口连查三次都空）才认定为真的没了：
+    # 打「扫不到」标签 + 取消追更。偶尔一次空只列进面板看着，不动名单（2026-11-10）。
+    "no_api_drop_rounds": 3,
     "seen_keep": 400,           # 每个作者保留多少条 aweme_id 记忆
 }
 
@@ -480,6 +483,110 @@ def load_watch():
 
 def save_watch(d):
     _write_json(WATCH_FILE, d)
+
+
+# ---------------------------------------------------------------------------
+# 标注（user_data.json）：扫不到自动挂标签、连续扫不到自动取消追更
+# ---------------------------------------------------------------------------
+
+NO_API_TAG = "扫不到"       # 连续查不到作品时自动挂上的标签，恢复后自动摘掉
+
+
+def _read_user_data():
+    """读 user_data.json。读不出来返回 None —— 调用方必须放弃写入。
+
+    绝不能把「读失败」当成空库写回去：那是全库标注被清空的事故形态，
+    server.merge_save_user_data 里专门防过同一件事，这里保持一样的口径。
+    """
+    try:
+        with open(paths.USER_DATA, "r", encoding="utf-8") as fp:
+            d = json.load(fp)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    if "accounts" not in d and d:
+        d = {"accounts": d}     # 结构自愈：正确结构是 {"accounts": {...}}
+    return d
+
+
+def _write_user_data(d):
+    """原子写：先写同目录临时文件再 os.replace，写一半断电也不会留下半个 JSON。"""
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(paths.USER_DATA), prefix=".user_data.", suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
+            json.dump(d, fp, ensure_ascii=False, indent=2)
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(tmp_path, paths.USER_DATA)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def tag_author(uid, tag, add=True):
+    """给某位作者加/摘一个标签，只动 tags 字段，其它标注原样保留。
+
+    追更进程是独立进程，调不到 server 的合并写，所以自带一份最小实现：
+    · 读不出来 → 放弃（返回 False），绝不覆盖；
+    · 已经是目标状态 → 不写盘（少写一次就少一次和 server 抢文件的窗口）；
+    · 没有其它标签了就把 tags 字段整个摘掉，别留下 `"tags": []` 这种噪音。
+    """
+    uid = str(uid or "").strip()
+    tag = (tag or "").strip()
+    if not uid or not tag:
+        return False
+    d = _read_user_data()
+    if d is None:
+        return False
+    accs = d.setdefault("accounts", {})
+    rec = accs.get(uid)
+    if not isinstance(rec, dict):
+        rec = {}
+    tags = [str(t).strip() for t in (rec.get("tags") or []) if str(t).strip()]
+    has = tag in tags
+    if add and not has:
+        tags.append(tag)
+    elif not add and has:
+        tags = [t for t in tags if t != tag]
+    else:
+        return False
+    if tags:
+        rec["tags"] = tags
+    else:
+        rec.pop("tags", None)
+    accs[uid] = rec
+    try:
+        _write_user_data(d)
+        return True
+    except Exception as e:
+        log("· 写标签失败（%s / %s）：%s" % (uid, tag, e))
+        return False
+
+
+def drop_from_watch(uid, reason=""):
+    """把一位作者移出追更名单（界面上「取消追更」的同一个动作）。
+
+    **必须重新读整份 watch.json 再写**：scan_round 手里那份 `watch` 只是
+    「本轮到点的作者」子集，拿它写回去会把整个名单覆盖成几十位（2026-11-09 踩过）。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    w = load_watch()
+    before = w.get("authors") or []
+    kept = [a for a in before if str(a.get("uid")) != uid]
+    if len(kept) == len(before):
+        return False
+    w["authors"] = kept
+    save_watch(w)
+    # 日志由调用方打（那边手上有昵称，uid 打出来没人认得）
+    return True
 
 
 def load_state():
@@ -1823,14 +1930,33 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                     al, tries, why = _retry_empty(
                         dy, sec, nick, pool, cfg, int(cfg.get("per_author_pages") or 1))
                 if not al:
+                    # 连续第几次被判定扫不到（每次重新探测算一次，12 小时内只打一枪的保护
+                    # 也照算 —— 那同样是「又试了一次还是空」）。
+                    rounds = int(prev.get("rounds") or 0) + 1
+                    limit = int(cfg.get("no_api_drop_rounds") or 3)
                     if not dry:      # 试运行不动状态：否则面板会挂一堆"假扫不到"
                         state.setdefault("no_api", {})[uid] = {
                             "nickname": nick,
                             "local": had_works,
                             "tries": max(tries, int(prev.get("tries") or 0)),
+                            "rounds": rounds,
                             "ts": time.time(),
                             "reason": why,
                         }
+                    # 用户 2026-11-10 的口径：
+                    #   · 偶尔一次空只是列进「扫不到」框看着，**不打标签**（多半是接口抽风）；
+                    #   · 连续 limit 次都空 → 才认定为真的扫不到：打「扫不到」标签、
+                    #     取消追更，然后从框里移出（标签留着，以后能按它找回来）。
+                    if not dry and rounds >= limit:
+                        tag_author(uid, NO_API_TAG, True)
+                        drop_from_watch(
+                            uid, "连续 %d 次扫不到作品（本地有 %d 条）" % (rounds, had_works))
+                        state.setdefault("no_api", {}).pop(uid, None)
+                        log("✂ %s 连续 %d 次扫不到，已加「%s」标签并取消追更"
+                            "（以后能在作者列表里按标签找回来）" % (nick, rounds, NO_API_TAG))
+                        _save()
+                        time.sleep(_pace(cfg))
+                        continue
                     if recent:
                         log("· %s 仍扫不到（本地 %d 条，%s）—— 已在「扫不到」里"
                             % (nick, had_works, why))
@@ -1855,6 +1981,10 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         stats["empty"] = 0
         # 这次扫到了：之前记在「扫不到」里的要摘掉，不然面板会一直挂着已经恢复的作者
         if state.get("no_api", {}).pop(uid, None):
+            # 自动挂上的「扫不到」标签也一并摘掉 —— 它只是个状态标记，
+            # 作者恢复了还留着，用户按标签一筛就会看到一堆其实正常的号
+            if not dry:
+                tag_author(uid, NO_API_TAG, False)
             _save()
 
         cts = [int(a.get("create_time") or 0) for a in al]

@@ -10205,7 +10205,13 @@ function wvRenderNoApi(d) {
     }
     if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
     list.innerHTML = rows.map((r) => {
-        const tip = (r.reason || '') + '（试了 ' + (r.tries || 0) + ' 次）';
+        // 连续第几次 + 到第几次会自动取消追更，都写进悬停提示：
+        // 面板里只放「还没到阈值」的人，到了就会被打上「扫不到」标签并移出（2026-11-10）
+        const limit = Number((d.settings || {}).no_api_drop_rounds || 3);
+        const nth = r.rounds ? ('连续第 ' + r.rounds + ' 次') : '';
+        const tip = [r.reason || '', (r.tries ? '试了 ' + r.tries + ' 次' : ''), nth,
+                     limit ? ('连续 ' + limit + ' 次就会被加上「扫不到」标签并取消追更') : '']
+            .filter(Boolean).join('　');
         // 点一行 → 进这位作者的本地主页（2026-11-10 用户要求）。
         // 这些作者本地都有作品，详情页一定能打开，返回时还回追更页。
         return '<div class="wv-noapi-row" data-uid="' + escapeHtml(r.uid || '') + '"'
@@ -10213,6 +10219,7 @@ function wvRenderNoApi(d) {
             + ' onclick="wvOpenNoApi(this)">'
             + '<span class="wv-noapi-n">' + escapeHtml(r.nickname) + '</span>'
             + '<span class="wv-noapi-c">本地 ' + (r.local || 0) + ' 条</span>'
+            + (r.rounds > 1 ? '<span class="wv-noapi-r">第 ' + r.rounds + ' 次</span>' : '')
             + '<span class="wv-noapi-t">' + (r.ts ? wvAgo(r.ts) : '') + '</span>'
             + '</div>';
     }).join('');

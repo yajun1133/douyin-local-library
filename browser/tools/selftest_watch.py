@@ -345,6 +345,50 @@ due2 = W.which_authors_due(w2, st2)
 chk("正在补（bulk=True）时不插队，按 next_check 等",
     all(str(x["uid"]) != "q" for x in due2), [x["uid"] for x in due2])
 
+print("\n[18] 连续扫不到：先只在面板写着，到阈值才打标签 + 取消追更")
+# 这条会写 watch.json 和 user_data.json，两条路径都改到临时目录，
+# 绝不能碰真实名单和真实标注（drop_from_watch 会整份重写 watch.json）
+W.WATCH_FILE = os.path.join(TMP, "watch.json")
+W.paths.USER_DATA = os.path.join(TMP, "user_data.json")
+with open(W.WATCH_FILE, "w", encoding="utf-8") as f:
+    json.dump({"authors": [{"uid": "z", "sec_uid": "SECz", "nickname": "Nz",
+                           "enabled": True, "added_at": "T"}],
+               "settings": dict(CFG)}, f, ensure_ascii=False)
+with open(W.paths.USER_DATA, "w", encoding="utf-8") as f:
+    json.dump({"accounts": {"z": {"nickname": "Nz", "tags": ["可爱"]}}}, f, ensure_ascii=False)
+
+wz = W.load_watch()
+lib_z = {"z": {("2026-01-01", "k")}}      # 本地有 1 条作品
+
+
+def _tags():
+    d = json.load(open(W.paths.USER_DATA, encoding="utf-8"))
+    return (d["accounts"].get("z") or {}).get("tags") or []
+
+
+def _in_watch():
+    d = json.load(open(W.WATCH_FILE, encoding="utf-8"))
+    return any(str(a.get("uid")) == "z" for a in d.get("authors") or [])
+
+
+st = fresh_state()
+dy = FakeDy({"SECz": []})
+W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
+chk("第 1 次扫不到：进「扫不到」面板", "z" in (st.get("no_api") or {}))
+chk("第 1 次扫不到：不打标签", "扫不到" not in _tags(), _tags())
+chk("第 1 次扫不到：还在追更名单", _in_watch())
+
+W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
+chk("第 2 次：仍不打标签", "扫不到" not in _tags(), _tags())
+chk("第 2 次：rounds=2", (st.get("no_api") or {}).get("z", {}).get("rounds") == 2,
+    (st.get("no_api") or {}).get("z"))
+
+W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
+chk("第 3 次：打上「扫不到」标签", "扫不到" in _tags(), _tags())
+chk("原有标签没被覆盖（可爱 还在）", "可爱" in _tags(), _tags())
+chk("第 3 次：取消追更（移出名单）", not _in_watch())
+chk("第 3 次：从「扫不到」面板移出", "z" not in (st.get("no_api") or {}), st.get("no_api"))
+
 print("\n========================")
 if FAIL:
     print("失败 %d 项：" % len(FAIL))

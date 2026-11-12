@@ -3532,6 +3532,9 @@ def _watch_status():
             "nickname": rec.get("nickname") or str(_uid),
             "local": int(rec.get("local") or 0),
             "tries": int(rec.get("tries") or 0),
+            # 连续第几次被判定扫不到。到 no_api_drop_rounds 次就会被打上「扫不到」标签
+            # 并取消追更、从面板移出（2026-11-10 用户口径）
+            "rounds": int(rec.get("rounds") or 0),
             "ts": float(rec.get("ts") or 0),
             "reason": rec.get("reason") or "",
         })

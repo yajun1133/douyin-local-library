@@ -4223,7 +4223,7 @@ body {
 
 /* 版本角标：截图就能看出跑的是哪一版，省得再猜缓存 */
 body::after {
-    content: 'v20261110c172';
+    content: 'v20261110c173';
     position: fixed;
     right: 6px;
     bottom: 3px;
@@ -7262,11 +7262,29 @@ details > summary:focus-visible {
     padding: 5px 8px; border-radius: 7px;
     background: #fff7ed; border: 1px solid #fed7aa;
     font-size: 12.5px;
+    /* 可点：进这位作者的本地主页（2026-11-10）。给个手型和 hover，别让人以为是纯文本 */
+    cursor: pointer;
+    transition: background .12s, border-color .12s, box-shadow .12s;
 }
+.wv-noapi-row:hover {
+    background: #ffedd5;
+    border-color: #fdba74;
+    box-shadow: 0 1px 4px rgba(180, 83, 9, .12);
+}
+.wv-noapi-row:active { background: #fed7aa; }
+.wv-noapi-row:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
 .wv-noapi-n {
     flex: 1; min-width: 0; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.wv-noapi-n::after {
+    /* 名字后面一个很淡的 ‹›，提示「点得进去」 */
+    content: '›';
+    margin-left: 4px;
+    color: #d97706;
+    opacity: .55;
+}
+.wv-noapi-row:hover .wv-noapi-n { color: #b45309; }
 .wv-noapi-c { flex: none; color: #b45309; font-variant-numeric: tabular-nums; }
 .wv-noapi-t { flex: none; color: #9a6b3f; font-size: 11.5px; }
 .wv-noapi-empty { color: var(--text-muted); font-size: 12.5px; padding: 4px 2px; }

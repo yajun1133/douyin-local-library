@@ -10206,12 +10206,24 @@ function wvRenderNoApi(d) {
     if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
     list.innerHTML = rows.map((r) => {
         const tip = (r.reason || '') + '（试了 ' + (r.tries || 0) + ' 次）';
-        return '<div class="wv-noapi-row" title="' + escapeHtml(tip) + '">'
+        // 点一行 → 进这位作者的本地主页（2026-11-10 用户要求）。
+        // 这些作者本地都有作品，详情页一定能打开，返回时还回追更页。
+        return '<div class="wv-noapi-row" data-uid="' + escapeHtml(r.uid || '') + '"'
+            + ' title="' + escapeHtml(tip + '　点一下进 TA 的本地主页') + '"'
+            + ' onclick="wvOpenNoApi(this)">'
             + '<span class="wv-noapi-n">' + escapeHtml(r.nickname) + '</span>'
             + '<span class="wv-noapi-c">本地 ' + (r.local || 0) + ' 条</span>'
             + '<span class="wv-noapi-t">' + (r.ts ? wvAgo(r.ts) : '') + '</span>'
             + '</div>';
     }).join('');
+}
+
+// 「扫不到」那一行点开 → 本地主页。没拿到 uid 的（理论上不会有）就不动，
+// 免得打开一个空白的详情页让人以为坏了。
+function wvOpenNoApi(el) {
+    const uid = el && el.dataset ? (el.dataset.uid || '') : '';
+    if (!uid) return;
+    openAuthor(uid);
 }
 
 // 设置项回填。用户正在改任意一个输入框时不要回填 —— 否则 5 秒轮询会把

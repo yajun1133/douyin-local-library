@@ -107,21 +107,32 @@ browser/
 
 | 文件 | 内容 | 丢了会怎样 |
 |---|---|---|
-| `data/watch.json` | `authors[]`（`uid` / `sec_uid` / `nickname` / `enabled` / `interval` / `added_at`）、`settings{}`、号池 `accounts[]` | **丢名单**——得重新一个一个加。详情页那条横栏和 `/watch` 面板读写的是**同一份** |
-| `data/watch_state.json` | 每位作者的 `seen[]`（判重用）/ `last_ts` / `next_check` / `tier` / `fails` / `downloads` / `last_scan` | 只是进度：会从「本地最新作品」重建基线，最多把已有的当新作品查一遍（不会重下，下载前按文件名判重） |
+| `data/watch.json` | `authors[]`（`uid` / `sec_uid` / `nickname` / `enabled` / `interval` / `added_at` / `full_scan`）、`settings{}`、号池 `accounts[]` | **丢名单**——得重新一个一个加。详情页那条横栏和追更面板读写的是**同一份** |
+| `data/watch_state.json` | 每位作者的 `seen[]`（判重用）/ `last_ts` / `next_check` / `tier` / `fails` / `downloads` / `last_scan`，以及 `bulk` / `bulk_more` / `full_done_for`（全量补齐的进度锚点） | 只是进度：会从「本地最新作品」重建基线，最多把已有的当新作品查一遍（不会重下，下载前按四层判重挡住） |
 
-`watch.json.settings` 默认值（`watch_core.DEFAULT_CFG`，面板上都能改）：
+`authors[]` 里两个字段专门管「全量补齐」：`full_scan:true`（加入时写入，表示还没全量扫过）+ `added_at`
+（`full_done_for == added_at` 才算做完，所以**同一位作者移出再加一次 = 重新全量扫一遍**）。
+
+`watch.json.settings` 默认值（`watch_core.DEFAULT_CFG`，面板上都能改；括号里是本机当前值）：
 
 | 键 | 默认 | 作用 |
 |---|---|---|
 | `interval_hot/warm/cold/idle` | 900 / 3600 / 10800 / 86400 秒 | 热/温/冷/静四档间隔，`interval:0`（自动）时按这位作者多久没发过作品自动挑档 |
-| `hot_days` | 2 | 几天内发过就算「热档」 |
+| `hot_days` / `warm_days` / `cold_days` | 2 / 7 / 30 天 | 三档的分界线 |
+| `per_author_pages` | 1 | 常规检查翻几页（一页 20 条，1 页够覆盖绝大多数日更） |
+| `backfill_pages` | 4 | 关机回来发现「整页都比基线新」时，往下补翻几页 |
+| `bulk_pages` | 10 | 本地**零作品**的作者首次补齐翻几页（≈200 条） |
+| `full_pages` | 40 | 「全量扫一遍」（新加进追更）翻几页（≈800 条）；翻满未到底由 `bulk_more` 接力 |
 | `gap` / `gap_jitter` | 2.0 秒 / 0.3 | 每个作者之间的间隔与抖动（防风控，别低于 2） |
-| `daily_budget` | 20000 × 号数 | 每日请求总上限，到了当天就停 |
+| `daily_budget` | 20000（**80000**） | **每个号**每天的请求上限，实际总额度 = 该值 × 可用号数；到了当天就停 |
 | `rest_every` / `rest_secs` | 100 / 20 | 每查 N 位歇 N 秒 |
 | `break_fails` / `break_cool` | 5 / 600 | 连续失败几次进冷却、冷却多久 |
-| `backfill_pages` / `max_per_round` | 4 / 40 | 关机期间漏的往回翻几页、单轮最多下几条 |
+| `net_wait` / `net_cool` | 20 / 120 | 网络类失败（断网/代理）原地等多久、连着失败几次停多久（**不封号**） |
+| `account_ban` | 300 | 单个号被限流后歇多久再启用 |
+| `max_per_round` | 40（**80**） | 单轮最多下几条作品，超了下一轮接着下 |
+| `content` | `all` | 只追 `video` / `image`；被跳过的那类照样推进基线 |
 | `desc_len` / `fail_limit` / `seen_keep` | 64 / 3 / 400 | 文件名描述截断长度（与下载器一致）/ 连续失败几次先放弃 / 每位作者记住多少条已见作品 |
+| `no_api_drop_rounds` | 3 | 连续几次扫不到才打「扫不到」标签 + 取消追更（判过之后 12 小时内只打一枪） |
 
 ⚠️ 名单里**认人只认 `sec_uid` 和 `uid`，昵称不参与判定**（同名号太多、还会改名换号）。加人时查不到 SEC_UID 会被直接拒绝——加进去也下载不了。
 
@@ -184,7 +195,7 @@ browser/
 | `fetch_favorites.py` | 抓收藏 / 喜欢列表 | ✅ 需 3.12 |
 | `query_uid_by_secuid.py` | sec_uid → uid / 昵称 / 抖音号 | ✅ 需 3.12 |
 | `watch_core.py` | 📡 追更核心：轮询 `aweme/post` → 判重 → 直连 CDN 下载 → 落 `data/watch_state.json`；另含号池（`pool_*`）、节奏分档、额度/熔断 | 被 server / watch.py import |
-| `watch.py` | 追更的 CLI 与常驻进程（`--list / --add-top / --scan / --dry / --status / --daemon`） | ✅ `python src/watch.py --status`（需 3.13） |
+| `watch.py` | 追更的 CLI 与常驻进程（`--list / --status / --add / --add-top / --remove / --scan / --dry / --loop`） | ✅ `python src/watch.py --status`（需 3.13） |
 
 ### `browser/tools/`（独立小脚本，不起服务也能跑）
 
@@ -198,6 +209,10 @@ browser/
 | `douk_patch_suspend.py` | 改 DouK 里写死的等待参数（界面上没有） |
 | `downloaded.py` | 「已下载博主」公共模块，以下载目录为唯一依据 |
 | `fill_secuid_from_export.py` | 从本地导出表补 sec_uid（不联网） |
+| `backfill_author.py` | 按作者补历史作品（不看追更基线，拉主页逐条判重后补下）；**跑前先停追更常驻** |
+| `missing_of_author.py` | 对账：拉一位作者全部作品，走四层判重，只列「本地缺哪几条」；`--apply` 才真下。追更说「下过了」可它就是不下来时用它 |
+| `backfill_watch_downloads.py` | 从 `watch.log` 回填追更下载明细（判据：日志时间 == 文件 mtime，精确匹配） |
+| `selftest_watch.py` | 追更自检（不联网、不碰真实状态，用假数据撞边界；改 `watch_core.py` 后**必跑**） |
 | `probe_latest.py` | 诊断：打印作者主页 `aweme/post` 原始返回 |
 | `restore_backup.py` | 从 `backup/` 恢复 `user_data.json` |
 | `secuid_check.py` | 体检：找出 sec_uid 指向了别人的账号 |

@@ -400,8 +400,20 @@ def douk_detail_name(date, nickname, desc, aid="", length=DOUK_NAME_LENGTH):
 
     注意是**整串** `日期-昵称-描述` 一起清洗、一起按 128 宽截断，
     不是分段处理 —— 分段和整串截断在长描述上会得到完全不同的名字。
+
+    ⚠️ 描述清洗后为空（没文案 / 纯表情 / 全被过滤掉）时，描述段必须用**作品 ID**
+    顶上，不能留空。留空的后果不是名字难看，而是**丢作品**：
+    同一作者同一天发两条无文案作品，两条会算出完全一样的 `日期-昵称-`，
+    后一条在 existing_of 里被当成「已下过」，直接静默跳过 —— 而且这一刻
+    last_ts 也会被推到它的 create_time，此后永远不再重试。
+    2026-11-12 就有一位作者这么丢了一条（当天 19:04 那条被作者删了、
+    22:35 那条顶着一模一样的名字，永远下不来）。
+    DouK 自己也是这么兜的：库里大量 `日期-昵称-<19 位ID>.mp4` 正是它这么生成的老文件。
     """
-    joined = DOUK_NAME_SPLIT.join([str(date or ""), str(nickname or ""), str(desc or "")])
+    desc_part = str(desc or "")
+    if not douk_filter_name(desc_part, ""):
+        desc_part = str(aid or "") if aid else ""
+    joined = DOUK_NAME_SPLIT.join([str(date or ""), str(nickname or ""), desc_part])
     return beautify_desc(douk_filter_name(joined, aid), length)
 
 
@@ -478,7 +490,14 @@ def is_known(local, date_idx, date, desc, desc_len=64):
       2. 模糊比对的后缀要用**未截断的完整描述**去比。按 64 字硬切的话，长描述
          结尾那段被切掉了，`full.endswith(库里的后缀)` 永远不成立 → 判成新作品
          又下一遍（2026-11-08 那 10 条就这么重复的）。
+
+    描述清洗后为空的作品（没文案 / 纯表情）**一律不按文件名判重**，直接交给
+    aweme_id 那一层（DouK 下载记录 + 追更下载明细）去认。原因：空描述作品在
+    文件名里没有身份，同一天两条就是同一个名字，按名字比必然张冠李戴 ——
+    认成「已有」= 后面那条永远下不到（2026-11-12 丢的那一条就是这么来的）。
     """
+    if not douk_filter_name(str(desc or ""), ""):
+        return False
     key = work_key(desc, desc_len)
     if (date, key) in local:
         return True
@@ -696,8 +715,13 @@ def save_state(d):
 _DL_LOCK = __import__("threading").Lock()
 
 
-def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False):
-    """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。"""
+def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False,
+                    aid=""):
+    """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。
+
+    aid：这条作品在抖音的 aweme_id。**必须记**（2026-11-12 起）：描述为空的作品
+    文件名里没有身份，判重只能靠 ID；这份明细就是"我们自己下过哪些 ID"的账本。
+    """
     rels = [r for r in (rels or []) if r]
     if not rels:
         return False
@@ -710,6 +734,8 @@ def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=Fal
         "rels": rels,
         "size": int(size or 0),
     }
+    if aid:
+        rec["aid"] = str(aid)
     if backfill:
         rec["backfill"] = True
     try:
@@ -770,6 +796,29 @@ def load_downloads():
 def download_count():
     """明细里的作品条数（实时记录 + 回填的合计）。"""
     return len(load_downloads())
+
+
+_ID_IN_NAME = re.compile(r"(\d{18,20})")
+
+
+def watch_downloaded_ids():
+    """追更自己下过的 aweme_id 集合（判重的 ID 层，2026-11-12 起）。
+
+    两个来源：① 下载明细里的 `aid` 字段；② 文件名里带的 19 位 ID（撞名保护落盘
+    的那种名字，以及 DouK 老格式的名字）。
+    为什么要有这一层：描述为空的作品（没文案/纯表情）在文件名里没有身份，
+    同一天两条就是同一个名字 —— `is_known()` 对这类作品**故意放手**，全靠这层
+    和 DouK 下载记录去认，不然每一轮都会把它们当新作品重下一遍。
+    """
+    ids = set()
+    for r in load_downloads():
+        if r.get("aid"):
+            ids.add(str(r["aid"]))
+        for rel in r.get("rels") or ():
+            m = _ID_IN_NAME.search(os.path.basename(rel))
+            if m:
+                ids.add(m.group(1))
+    return ids
 
 
 # ---------------------------------------------------------------------------
@@ -1577,6 +1626,21 @@ def existing_of(base, exts):
     return ""
 
 
+def name_taken(author_dir, name, max_idx=3):
+    """`name` 这个基名在盘上是不是已经有文件了（含图文的 `name_1`、`name_2` 形式）。
+
+    只用来判断「这个名字被别人占了」，不看文件大小 —— 撞名保护宁可多重命名一次，
+    也不要因为一个 0 字节残文件就把两条作品挤到同一个名字上。
+    """
+    exts = IMG_EXTS + (VIDEO_EXT,)
+    cands = [name] + ["%s_%d" % (name, i) for i in range(1, int(max_idx) + 1)]
+    for c in cands:
+        for e in exts:
+            if os.path.exists(os.path.join(author_dir, c + e)):
+                return True
+    return False
+
+
 def aweme_kind(aweme):
     """这条作品是「视频」还是「图文」。判据和 download_aweme 里那一句完全一致：
     images / image_post_info.images 有内容就是图文（实况、动图也算图文）。"""
@@ -1598,15 +1662,22 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
     ct = int(aweme.get("create_time") or 0)
     if not ct:
         return 0, 0, "没有 create_time"
+    aid = str(aweme.get("aweme_id") or "")
     date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
     # 文件名必须和 DouK 生成的一字不差，否则 DouK 下次跑这个作者时，
     # 「目标文件已存在」这一关过不去，会把同一件作品再下一份。
     # DouK 的做法是：`日期-昵称-描述` 拼成一串 → 清洗 → 整串截断到 128 宽。
-    name = douk_detail_name(date, nickname, aweme.get("desc") or "",
-                            aweme.get("aweme_id") or "")
+    name = douk_detail_name(date, nickname, aweme.get("desc") or "", aid)
     referer = "https://www.douyin.com/video/%s" % (aweme.get("aweme_id") or "")
 
     os.makedirs(author_dir, exist_ok=True)
+    # 撞名保护（2026-11-12）：同名的文件已经在、但**名字里没有本条作品的 ID**，
+    # 说明那个文件是另一条作品占着这个名字（老的空描述文件 `日期-昵称-` 最常见）。
+    # 这时必须换个名字落盘。绝不能像以前那样「文件在 → 当已下过 → 返回成功」：
+    # 那会把这条作品永久吞掉，还被记成已处理，从此不再重试。
+    if aid and aid not in name and name_taken(author_dir, name):
+        name = "%s_%s" % (name, aid)
+
     files = 0
     size = 0
     errs = []
@@ -1845,6 +1916,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
     _dir_map = None
     if douk_ids is None:
         douk_ids = douk_id_set()
+    # 第四层判重：我们**自己**下过的 aweme_id（下载明细里的 aid / 文件名里的 ID）。
+    # 空描述作品没法按名字认人（见 is_known 注释），这一层是它们唯一的防线。
+    dl_ids = watch_downloaded_ids()
     stats = {"authors": 0, "checked": 0, "new": 0, "downloaded": 0,
              "bytes": 0, "failed": 0, "skipped": 0, "errors": [],
              "paused": "", "requests": 0, "would": 0, "empty": 0, "net": 0}
@@ -2197,6 +2271,12 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 seen.add(aid)
                 stats["skipped"] += 1
                 continue
+            # 我们自己下过这一条（明细账本里有 ID）：同样不再下一份。这一层专治
+            # 「描述为空 → 文件名里没有身份」的作品，判重不能靠名字，只能靠 ID。
+            if dl_ids and aid in dl_ids:
+                seen.add(aid)
+                stats["skipped"] += 1
+                continue
             if not bulk and ct2 <= last_ts:
                 continue
             if (st.get("fails") or {}).get(aid, 0) >= int(cfg.get("fail_limit") or 3):
@@ -2288,10 +2368,11 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 try:
                     _rels = [os.path.relpath(p, paths.SCAN_ROOT).replace(os.sep, "/")
                              for p in _got]
-                    record_download(uid, nick, date, desc, _rels, size)
+                    record_download(uid, nick, date, desc, _rels, size, aid=aid)
                 except Exception as _e:      # 记账失败不影响下载结果
                     print("[watch] 记下载明细失败：%s" % _e)
                 seen.add(aid)
+                dl_ids.add(aid)              # 本轮内存里也认它，别在同轮重复判
                 k_new = (date, key_of_desc(desc, dl))
                 local.add(k_new)
                 date_idx.setdefault(date, []).append(k_new[1])
@@ -2304,10 +2385,18 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 stats["errors"].append("%s %s：%s" % (nick, aid, err[:70]))
                 log("  ✗ %s 下载失败：%s" % ((desc or aid)[:26], err[:90]))
             else:
-                # 文件已存在：算处理过了
-                seen.add(aid)
-                st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
-                stats["skipped"] += 1
+                # 文件已存在：算处理过了。但必须满足「这条作品的 ID 已经进了判重账本」
+                # （download_aweme 确认同名文件属于本条时会把 ID 补记进 DouK 记录）。
+                # 不满足 = 我们对这名字到底属于哪条作品没把握 —— 记一次失败下轮再看，
+                # 绝不能记成已处理：那正是 2026-11-12 丢作品的那条路。
+                if aid and (aid in douk_ids or aid in dl_ids):
+                    seen.add(aid)
+                    st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
+                    stats["skipped"] += 1
+                else:
+                    stats["failed"] += 1
+                    st.setdefault("fails", {})[aid] = st.get("fails", {}).get(aid, 0) + 1
+                    log("  ⇢ %s 同名文件归属不明，下轮再试" % ((desc or aid)[:26]))
 
         if no_folder:
             # 只在每轮说一次，别为每条作品刷屏；1 小时后再看，作者进库后会自动补上

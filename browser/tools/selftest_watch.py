@@ -28,6 +28,9 @@ import watch_core as W  # noqa: E402
 TMP = tempfile.mkdtemp(prefix="watchtest_")
 W.STATE_FILE = os.path.join(TMP, "state.json")
 W.LOG_FILE = os.path.join(TMP, "watch.log")
+# 下载明细也指到临时目录：2026-11-12 起 scan_round 会读它做「自己下过的 ID」判重，
+# 不隔离的话自检会去读真实账本，结果就不可重复了
+W.DOWNLOADS_FILE = os.path.join(TMP, "watch_downloads.jsonl")
 # 库根也指到临时目录：2026-11-10 起「作者不在本地库」会自动建作者目录，
 # 不改这里的话自检会往真实库根（E 盘）里撒一堆测试目录
 _REAL_SCAN_ROOT = W.paths.SCAN_ROOT
@@ -411,6 +414,61 @@ chk("第 3 次：打上「扫不到」标签", "扫不到" in _tags(), _tags())
 chk("原有标签没被覆盖（可爱 还在）", "可爱" in _tags(), _tags())
 chk("第 3 次：取消追更（移出名单）", not _in_watch())
 chk("第 3 次：从「扫不到」面板移出", "z" not in (st.get("no_api") or {}), st.get("no_api"))
+
+print("\n[19] 空描述同日两条：第二条不能被同名文件吞掉（2026-11-12 线上丢过一条）")
+DAY = "2026-11-11"
+NICK = "K"
+AID_OLD = "7700000000000000001"
+AID_NEW = "7706922566221432497"
+n_old = W.douk_detail_name(DAY, NICK, "", AID_OLD)
+n_new = W.douk_detail_name(DAY, NICK, "", AID_NEW)
+chk("空描述的名字里必须带作品 ID", AID_OLD in n_old and AID_NEW in n_new, (n_old, n_new))
+chk("两条无文案作品不再同名", n_old != n_new, (n_old, n_new))
+chk("空描述不做文件名判重（交给 ID 层）",
+    W.is_known({(DAY, "")}, {DAY: [""]}, DAY, "", 64) is False)
+
+# 盘上已经躺着一条修复前生成的 `日期-昵称-.mp4`：新作品必须换名字落盘，而不是被当已下
+AD = os.path.join(W.paths.SCAN_ROOT, "UIDcoll_K_发布作品")
+os.makedirs(AD, exist_ok=True)
+legacy = os.path.join(AD, "%s-%s-.mp4" % (DAY, NICK))
+with open(legacy, "wb") as f:
+    f.write(b"x" * 2048)
+
+_saved = []
+_orig_save, _orig_mark = W.save_item, W.douk_mark_downloaded
+
+
+def _fake_save(cr, urls, base, referer, retry=3):
+    _saved.append(base)
+    with open(base + ".mp4", "wb") as f:
+        f.write(b"y" * 2048)
+    return 2048, ".mp4", ""
+
+
+W.save_item = _fake_save
+W.douk_mark_downloaded = lambda a: True
+try:
+    ct = int(time.mktime(time.strptime(DAY + " 22:35", "%Y-%m-%d %H:%M")))
+    aw = {"aweme_id": AID_NEW, "create_time": ct, "desc": "",
+          "video": {"play_addr": {"url_list": ["http://127.0.0.1/x"]}}}
+
+    class _FakeCR:
+        pass
+
+    class _FakeDy:
+        cr = _FakeCR()
+
+    files, size, err = W.download_aweme(_FakeDy(), aw, AD, NICK, 64)
+    chk("撞名时换名字照样下下来（不是静默跳过）", files == 1 and err == "", (files, err))
+    chk("落盘的名字里带作品 ID", bool(_saved) and _saved[-1].endswith(AID_NEW), _saved)
+    chk("老文件没被覆盖", os.path.getsize(legacy) == 2048)
+
+    # 同一件作品再下一遍：这次名字里有 ID、文件也在 → 必须认作「已经下过」
+    _saved.clear()
+    files2, _s2, err2 = W.download_aweme(_FakeDy(), aw, AD, NICK, 64)
+    chk("同一条作品不会重复下", files2 == 0 and err2 == "", (files2, err2))
+finally:
+    W.save_item, W.douk_mark_downloaded = _orig_save, _orig_mark
 
 print("\n========================")
 if FAIL:

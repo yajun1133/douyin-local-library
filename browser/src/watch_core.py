@@ -91,8 +91,13 @@ DEFAULT_CFG = {
     "desc_len": 64,             # 描述截断长度，对齐 DouK 的 desc_length
     "fail_limit": 3,            # 同一条作品失败 N 次后放弃，避免卡死
     # 连续 N 次被判定「扫不到」（接口连查三次都空）才认定为真的没了：
-    # 打「扫不到」标签 + 取消追更。偶尔一次空只列进面板看着，不动名单（2026-11-10）。
+    # 打「扫不到」标签 + **停用**（留在名单里，不再移出）。偶尔一次空只列进面板看着（2026-11-10）。
+    # 2026-11-13 用户改口径：以前是「打标签 + 取消追更」，现在改成「打标签 + 停用」，
+    # 因为取消追更以后就再也不知道他恢复没有；停用还留在名单里，能按期探测、扫到了自动恢复。
     "no_api_drop_rounds": 3,
+    # 被自动停用之后，每多少天再探一枪（探到就恢复启用 + 摘标签，还是空就继续停着）。
+    # 一周一次：几十位停用的作者一年也就多两千次请求，换来的是「不用人管也会自己回来」。
+    "no_api_probe_days": 7,
     "seen_keep": 400,           # 每个作者保留多少条 aweme_id 记忆
 }
 
@@ -681,6 +686,30 @@ def drop_from_watch(uid, reason=""):
     w["authors"] = kept
     save_watch(w)
     # 日志由调用方打（那边手上有昵称，uid 打出来没人认得）
+    return True
+
+
+def set_watch_enabled(uid, enabled):
+    """把名单里某位作者改成「启用 / 停用」，人不用离开名单。
+
+    **必须重新读整份 watch.json 再写**（理由同 drop_from_watch：scan_round 手里
+    那份只是「本轮到点的作者」子集，拿它写回去会把整个名单覆盖掉）。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    w = load_watch()
+    hit = None
+    for a in w.get("authors") or []:
+        if str(a.get("uid")) == uid:
+            hit = a
+            break
+    if hit is None:
+        return False
+    if bool(hit.get("enabled", True)) == bool(enabled):
+        return False        # 已经是目标状态：不写盘，少一次和网页端抢文件
+    hit["enabled"] = bool(enabled)
+    save_watch(w)
     return True
 
 
@@ -2067,7 +2096,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         stats["requests"] = used
 
     for item in watch.get("authors") or []:
-        if not item.get("enabled", True):
+        # 停用的不查 —— 但「因为扫不到被自动停用」的例外：which_authors_due 到点会
+        # 把它标成 _probe 派过来探一枪，探到作品就自动恢复启用（2026-11-13）。
+        if not item.get("enabled", True) and not item.get("_probe"):
             continue
         uid = str(item.get("uid") or "")
         sec = str(item.get("sec_uid") or "")
@@ -2167,6 +2198,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                     # 也照算 —— 那同样是「又试了一次还是空」）。
                     rounds = int(prev.get("rounds") or 0) + 1
                     limit = int(cfg.get("no_api_drop_rounds") or 3)
+                    probe_days = float(cfg.get("no_api_probe_days") or 7)
                     if not dry:      # 试运行不动状态：否则面板会挂一堆"假扫不到"
                         state.setdefault("no_api", {})[uid] = {
                             "nickname": nick,
@@ -2175,18 +2207,29 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                             "rounds": rounds,
                             "ts": time.time(),
                             "reason": why,
+                            # 下次探测时间：停用的作者由 which_authors_due 按它派活，
+                            # 启用中的作者用不上（照常按档位排）。
+                            "next_probe": time.time() + probe_days * 86400,
                         }
-                    # 用户 2026-11-10 的口径：
-                    #   · 偶尔一次空只是列进「扫不到」框看着，**不打标签**（多半是接口抽风）；
-                    #   · 连续 limit 次都空 → 才认定为真的扫不到：打「扫不到」标签、
-                    #     取消追更，然后从框里移出（标签留着，以后能按它找回来）。
-                    if not dry and rounds >= limit:
+                    # 用户 2026-11-13 口径（改自 11-10）：
+                    #   · 偶尔一次空只是列进「扫不到」框看着，**不打标签、不停用**（多半是接口抽风）；
+                    #   · 连续 limit 次都空 → 才认定为真的扫不到：打「扫不到」标签 + **停用**。
+                    #     以前是「取消追更」，人一被移出名单就再也不知道恢复没有；
+                    #     现在留在名单里，只是停用 —— 面板里看得见，也还能按期探测。
+                    if (not dry and rounds >= limit
+                            and item.get("enabled", True) and not item.get("_probe")):
                         tag_author(uid, NO_API_TAG, True)
-                        drop_from_watch(
-                            uid, "连续 %d 次扫不到作品（本地有 %d 条）" % (rounds, had_works))
-                        state.setdefault("no_api", {}).pop(uid, None)
-                        log("✂ %s 连续 %d 次扫不到，已加「%s」标签并取消追更"
-                            "（以后能在作者列表里按标签找回来）" % (nick, rounds, NO_API_TAG))
+                        set_watch_enabled(uid, False)
+                        log("⏸ %s 连续 %d 次扫不到，已加「%s」标签并停用（留在名单里，"
+                            "%d 天后再探一次，扫到作品会自动恢复）"
+                            % (nick, rounds, NO_API_TAG, int(probe_days)))
+                        _save()
+                        time.sleep(_pace(cfg))
+                        continue
+                    # 探测轮（本来就已经停用）：空是预期结果，记一笔就走，别触发
+                    # 「连续多位扫不到 → 换号」那套软限流判断（那是给启用中的号用的）。
+                    if item.get("_probe"):
+                        log("· %s 探测还是空（仍停用，%d 天后再试）" % (nick, int(probe_days)))
                         _save()
                         time.sleep(_pace(cfg))
                         continue
@@ -2218,6 +2261,14 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             # 作者恢复了还留着，用户按标签一筛就会看到一堆其实正常的号
             if not dry:
                 tag_author(uid, NO_API_TAG, False)
+                # 之前因为扫不到被**自动停用**的：这次扫到作品就恢复启用
+                # （2026-11-13 用户口径：能扫到了就把标签去掉、恢复正常追更）。
+                if not item.get("enabled", True):
+                    if set_watch_enabled(uid, True):
+                        item["enabled"] = True      # 本轮内存里也认，后面照常走
+                        st.pop("next_check", None)  # 旧的下次检查时间做废，重排
+                        log("▶ %s 又能扫到了，已自动恢复启用并摘掉「%s」标签"
+                            % (nick, NO_API_TAG))
             _save()
 
         cts = [int(a.get("create_time") or 0) for a in al]
@@ -2563,13 +2614,32 @@ def which_authors_due(watch, state, now=None):
     刚加进名单、还没做过「全量扫一遍」的作者**排在最前面**：用户要求
     「只要把一个作者添加到追更，就直接扫一下 TA 的全部作品」——
     不能让它排在几百位作者后面干等一轮。
+
+    停用的作者平时不查，只有「因扫不到被自动停用、且到了探测时间」的会
+    排到最后（_probe=True）：探一枪成本很低，探到了 scan_round 会自动恢复启用。
     """
     now = now or time.time()
-    due, pending = [], []
+    cfg = watch.get("settings") or {}
+    probe_gap = float(cfg.get("no_api_probe_days") or 7) * 86400
+    due, pending, probes = [], [], []
+    noapi = state.get("no_api") or {}
     for item in watch.get("authors") or []:
-        if not item.get("enabled", True):
-            continue
         uid = str(item.get("uid") or "")
+        if not item.get("enabled", True):
+            # 手动停用的不管；自动停用的（在 no_api 里有记录）到点探一枪
+            rec = noapi.get(uid) or {}
+            if not rec:
+                continue
+            # next_probe 缺（老状态，或升级前就停用的）就按 ts + 间隔算；
+            # 显式的 0 表示「马上探」，不能用 or 兜底成一周后
+            _np = rec.get("next_probe")
+            nxt = (float(_np) if _np is not None
+                   else float(rec.get("ts") or 0) + probe_gap)
+            if nxt <= now:
+                it = dict(item)
+                it["_probe"] = True
+                probes.append(it)
+            continue
         st = state["authors"].get(uid) or {}
         nxt = float(st.get("next_check") or 0)
         if (item.get("full_scan")
@@ -2582,4 +2652,4 @@ def which_authors_due(watch, state, now=None):
             continue
         if nxt <= now:
             due.append(item)
-    return pending + due
+    return pending + due + probes

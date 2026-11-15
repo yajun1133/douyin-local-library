@@ -318,6 +318,10 @@ def cmd_loop(args):
                 for x in fresh:
                     u = str(x.get("uid") or "")
                     st_x = state["authors"].get(u) or {}
+                    # 探测项（停用作者的定期回探）不插队：它由 which_authors_due
+                    # 排在队尾，插到最前面就变成本轮优先去探一个已经停用的人
+                    if x.get("_probe"):
+                        continue
                     if not u or not x.get("full_scan"):
                         continue
                     if st_x.get("full_done_for") == (x.get("added_at") or ""):

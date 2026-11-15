@@ -371,9 +371,9 @@ due2 = W.which_authors_due(w2, st2)
 chk("正在补（bulk=True）时不插队，按 next_check 等",
     all(str(x["uid"]) != "q" for x in due2), [x["uid"] for x in due2])
 
-print("\n[18] 连续扫不到：先只在面板写着，到阈值才打标签 + 取消追更")
+print("\n[18] 连续扫不到：先只在面板写着，到阈值才打标签 + 停用（人还留在名单里）")
 # 这条会写 watch.json 和 user_data.json，两条路径都改到临时目录，
-# 绝不能碰真实名单和真实标注（drop_from_watch 会整份重写 watch.json）
+# 绝不能碰真实名单和真实标注（set_watch_enabled 会整份重写 watch.json）
 W.WATCH_FILE = os.path.join(TMP, "watch.json")
 W.paths.USER_DATA = os.path.join(TMP, "user_data.json")
 with open(W.WATCH_FILE, "w", encoding="utf-8") as f:
@@ -397,12 +397,25 @@ def _in_watch():
     return any(str(a.get("uid")) == "z" for a in d.get("authors") or [])
 
 
+def _enabled():
+    """名单里这位现在是不是启用状态（None = 人不在名单里）。"""
+    d = json.load(open(W.WATCH_FILE, encoding="utf-8"))
+    for a in d.get("authors") or []:
+        if str(a.get("uid")) == "z":
+            return bool(a.get("enabled", True))
+    return None
+
+
 st = fresh_state()
 dy = FakeDy({"SECz": []})
 W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
 chk("第 1 次扫不到：进「扫不到」面板", "z" in (st.get("no_api") or {}))
 chk("第 1 次扫不到：不打标签", "扫不到" not in _tags(), _tags())
-chk("第 1 次扫不到：还在追更名单", _in_watch())
+chk("第 1 次扫不到：还在追更名单、还是启用", _in_watch() and _enabled() is True,
+    (_in_watch(), _enabled()))
+chk("第 1 次扫不到：已经排好下次探测时间",
+    float((st.get("no_api") or {}).get("z", {}).get("next_probe") or 0) > 0,
+    (st.get("no_api") or {}).get("z"))
 
 W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
 chk("第 2 次：仍不打标签", "扫不到" not in _tags(), _tags())
@@ -412,8 +425,44 @@ chk("第 2 次：rounds=2", (st.get("no_api") or {}).get("z", {}).get("rounds") 
 W.scan_round(dy, wz, st, lib_z, {"z": "dirZ"}, douk_ids=set())
 chk("第 3 次：打上「扫不到」标签", "扫不到" in _tags(), _tags())
 chk("原有标签没被覆盖（可爱 还在）", "可爱" in _tags(), _tags())
-chk("第 3 次：取消追更（移出名单）", not _in_watch())
-chk("第 3 次：从「扫不到」面板移出", "z" not in (st.get("no_api") or {}), st.get("no_api"))
+chk("第 3 次：停用但**没有**移出名单", _in_watch() and _enabled() is False,
+    (_in_watch(), _enabled()))
+chk("第 3 次：仍留在「扫不到」面板（能看见、能回探）",
+    "z" in (st.get("no_api") or {}), st.get("no_api"))
+
+print("\n[18b] 停用之后：不到点不查，到点回探；探到作品自动恢复启用并摘标签")
+wz2 = W.load_watch()
+due = W.which_authors_due(wz2, st)
+chk("没到探测时间：不派活", all(str(x.get("uid")) != "z" for x in due),
+    [x.get("uid") for x in due])
+(st["no_api"]["z"])["next_probe"] = 0          # 到点了
+due = W.which_authors_due(wz2, st)
+probe = [x for x in due if str(x.get("uid")) == "z"]
+chk("到点才派一枪探测（标了 _probe）", bool(probe) and probe[0].get("_probe") is True,
+    [(x.get("uid"), x.get("_probe")) for x in due])
+# 停用中的人排在队尾，不能挤掉正常作者
+chk("探测排在正常作者后面", due and str(due[-1].get("uid")) == "z",
+    [x.get("uid") for x in due])
+
+W.scan_round(dy, {"authors": probe, "settings": dict(CFG)}, st, lib_z,
+             {"z": "dirZ"}, douk_ids=set())
+chk("探测还是空：继续停用", _enabled() is False, _enabled())
+chk("探测还是空：还在「扫不到」面板", "z" in (st.get("no_api") or {}), st.get("no_api"))
+chk("探测还是空：下次探测时间又往后推了",
+    float((st.get("no_api") or {}).get("z", {}).get("next_probe") or 0) > time.time(),
+    (st.get("no_api") or {}).get("z"))
+
+# 探测这一枪查到了作品（就是本地那条，不会再下一份）：自动恢复 + 摘标签
+dy2 = FakeDy({"SECz": [{"aweme_id": "OLD1", "desc": "k",
+                        "create_time": int(time.mktime(time.strptime("2026-01-01", "%Y-%m-%d")))}]})
+W.scan_round(dy2, {"authors": probe, "settings": dict(CFG)}, st, lib_z,
+             {"z": "dirZ"}, douk_ids=set())
+chk("探测到了：自动恢复启用", _enabled() is True, _enabled())
+chk("探测到了：摘掉「扫不到」标签", "扫不到" not in _tags(), _tags())
+chk("探测到了：从「扫不到」面板移出", "z" not in (st.get("no_api") or {}), st.get("no_api"))
+chk("恢复后还是启用中的人，不会被再探一次",
+    all(str(x.get("uid")) != "z" or not x.get("_probe")
+        for x in W.which_authors_due(W.load_watch(), st)))
 
 print("\n[19] 空描述同日两条：第二条不能被同名文件吞掉（2026-11-12 线上丢过一条）")
 DAY = "2026-11-11"

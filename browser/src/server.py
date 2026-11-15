@@ -3483,6 +3483,9 @@ def _watch_status():
             "last_ts": int(s.get("last_ts") or 0),
             "interval": int(a.get("interval") or 0),
             "fails": len(s.get("fails") or {}),
+            # 是不是「因为扫不到被自动停用」的那一类：表格里那颗「已停用」标签
+            # 靠它换个悬停说明，用户才知道不是自己手动关的（2026-11-13）
+            "no_api": bool((state.get("no_api") or {}).get(uid)),
         })
     # 「累计追更下载」以**明细条数**为准：卡片上那个数字点开就是这份列表，两边必须一致。
     # watch_state 里每个作者只有一个计数，而状态文件被重建过（2026-11-08 09:39 那次
@@ -3523,6 +3526,10 @@ def _watch_status():
 
     # 「扫不到」：本地有作品、但接口连查三次（同号两次 + 换号一次）都空。
     # 2026-11-10 用户要求把每次扫到的这种作者都列出来，放在名单右边。
+    # 2026-11-13 起：连查 3 次空不再移出名单，改成「打标签 + 停用」，
+    # 所以这里要多给一个 off（已经停用）和 next_probe（下次回探时间）。
+    off_uids = {str(a.get("uid")) for a in (watch.get("authors") or [])
+                if not a.get("enabled", True)}
     no_api = []
     for _uid, rec in (state.get("no_api") or {}).items():
         if not isinstance(rec, dict):
@@ -3533,10 +3540,12 @@ def _watch_status():
             "local": int(rec.get("local") or 0),
             "tries": int(rec.get("tries") or 0),
             # 连续第几次被判定扫不到。到 no_api_drop_rounds 次就会被打上「扫不到」标签
-            # 并取消追更、从面板移出（2026-11-10 用户口径）
+            # 并停用（2026-11-13 用户口径：留在名单里，不再取消追更）
             "rounds": int(rec.get("rounds") or 0),
             "ts": float(rec.get("ts") or 0),
             "reason": rec.get("reason") or "",
+            "off": str(_uid) in off_uids,
+            "next_probe": float(rec.get("next_probe") or 0),
         })
     no_api.sort(key=lambda r: -r["ts"])
 
@@ -3921,7 +3930,29 @@ def _watch_toggle(uid, enabled=None):
     if not hit:
         return {"ok": False, "error": "名单里没有这个 uid"}
     WC.save_watch(watch)
+    if hit.get("enabled", True):
+        _reset_no_api_rounds(uid)
     return {"ok": True, "enabled": bool(hit.get("enabled"))}
+
+
+def _reset_no_api_rounds(uid):
+    """手动重新启用一位作者时，把「扫不到」的连败计数清零。
+
+    不清零的话，他一被打开就是 rounds=3，下一轮扫空又立刻被自动停用，
+    用户会以为「怎么点都点不回来」。「扫不到」标签**不摘** ——
+    按 2026-11-13 的口径，标签要等真的扫到作品才去掉。
+    读不出来就算，绝不能把 state 写坏。
+    """
+    try:
+        st = WC.load_state()
+        rec = (st.get("no_api") or {}).get(str(uid))
+        if not isinstance(rec, dict):
+            return
+        rec["rounds"] = 0
+        rec["next_probe"] = 0
+        WC.save_state(st)
+    except Exception:
+        pass
 
 
 def watch_of(uid):
@@ -3995,6 +4026,10 @@ def _watch_mark(uid, enabled=True, sec_uid="", nickname="", interval=None):
             })
         watch["authors"] = authors
         WC.save_watch(watch)
+        if hit:
+            # 从详情页把这位置重新点亮：同样要清掉「扫不到」的连败计数，
+            # 否则下一轮一扫空又被自动停用（2026-11-13）
+            _reset_no_api_rounds(uid)
         return {"ok": True, "watching": True, "added": hit is None,
                 "interval": iv if iv is not None else int((hit or {}).get("interval") or 0),
                 "count": len(authors)}

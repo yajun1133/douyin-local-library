@@ -10205,12 +10205,17 @@ function wvRenderNoApi(d) {
     }
     if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
     list.innerHTML = rows.map((r) => {
-        // 连续第几次 + 到第几次会自动取消追更，都写进悬停提示：
-        // 面板里只放「还没到阈值」的人，到了就会被打上「扫不到」标签并移出（2026-11-10）
-        const limit = Number((d.settings || {}).no_api_drop_rounds || 3);
+        // 连续第几次 + 到第几次会自动停用 + 下次什么时候再探，都写进悬停提示。
+        // 2026-11-13 用户口径：到阈值不再「取消追更」，改成「打标签 + 停用」，
+        // 人还留在名单里，之后每 no_api_probe_days 天回探一次，扫到了自动恢复。
+        const st0 = d.settings || {};
+        const limit = Number(st0.no_api_drop_rounds || 3);
+        const probeDays = Number(st0.no_api_probe_days || 7);
         const nth = r.rounds ? ('连续第 ' + r.rounds + ' 次') : '';
-        const tip = [r.reason || '', (r.tries ? '试了 ' + r.tries + ' 次' : ''), nth,
-                     limit ? ('连续 ' + limit + ' 次就会被加上「扫不到」标签并取消追更') : '']
+        const tail = r.off
+            ? ('已自动停用' + (r.next_probe ? '，' + wvAgo(r.next_probe) + '再探一次' : '，每 ' + probeDays + ' 天再探一次'))
+            : (limit ? ('再空 ' + Math.max(0, limit - (r.rounds || 0)) + ' 次就会被加「扫不到」标签并停用') : '');
+        const tip = [r.reason || '', (r.tries ? '试了 ' + r.tries + ' 次' : ''), nth, tail]
             .filter(Boolean).join('　');
         // 点一行 → 进这位作者的本地主页（2026-11-10 用户要求）。
         // 这些作者本地都有作品，详情页一定能打开，返回时还回追更页。
@@ -10218,6 +10223,7 @@ function wvRenderNoApi(d) {
             + ' title="' + escapeHtml(tip + '　点一下进 TA 的本地主页') + '"'
             + ' onclick="wvOpenNoApi(this)">'
             + '<span class="wv-noapi-n">' + escapeHtml(r.nickname) + '</span>'
+            + (r.off ? '<span class="wv-noapi-off">已停用</span>' : '')
             + '<span class="wv-noapi-c">本地 ' + (r.local || 0) + ' 条</span>'
             + (r.rounds > 1 ? '<span class="wv-noapi-r">第 ' + r.rounds + ' 次</span>' : '')
             + '<span class="wv-noapi-t">' + (r.ts ? wvAgo(r.ts) : '') + '</span>'
@@ -10304,7 +10310,15 @@ function wvRenderTable(rowsAll) {
         }
         let st = '<span class="wv-tag ' + t[2] + '" title="' + escapeHtml(t[1]) + '">' +
                  '<i class="wv-dot"></i>' + t[0] + '档</span>';
-        if (!r.enabled) st = '<span class="wv-tag off"><i class="wv-dot"></i>已停用</span>';
+        if (!r.enabled) {
+            // 2026-11-13：扫不到的作者不再移出名单，改成停用；这里把原因说清楚，
+            // 免得用户以为是自己点错了
+            const why = r.no_api
+                ? '连续多次扫不到作品，已自动停用；仍留在名单里，会定期回探，扫到就自动恢复'
+                : '手动停用';
+            st = '<span class="wv-tag off" title="' + escapeHtml(why) +
+                 '"><i class="wv-dot"></i>已停用</span>';
+        }
         const extra = r.fails ? ' <span class="wv-tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
 
         // 名字包成 <a>：中键 / Ctrl+点击可以「在新标签打开」，左键走应用内详情页

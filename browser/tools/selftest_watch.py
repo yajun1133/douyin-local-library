@@ -482,6 +482,10 @@ chk("表情在库里、接口没有，也要认",
 chk("同一天两条剥完一样 → 有歧义不认（宁可重下也不张冠李戴）",
     W.is_known({(D20, "可爱"), (D20, "可爱😊")},
                W.build_date_index({(D20, "可爱"), (D20, "可爱😊")}), D20, "可爱☺️", 64) is False)
+chk("接口侧同日也有两条剥完一样 → 不认（方向二同样看唯一性）",
+    W.is_known(loc20, di20, D20, "可爱☺️", 64, bare_total=2) is False)
+chk("两边都唯一才认（bare_total=1）",
+    W.is_known(loc20, di20, D20, "可爱☺️", 64, bare_total=1) is True)
 chk("完全不同的短描述不认", W.is_known(loc20, di20, D20, "好嘛", 64) is False)
 chk("单字描述不参与（区分度太低）",
     W.is_known({(D20, "哈")}, W.build_date_index({(D20, "哈")}), D20, "哈😄", 64) is False)
@@ -542,6 +546,29 @@ try:
         files22 == 1 and err22 == "", (files22, err22))
 finally:
     W.save_item, W.douk_mark_downloaded = _orig_save, _orig_mark
+
+print("\n[22] scan_round 真的把「同日接口侧条数」传进判重（接线检查）")
+# 只有一条 `可爱☺️`、库里是 `可爱` → 必须跳过；同日再来一条剥完一样的 → 不能跳
+# （否则作者同一天两条 `可爱☺️`/`可爱😊`、本地只有一条时，另一条会被永远漏下）
+_orig_save2 = W.save_item
+W.save_item = lambda *a, **k: (0, "", "自检里不许真联网")
+try:
+    day22 = _dt.fromtimestamp(now - 3600).strftime("%Y-%m-%d")
+    lib22 = {"y": {(day22, "可爱")}}
+    st22 = fresh_state()
+    dy22 = FakeDy({"SECy": [mk_aweme("y1", int(now - 3600), "可爱☺️")]})
+    r22 = W.scan_round(dy22, base_watch(["y"]), st22, lib22, {"y": ""}, douk_ids=set())
+    chk("一条且唯一 → 算跳过、不去下", r22["skipped"] == 1 and r22["downloaded"] == 0,
+        "skip=%d dl=%d" % (r22["skipped"], r22["downloaded"]))
+
+    st23 = fresh_state()
+    dy23 = FakeDy({"SECy": [mk_aweme("y2", int(now - 3600), "可爱😊"),
+                            mk_aweme("y3", int(now - 3500), "可爱☺️")]})
+    r23 = W.scan_round(dy23, base_watch(["y"]), st23, lib22, {"y": ""}, douk_ids=set())
+    chk("同日两条剥完一样 → 都当候选（不冒认已有）", r23["new"] == 2,
+        "new=%d skip=%d" % (r23["new"], r23["skipped"]))
+finally:
+    W.save_item = _orig_save2
 
 print("\n========================")
 

@@ -39,6 +39,16 @@ al = dy.author_works(sec, pages=10)
 print("接口返回 %d 条" % len(al))
 
 miss = []
+# 与 scan_round 同一口径：这一天接口上「剥完装饰符后同一个描述」有几条，
+# 供 is_known 的「只差表情」那档做唯一性校验
+bare_cnt = {}
+for a in al:
+    ct = int(a.get("create_time") or 0)
+    if not ct:
+        continue
+    k = (datetime.fromtimestamp(ct).strftime("%Y-%m-%d"),
+         W.deco_strip(W.key_of_desc(a.get("desc") or "", 64)))
+    bare_cnt[k] = bare_cnt.get(k, 0) + 1
 for a in al:
     aid = str(a.get("aweme_id") or "")
     ct = int(a.get("create_time") or 0)
@@ -48,7 +58,8 @@ for a in al:
         continue
     if aid in dl_ids:
         continue
-    if W.is_known(local, date_idx, date, desc, 64):
+    if W.is_known(local, date_idx, date, desc, 64,
+                  bare_total=bare_cnt.get((date, W.deco_strip(W.key_of_desc(desc, 64))), 1)):
         continue
     miss.append((ct, aid, date, desc))
 

@@ -85,6 +85,16 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None)
 
     local = lib_idx.get(uid) or set()
     date_idx = W.build_date_index(local)
+    # 和 scan_round 同一口径：数出「这一天接口上有几条描述剥完装饰符是一样的」，
+    # 供 is_known 的「只差表情」那档做唯一性校验（见 watch_core.is_known 方向三）
+    bare_cnt = {}
+    for _a in al:
+        _ct = int(_a.get("create_time") or 0)
+        if not _ct:
+            continue
+        _k = (datetime.fromtimestamp(_ct).strftime("%Y-%m-%d"),
+              W.deco_strip(W.key_of_desc(_a.get("desc") or "", 64)))
+        bare_cnt[_k] = bare_cnt.get(_k, 0) + 1
     print("接口返回 %d 条 | 本地索引 %d 条 | 目录 %s" % (len(al), len(local), folder))
 
     dl = sk = fail = gone = 0
@@ -93,7 +103,9 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None)
         ct = int(a.get("create_time") or 0)
         date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
         desc = a.get("desc") or ""
-        if W.is_known(local, date_idx, date, desc, 64):
+        if W.is_known(local, date_idx, date, desc, 64,
+                      bare_total=bare_cnt.get(
+                          (date, W.deco_strip(W.key_of_desc(desc, 64))), 1)):
             sk += 1
             continue
         # DouK 记录里有、本地却没有 = 用户自己删掉的。**别再补回来**：

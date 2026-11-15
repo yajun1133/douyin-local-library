@@ -478,7 +478,7 @@ def _pre_hit(full, pre):
     return len(pre) >= 12 and full.startswith(pre)
 
 
-def is_known(local, date_idx, date, desc, desc_len=64):
+def is_known(local, date_idx, date, desc, desc_len=64, bare_total=None):
     """这条作品本地到底有没有（精确 key + 省略号模糊）。
 
     模糊匹配必须限定在**同一天**：`#卡点` 这种短前缀放到全库去比，会把别人的作品
@@ -495,6 +495,9 @@ def is_known(local, date_idx, date, desc, desc_len=64):
     aweme_id 那一层（DouK 下载记录 + 追更下载明细）去认。原因：空描述作品在
     文件名里没有身份，同一天两条就是同一个名字，按名字比必然张冠李戴 ——
     认成「已有」= 后面那条永远下不到（2026-11-12 丢的那一条就是这么来的）。
+
+    bare_total：这一天接口上有几条作品的描述「剥掉装饰符后」跟这条一样。方向三
+    （只差表情）要两个方向都唯一才敢认亲，调用方数好传进来；不传就不做这层校验。
     """
     if not douk_filter_name(str(desc or ""), ""):
         return False
@@ -537,8 +540,14 @@ def is_known(local, date_idx, date, desc, desc_len=64):
     #   歧义时宁可多下一次（有 download_aweme 的内容级兜底），也不把别的作品当已有
     #   —— 漏下比重复严重得多。
     #   `len(bare) >= 2`：单字描述（`哈` / `嗯`）连唯一性都保不住，留给 ID 层和内容级兜底。
+    #
+    #   唯一性要**两个方向**都成立才算数（`bare_total` = 这一天接口上有几条描述剥完
+    #   一样，由调用方数好传进来）：库里只有一条、接口也只有一条，才敢说「就是它」。
+    #   只看库里的话，作者同一天发了两条 `可爱☺️` / `可爱😊`、本地只下过其中一条时，
+    #   另一条会被认成「已有」→ 永久漏下。调用方不传（工具脚本/单元测试）就按只数
+    #   库里那一侧处理，行为与 2026-11-13 之前一致。
     bare = deco_strip(bkey)
-    if len(bare) >= 2:
+    if len(bare) >= 2 and (bare_total is None or int(bare_total) <= 1):
         hits = [k for k in same if k != bkey and deco_strip(k) == bare]
         if len(hits) == 1:
             return True
@@ -2342,6 +2351,19 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 候选：比基线新、且没处理过的（「首次全量」阶段不看基线，只看有没有处理过）
         want_content = str(cfg.get("content") or "all").lower()
         bulk = bool(st.get("bulk"))
+        # 「只差装饰符」判亲要两个方向都唯一：这里数出「这一天接口上有几条作品
+        # 的描述剥完装饰符是同一个」（见 is_known 方向三）。按接口返回的**全部**
+        # 作品数，不按候选数 —— 候选已经被 seen / ID 账本筛过一遍，剩下的条数
+        # 说明不了当天实际有几条。
+        _dl0 = int(cfg.get("desc_len") or 64)
+        bare_cnt = {}
+        for _a in al:
+            _ct = int(_a.get("create_time") or 0)
+            if not _ct:
+                continue
+            _k = (datetime.fromtimestamp(_ct).strftime("%Y-%m-%d"),
+                  deco_strip(key_of_desc(_a.get("desc") or "", _dl0)))
+            bare_cnt[_k] = bare_cnt.get(_k, 0) + 1
         cand = []
         for a in al:
             aid = str(a.get("aweme_id") or "")
@@ -2414,7 +2436,9 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             dl = int(cfg.get("desc_len") or 64)
             # 第 3 层判重：库里已有同一天同一描述 → DouK 以前下过
             # 老文件名里的 `#...` 由 is_known 按前后缀认出，不会重复下载
-            if is_known(local, date_idx, date, desc, dl):
+            if is_known(local, date_idx, date, desc, dl,
+                        bare_total=bare_cnt.get(
+                            (date, deco_strip(key_of_desc(desc, dl))), 1)):
                 seen.add(aid)
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 stats["skipped"] += 1

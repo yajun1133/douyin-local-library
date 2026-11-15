@@ -524,13 +524,24 @@ def is_known(local, date_idx, date, desc, desc_len=64):
     #   DouK 11-07 下的文件名是 `-糊涂思^-#卡点舞.mp4`，接口现在给的描述是
     #   `🥲#卡点舞` → 名字不同 → 判成新作品，又下了一份 1.39MB 的。
     #   抖音上给旧作品改文案、加个表情太常见，文件名对不上不代表作品不一样。
-    #   剥掉表情后完全相同才算同一条；剥完太短的（<4 字）不参与，
-    #   否则同一天两三条 `#卡点舞` / `#变装` 会被认成一条，那是漏下，比重复更糟。
+    #
+    # ⚠️ 2026-11-13 改判据：**不再用「剥完 ≥4 字」当门槛，改用唯一性**。
+    #   长度门槛的初衷是挡住「同一天两三条 `#卡点舞` 被认成一条」，但长度根本不是
+    #   「有没有歧义」的尺子 —— 它只是把**短描述的变体**一律挡在门外，而这些恰恰
+    #   是表情增删最常见的形态（越短的文案越爱配表情）。代价已经出现过：
+    #   某作者 2025-11-24 的 `可爱☺️`，本地文件叫 `2025-11-24-昵称-可爱.mp4`
+    #   （DouK 生成文件名时 `drop_emoji` 把 ☺️ 删了），剥完只剩 2 字 → 不参与比对
+    #   → 判成新作品，又下一份 1.0 MB 的 `...-可爱_<作品ID>.mp4`。
+    #   真正要防的是「同一天有多条剥完一模一样的候选」，那就数条数：
+    #   唯一命中才认（就是这一条），命中多条说明有歧义 → 不认。
+    #   歧义时宁可多下一次（有 download_aweme 的内容级兜底），也不把别的作品当已有
+    #   —— 漏下比重复严重得多。
+    #   `len(bare) >= 2`：单字描述（`哈` / `嗯`）连唯一性都保不住，留给 ID 层和内容级兜底。
     bare = deco_strip(bkey)
-    if len(bare) >= 4 and bare != bkey:
-        for k in same:
-            if deco_strip(k) == bare:
-                return True
+    if len(bare) >= 2:
+        hits = [k for k in same if k != bkey and deco_strip(k) == bare]
+        if len(hits) == 1:
+            return True
     return False
 
 
@@ -1641,6 +1652,45 @@ def name_taken(author_dir, name, max_idx=3):
     return False
 
 
+def content_fp(path, chunk=262144):
+    """文件内容指纹：(大小, 首尾各 256KB 的 sha1)。判「两份下载是不是同一件作品」用。
+
+    为什么不全量算哈希：库里单条视频常常几百 MB，全量读一遍纯属浪费；
+    大小 + 首尾两块已经足够区分「同一件作品被重下」和「两条不同作品」——
+    前者是字节级完全一致（同一个 CDN 文件），后者连大小都极少相同。
+    """
+    import hashlib
+    try:
+        size = os.path.getsize(path)
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            h.update(f.read(chunk))
+            if size > chunk:
+                f.seek(max(chunk, size - chunk))
+                h.update(f.read(chunk))
+        return size, h.hexdigest()
+    except OSError:
+        return None
+
+
+def twin_of(new_path, aid):
+    """撞名改号落盘的 `基名_<作品ID>[_N].ext`，找它在改名之前对应的那个老文件。
+
+    没有老文件（这次不是撞名、或者老文件已被删）返回空串。
+    """
+    stem = os.path.splitext(os.path.basename(new_path))[0]
+    marker = "_%s" % str(aid or "")
+    if not aid or marker not in stem:
+        return ""
+    old_stem = stem.replace(marker, "", 1)      # `...可爱_<ID>_1` → `...可爱_1`
+    d = os.path.dirname(new_path)
+    for e in IMG_EXTS + (VIDEO_EXT,):
+        p = os.path.join(d, old_stem + e)
+        if os.path.exists(p):
+            return p
+    return ""
+
+
 def aweme_kind(aweme):
     """这条作品是「视频」还是「图文」。判据和 download_aweme 里那一句完全一致：
     images / image_post_info.images 有内容就是图文（实况、动图也算图文）。"""
@@ -1675,12 +1725,19 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
     # 说明那个文件是另一条作品占着这个名字（老的空描述文件 `日期-昵称-` 最常见）。
     # 这时必须换个名字落盘。绝不能像以前那样「文件在 → 当已下过 → 返回成功」：
     # 那会把这条作品永久吞掉，还被记成已处理，从此不再重试。
-    if aid and aid not in name and name_taken(author_dir, name):
+    #
+    # 撞名 = 「可能是同一件作品被重下」的最强信号（名字按 DouK 口径算的，撞上说明
+    # 日期+昵称+描述都一样），所以撞名后落盘完还要过一道**内容比对**，见下面的
+    # `collided` 收尾。判重四层只看名字和 ID，名字对不上就一路放行 ——
+    # 内容层是最后一道闸。
+    collided = bool(aid and aid not in name and name_taken(author_dir, name))
+    if collided:
         name = "%s_%s" % (name, aid)
 
     files = 0
     size = 0
     errs = []
+    written = []      # 本次真落盘的文件（撞名内容比对要它；out 可能没传）
 
     images = aweme.get("images") or ((aweme.get("image_post_info") or {}).get("images") or [])
     if images:
@@ -1698,8 +1755,7 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
                 if n:
                     files += 1
                     size += n
-                    if out is not None:
-                        out.append(base + ext)
+                    written.append(base + ext)
                 else:
                     errs.append("实况%d %s" % (i, err))
                 continue
@@ -1715,8 +1771,7 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
             if n:
                 files += 1
                 size += n
-                if out is not None:
-                    out.append(base + ext)
+                written.append(base + ext)
             else:
                 errs.append("图%d %s" % (i, err))
     else:
@@ -1732,11 +1787,42 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
         n, ext, err = save_item(dy.cr, urls, base, referer)
         if n:
             files, size = 1, n
-            if out is not None:
-                out.append(base + ext)
+            written.append(base + ext)
         else:
             errs.append(err)
 
+    # 撞名后的内容级兜底（2026-11-13）：名字撞上了，说明按 DouK 口径算出来是
+    # `日期-昵称-描述` 全同 —— 这有两种可能：① 真的是另一条作品（老的空描述文件
+    # 占着名字，2026-11-12 修的那种）；② **就是同一件作品，只是上游描述变了**。
+    # ②的分辨办法只有一个：比内容。字节级一致 = 同一件作品重下了一份，删掉刚下的
+    # 那份、记已处理；不一致 = 真的是两条作品，保留（这是 11-12 那条保护的语义）。
+    #
+    # 为什么必须有这一层：判重的前三层全靠「名字/ID 对得上」，而名字对不上的成因
+    # 一直在增加（表情增删、描述截断口径、昵称改动、老库来自别的下载器没有 ID 账本）。
+    # 某作者 2025-11-24 的 `可爱☺️` 就是名字对不上、四层全部放行、撞名改号后
+    # 真的又下了一份 1.0 MB —— 只有内容能认出来。
+    if collided and files and written:
+        pairs = []
+        for p in written:
+            t = twin_of(p, aid)
+            fp_new = content_fp(p)
+            if not t or fp_new is None or content_fp(t) != fp_new:
+                pairs = []
+                break
+            pairs.append((p, t))
+        if pairs:
+            for p, _t in pairs:
+                try:
+                    os.remove(p)
+                except OSError as e:
+                    log("  ! 删重下的副本失败（%s）：%s" % (os.path.basename(p), e))
+            log("  ⇢ 撞名且内容完全相同，判为同一件作品（重下的副本已删）：%s"
+                % os.path.basename(pairs[0][1]))
+            douk_mark_downloaded(aweme.get("aweme_id"))
+            return 0, 0, ""
+
+    if out is not None:
+        out.extend(written)
     if files == 0 and not errs:
         # 每个文件都已经存在（作品本来就在库里）→ 同样补记 ID
         douk_mark_downloaded(aweme.get("aweme_id"))

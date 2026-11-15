@@ -470,7 +470,81 @@ try:
 finally:
     W.save_item, W.douk_mark_downloaded = _orig_save, _orig_mark
 
+print("\n[20] 描述只差表情 + 短描述：必须认作已有（2026-11-13 线上重下过 1 条）")
+# 线上那条：库里 `2025-11-24-昵称-可爱.mp4`（DouK 生名时删掉了表情），
+# 接口返回 `可爱☺️` → 老口径「剥完要 ≥4 字」把 2 字的 `可爱` 挡在门外 → 又下一份。
+D20 = "2025-11-24"
+loc20 = {(D20, "可爱")}
+di20 = W.build_date_index(loc20)
+chk("短描述 + 表情 → 认作已有", W.is_known(loc20, di20, D20, "可爱☺️", 64) is True)
+chk("表情在库里、接口没有，也要认", 
+    W.is_known({(D20, "可爱😊")}, W.build_date_index({(D20, "可爱😊")}), D20, "可爱", 64) is True)
+chk("同一天两条剥完一样 → 有歧义不认（宁可重下也不张冠李戴）",
+    W.is_known({(D20, "可爱"), (D20, "可爱😊")},
+               W.build_date_index({(D20, "可爱"), (D20, "可爱😊")}), D20, "可爱☺️", 64) is False)
+chk("完全不同的短描述不认", W.is_known(loc20, di20, D20, "好嘛", 64) is False)
+chk("单字描述不参与（区分度太低）",
+    W.is_known({(D20, "哈")}, W.build_date_index({(D20, "哈")}), D20, "哈😄", 64) is False)
+chk("跨天不认（模糊比对只在同一天内做）",
+    W.is_known(loc20, di20, "2025-11-25", "可爱☺️", 64) is False)
+
+print("\n[21] 撞名后内容级兜底：同一件作品不会再落一份重复文件")
+AD2 = os.path.join(W.paths.SCAN_ROOT, "UIDdup_T_发布作品")
+os.makedirs(AD2, exist_ok=True)
+D21, NICK21, AID21 = "2025-11-24", "T", "7500000000000000001"
+BODY = b"z" * 8192
+orig21 = os.path.join(AD2, "%s-%s-可爱.mp4" % (D21, NICK21))
+with open(orig21, "wb") as f:
+    f.write(BODY)
+
+
+def _save_same(cr, urls, base, referer, retry=3):
+    with open(base + ".mp4", "wb") as f:      # 内容与老文件完全相同
+        f.write(BODY)
+    return len(BODY), ".mp4", ""
+
+
+def _save_other(cr, urls, base, referer, retry=3):
+    with open(base + ".mp4", "wb") as f:      # 内容不同 = 真的是另一条作品
+        f.write(b"q" * len(BODY))
+    return len(BODY), ".mp4", ""
+
+
+ctor = int(time.mktime(time.strptime(D21 + " 21:42", "%Y-%m-%d %H:%M")))
+aw21 = {"aweme_id": AID21, "create_time": ctor, "desc": "可爱☺️",
+        "video": {"play_addr": {"url_list": ["http://127.0.0.1/x"]}}}
+
+
+class _FakeCR21:
+    pass
+
+
+class _FakeDy21:
+    cr = _FakeCR21()
+
+
+_mark21 = []
+W.douk_mark_downloaded = lambda a: _mark21.append(a) or True
+try:
+    W.save_item = _save_same
+    _out21 = []
+    files21, size21, err21 = W.download_aweme(_FakeDy21(), aw21, AD2, NICK21, 64, out=_out21)
+    gone21 = not os.path.exists(os.path.join(AD2, "%s-%s-可爱_%s.mp4" % (D21, NICK21, AID21)))
+    chk("内容相同 → 不重复落盘", files21 == 0 and err21 == "", (files21, err21))
+    chk("重下的副本已删掉", gone21, os.listdir(AD2))
+    chk("明细里不记这个已删的文件", _out21 == [], _out21)
+    chk("老文件还在", os.path.getsize(orig21) == len(BODY))
+    chk("照样记进 DouK 记录（不然以后还会再判一次新）", AID21 in _mark21, _mark21)
+
+    W.save_item = _save_other
+    files22, _s22, err22 = W.download_aweme(_FakeDy21(), aw21, AD2, NICK21, 64)
+    chk("内容不同 → 当作另一条作品保留（11-12 那条保护不能破）",
+        files22 == 1 and err22 == "", (files22, err22))
+finally:
+    W.save_item, W.douk_mark_downloaded = _orig_save, _orig_mark
+
 print("\n========================")
+
 if FAIL:
     print("失败 %d 项：" % len(FAIL))
     for f in FAIL:

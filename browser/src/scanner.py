@@ -118,15 +118,25 @@ def parse_work_filename(filename):
     #   ① 2026-10-31 起 name_format 末尾加了 id → 「日期-昵称-描述-<id>.mp4」
     #   ② 更老的文件里「描述为空 → DouK 拿 ID 当描述」→ 「日期-昵称-<id>.mp4」
     # 所以判据是「desc 末尾是独立的数字段」，不是「desc 整个是数字」。
+    # 2026-11-13：分隔符补上 `_`。追更下载撞名时会存成 `日期-昵称-描述_<id>.mp4`
+    # （watch_core.download_aweme 撞名保护），只认 `-` 的话那串 ID 会被当成
+    # 「序号」→ 同一作品被并回一条，界面上就少了作品（某作者 76 条只显示 64 条）。
     aweme_id = ""
-    mm = re.search(r"(?:^|-)(\d{15,20})$", desc)
+    mm = re.search(r"(?:^|[-_])(\d{15,20})$", desc)
     if mm:
         aweme_id = mm.group(1)
-        desc = desc[:mm.start()].rstrip("-") if mm.start() > 0 else ""
+        desc = desc[:mm.start()].rstrip("-_") if mm.start() > 0 else ""
     # 「日期-昵称-<id>-<id>.mp4」这种双 ID 名字（重复下载的产物）剥完末尾还剩一个 ID，
     # 它本来就是「这条作品没有描述」，别让人在界面上看到一串数字当标题。
     if aweme_id and desc == aweme_id:
         desc = ""
+    # `_<15~20 位数字>` 不是「序号」，是作品 ID：追更下载撞名时会存成
+    # `日期-昵称-描述_<id>.mp4`（watch_core.download_aweme 的撞名保护）。
+    # FILE_RE 会把这串数字切进 seq，只当序号的话同一作品会被并回一条 ——
+    # 界面上就少作品（2026-11-13 某作者抖音 76 条、本地只显示 64 条就是这个）。
+    if not aweme_id and seq and re.fullmatch(r"\d{15,20}", str(seq)):
+        aweme_id = str(seq)
+        seq = None
     return {"date": date, "author": author, "desc": desc, "seq": seq,
             "ext": ext.lower(), "id": aweme_id}
 

@@ -587,7 +587,8 @@
       esc(a.nickname || '（未填昵称）') + '</span>' +
       (a.watch ? '<span class="bwt" title="正在追更：后台会定时查新作品">追更</span>' : '') +
       '<span class="bsep">·</span>' +
-      '<span class="bnum">已存 <b>' + (a.file_count || 0) + '</b></span>' +
+      '<span class="bnum" title="本地已存 ' + (a.file_count || 0) + ' 个文件（一条图文帖算多张图，不是作品数）">已存 <b>' +
+        (a.file_count || 0) + '</b></span>' +
       '<span class="bsep">·</span>' +
       '<span class="btime">最后下载 ' + (a.last_download ? rel(a.last_download) : '—') + '</span>' +
       (a.last_download ? '<span class="brel">' + fmtShort(a.last_download) + '</span>' : '') +
@@ -652,7 +653,7 @@
               (a.alias ? '　又名 ' + a.alias : '')) + '">' +
         badges + allChips +
         '</div>' +
-        '<span class="cnt" title="已下载 ' + (a.file_count || 0) + ' 个作品' +
+        '<span class="cnt" title="已存 ' + (a.file_count || 0) + ' 个文件（图文帖一条含多张图）' +
         (a.bytes ? '，共 ' + fmtBytes(a.bytes) : '') + '">' +
         '<b>' + (a.file_count || 0) + '</b> 个' +
         (a.bytes ? ' · ' + fmtBytes(a.bytes) : '') + '</span>' +
@@ -747,7 +748,7 @@
       const sameHtml = same.length
         ? '<div class="sub">库里同名：' + same.map(function (x) {
             return '<b>' + esc(x.nickname || x.uid) + '</b>' +
-              (x.status ? '（' + esc(x.status) + '）' : '') + ' · 已存 ' + (x.file_count || 0) + ' 个';
+              (x.status ? '（' + esc(x.status) + '）' : '') + ' · 已存 ' + (x.file_count || 0) + ' 个文件';
           }).join('、') + '</div>' +
           '<div class="sub">' + (nd
             ? '但 SEC_UID 跟当前页面不一样，是另一个号（同一个人另开的号很常见）。'
@@ -846,7 +847,7 @@
       const clipped = hcs.overflow === 'hidden';
       const dot = document.createElement('span');
       dot.textContent = label;
-      dot.title = '本地已存 ' + n + ' 个作品';
+      dot.title = '本地已存 ' + n + ' 个文件（图文帖一条含多张图）';
       dot.style.cssText = 'position:absolute;z-index:9;' +
         (clipped ? 'top:0;right:0;' : 'left:0;bottom:100%;margin-bottom:1px;') +
         'min-width:16px;height:15px;padding:0 4px;border-radius:8px;' +

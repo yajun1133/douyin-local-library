@@ -67,7 +67,8 @@ def resolve_authors(uids, extra_sec=None):
     return out
 
 
-def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None):
+def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None,
+                 fill_dups=False):
     """跑一位作者，返回 (新增, 跳过, 失败, 已删)。"""
     douk_ids = douk_ids or set()
     try:
@@ -88,13 +89,17 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None)
     # 和 scan_round 同一口径：数出「这一天接口上有几条描述剥完装饰符是一样的」，
     # 供 is_known 的「只差表情」那档做唯一性校验（见 watch_core.is_known 方向三）
     bare_cnt = {}
+    exact_cnt = {}      # 同一天「描述一模一样」的条数：>1 时文件名没有身份
     for _a in al:
         _ct = int(_a.get("create_time") or 0)
         if not _ct:
             continue
-        _k = (datetime.fromtimestamp(_ct).strftime("%Y-%m-%d"),
-              W.deco_strip(W.key_of_desc(_a.get("desc") or "", 64)))
+        _d = datetime.fromtimestamp(_ct).strftime("%Y-%m-%d")
+        _kd = W.key_of_desc(_a.get("desc") or "", 64)
+        _k = (_d, W.deco_strip(_kd))
         bare_cnt[_k] = bare_cnt.get(_k, 0) + 1
+        _ke = (_d, _kd)
+        exact_cnt[_ke] = exact_cnt.get(_ke, 0) + 1
     print("接口返回 %d 条 | 本地索引 %d 条 | 目录 %s" % (len(al), len(local), folder))
 
     dl = sk = fail = gone = 0
@@ -103,14 +108,24 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None)
         ct = int(a.get("create_time") or 0)
         date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
         desc = a.get("desc") or ""
-        if W.is_known(local, date_idx, date, desc, 64,
-                      bare_total=bare_cnt.get(
-                          (date, W.deco_strip(W.key_of_desc(desc, 64))), 1)):
+        _dk = W.key_of_desc(desc, 64)
+        _n_same = exact_cnt.get((date, _dk), 1)
+        _loc_same = sum(1 for k in (date_idx.get(date) or ())
+                        if W.strip_aid_tail(k) == _dk)
+        # 同一天有多条一模一样的描述（`#ootd` 那种）：文件名没有身份，
+        # 下载器（和 DouK）会把它们写到同一个路径 → 只剩最后一条。
+        # --fill-dups：这种情况下不看「DouK 下过 = 你删了」，按缺的条数补齐。
+        _dup_day = (fill_dups and _n_same > 1 and _loc_same < _n_same)
+        if not _dup_day and W.is_known(local, date_idx, date, desc, 64,
+                                       bare_total=bare_cnt.get((date, W.deco_strip(_dk)), 1),
+                                       same_total=_n_same):
             sk += 1
             continue
+        aid = str(a.get("aweme_id") or "")
         # DouK 记录里有、本地却没有 = 用户自己删掉的。**别再补回来**：
         # 删作品就是为了不要它，补下载工具不该跟用户对着干。
-        if str(a.get("aweme_id") or "") in douk_ids:
+        # （同一天重名的那批例外：那是撞名覆盖，不是用户删的，见上面的 _dup_day）
+        if not _dup_day and aid in douk_ids:
             gone += 1
             print("  - %s  %s  （DouK 下过、本地没有 → 当你删了，跳过）"
                   % (date, desc[:40]))
@@ -148,6 +163,10 @@ def main():
     ap.add_argument("--sec-uid", action="append", default=[],
                     metavar="UID:SEC_UID",
                     help="显式指定 sec_uid，库里查不到时用")
+    ap.add_argument("--fill-dups", action="store_true",
+                    help="补「同一天多条同名作品」：这种日子下载器会写到同一个文件名、"
+                         "只留最后一条，DouK 记录里却三条都有。开了它就不把这些当成"
+                         "「你删过」，按本地少的条数补回来（2026-11-13）")
     args = ap.parse_args()
 
     extra = {}
@@ -175,7 +194,8 @@ def main():
         print("\n" + "=" * 64)
         print("作者：%s  uid=%s" % (a["nickname"], uid))
         r = backfill_one(dy, lib_idx, lib_folders, uid,
-                         a["sec_uid"], a["nickname"], args.pages, douk_ids)
+                         a["sec_uid"], a["nickname"], args.pages, douk_ids,
+                         fill_dups=args.fill_dups)
         total = [x + y for x, y in zip(total, r)]
 
     print("\n" + "=" * 64)

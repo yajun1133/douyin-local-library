@@ -212,7 +212,7 @@ browser/
 | `douk_patch_suspend.py` | 改 DouK 里写死的等待参数（界面上没有） |
 | `downloaded.py` | 「已下载博主」公共模块，以下载目录为唯一依据 |
 | `fill_secuid_from_export.py` | 从本地导出表补 sec_uid（不联网） |
-| `backfill_author.py` | 按作者补历史作品（不看追更基线，拉主页逐条判重后补下）；**跑前先停追更常驻** |
+| `backfill_author.py` | 按作者补历史作品（不看追更基线，拉主页逐条判重后补下）；**跑前先停追更常驻**。加 `--fill-dups` 才补「同一天多条同名作品」（这种日子下载器会写到同一个文件名、只留最后一条，2026-11-13） |
 | `missing_of_author.py` | 对账：拉一位作者全部作品，走四层判重，只列「本地缺哪几条」；`--apply` 才真下。追更说「下过了」可它就是不下来时用它 |
 | `backfill_watch_downloads.py` | 从 `watch.log` 回填追更下载明细（判据：日志时间 == 文件 mtime，精确匹配） |
 | `selftest_watch.py` | 追更自检（不联网、不碰真实状态，用假数据撞边界；改 `watch_core.py` 后**必跑**） |

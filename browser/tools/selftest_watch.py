@@ -638,6 +638,19 @@ chk("单字描述不参与（区分度太低）",
 chk("跨天不认（模糊比对只在同一天内做）",
     W.is_known(loc20, di20, "2025-11-25", "可爱☺️", 64) is False)
 
+print("\n[20b] 同一天同名多条：文件名没有身份，不能认（2026-11-13 用户报 76 vs 64）")
+# 线上：某作者一天发两三条 `#ootd`，库里只留了第一条；后面每条都被第 3 层
+# 「同一天同一描述 = 已有」挡掉 → 抖音 76 条、本地 64 条，永远补不回来。
+D20B = "2026-10-09"
+loc20b = {(D20B, "#ootd")}
+di20b = W.build_date_index(loc20b)
+chk("接口这一天同名 1 条 → 照旧认作已有",
+    W.is_known(loc20b, di20b, D20B, "#ootd", 64, same_total=1) is True)
+chk("接口这一天同名 3 条 → 不认（可能是没下到的那两条之一）",
+    W.is_known(loc20b, di20b, D20B, "#ootd", 64, same_total=3) is False)
+chk("不传 same_total 时行为不变（老调用方/单元测试）",
+    W.is_known(loc20b, di20b, D20B, "#ootd", 64) is True)
+
 print("\n[21] 撞名后内容级兜底：同一件作品不会再落一份重复文件")
 AD2 = os.path.join(W.paths.SCAN_ROOT, "UIDdup_T_发布作品")
 os.makedirs(AD2, exist_ok=True)
@@ -713,8 +726,35 @@ try:
     r23 = W.scan_round(dy23, base_watch(["y"]), st23, lib22, {"y": ""}, douk_ids=set())
     chk("同日两条剥完一样 → 都当候选（不冒认已有）", r23["new"] == 2,
         "new=%d skip=%d" % (r23["new"], r23["skipped"]))
+
+    # 2026-11-13：同一天两条**描述一模一样**（`#ootd`），库里只有一条 → 两条都要进候选。
+    # 这条走的是 exact_cnt 那条接线（不是 bare_total 那档）。
+    st24 = fresh_state()
+    day24 = _dt.fromtimestamp(now - 7200).strftime("%Y-%m-%d")
+    lib24 = {"y": {(day24, "#ootd")}}
+    dy24 = FakeDy({"SECy": [mk_aweme("y4", int(now - 7200), "#ootd"),
+                            mk_aweme("y5", int(now - 7100), "#ootd")]})
+    r24 = W.scan_round(dy24, base_watch(["y"]), st24, lib24, {"y": ""}, douk_ids=set())
+    chk("同日两条同名 → 都当候选（文件名没有身份，交给 ID 层）", r24["new"] == 2,
+        "new=%d skip=%d" % (r24["new"], r24["skipped"]))
 finally:
     W.save_item = _orig_save2
+
+print("\n[23] 文件名里的 `_<作品ID>` 要当 ID，不能当序号（否则作品会被并掉）")
+# 2026-11-13：某作者抖音 76 条作品、本地只显示 64 条。撞名存盘的
+# `日期-昵称-描述_<19位ID>.mp4` 被 scanner 的 FILE_RE 切进 seq，而 ID 正则只认
+# `-` vs `_` 不认 → 三条同名作品被并成一条。
+import scanner as _sc   # noqa: E402
+
+_p_plain = _sc.parse_work_filename("2026-10-09-昵称-#ootd.mp4")
+_p_id = _sc.parse_work_filename("2026-10-09-昵称-#ootd_7690000000000000001.mp4")
+_p_seq = _sc.parse_work_filename("2026-10-09-昵称-#ootd_1.mp4")
+chk("`_<19位>` 认成作品 ID", _p_id.get("id") == "7690000000000000001" and _p_id.get("seq") is None,
+    _p_id)
+chk("描述里的 #ootd 没被带脏", _p_id.get("desc") == "#ootd", _p_id)
+chk("普通序号 `_1` 仍然是序号（图文第 2 张）",
+    _p_seq.get("seq") == "1" and not _p_seq.get("id"), _p_seq)
+chk("没后缀的照旧", _p_plain.get("desc") == "#ootd" and not _p_plain.get("id"), _p_plain)
 
 print("\n========================")
 

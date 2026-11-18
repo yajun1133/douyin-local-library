@@ -472,6 +472,18 @@ def build_date_index(local):
     return out
 
 
+_AID_TAIL_RE = re.compile(r"_\d{15,}$")
+
+
+def strip_aid_tail(key):
+    """去掉文件名里我们加的 `_<作品ID>` 尾巴，还原成描述 key。
+
+    同一天同名作品要靠它数「本地到底有几条」：一条叫 `#ootd`，
+    另两条叫 `#ootd_7694...`，算容量时都当 `#ootd`（2026-11-13）。
+    """
+    return _AID_TAIL_RE.sub("", key or "")
+
+
 def _ell_hit(full, pre, suf):
     """pre/suf 是否分别贴住 full 的两端。太短的一律不认，免得短后缀乱认亲。"""
     if len(pre) + len(suf) < 6:
@@ -494,7 +506,7 @@ def _pre_hit(full, pre):
     return len(pre) >= 12 and full.startswith(pre)
 
 
-def is_known(local, date_idx, date, desc, desc_len=64, bare_total=None):
+def is_known(local, date_idx, date, desc, desc_len=64, bare_total=None, same_total=None):
     """这条作品本地到底有没有（精确 key + 省略号模糊）。
 
     模糊匹配必须限定在**同一天**：`#卡点` 这种短前缀放到全库去比，会把别人的作品
@@ -514,13 +526,24 @@ def is_known(local, date_idx, date, desc, desc_len=64, bare_total=None):
 
     bare_total：这一天接口上有几条作品的描述「剥掉装饰符后」跟这条一样。方向三
     （只差表情）要两个方向都唯一才敢认亲，调用方数好传进来；不传就不做这层校验。
+
+    same_total：这一天接口上有几条作品的描述**一模一样**（精确同 key）。>1 时
+    直接放弃按名字认亲（返回 False），原因见下面那段注释。
     """
     if not douk_filter_name(str(desc or ""), ""):
         return False
     key = work_key(desc, desc_len)
+    bkey = key_of_desc(desc, desc_len)
+    # 同一天、描述完全一样，接口上有不止一条 —— 文件名没有身份，按名字认亲必然
+    # 张冠李戴。2026-11-13 用户报的「抖音 76 / 本地 64」就是这个：一天发两三条
+    # `#ootd`，本地只留了第一条，后面每条都被判成「已有」→ 永久漏下。
+    # 这种情况整层名字判重都不作数，全部交给 ID 层（DouK 下载记录 + 追更明细）：
+    # 认得出来的照常跳过，认不出来的就当真新作品下（撞名时 download_aweme 会加
+    # `_<作品ID>` 后缀分开存）。
+    if same_total is not None and int(same_total) > 1:
+        return False
     if (date, key) in local:
         return True
-    bkey = key_of_desc(desc, desc_len)
     if bkey != key and (date, bkey) in local:
         return True
     same = date_idx.get(date) or ()
@@ -2602,13 +2625,17 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 说明不了当天实际有几条。
         _dl0 = int(cfg.get("desc_len") or 64)
         bare_cnt = {}
+        exact_cnt = {}      # 同一天「描述一模一样」的条数：>1 时文件名没有身份
         for _a in al:
             _ct = int(_a.get("create_time") or 0)
             if not _ct:
                 continue
-            _k = (datetime.fromtimestamp(_ct).strftime("%Y-%m-%d"),
-                  deco_strip(key_of_desc(_a.get("desc") or "", _dl0)))
+            _d = datetime.fromtimestamp(_ct).strftime("%Y-%m-%d")
+            _kd = key_of_desc(_a.get("desc") or "", _dl0)
+            _k = (_d, deco_strip(_kd))
             bare_cnt[_k] = bare_cnt.get(_k, 0) + 1
+            _ke = (_d, _kd)
+            exact_cnt[_ke] = exact_cnt.get(_ke, 0) + 1
         cand = []
         for a in al:
             aid = str(a.get("aweme_id") or "")
@@ -2678,10 +2705,13 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             desc = a.get("desc") or ""
             dl = int(cfg.get("desc_len") or 64)
             # 第 3 层判重：库里已有同一天同一描述 → DouK 以前下过
-            # 老文件名里的 `#...` 由 is_known 按前后缀认出，不会重复下载
+            # 老文件名里的 `#...` 由 is_known 按前后缀认出，不会重复下载。
+            # 但「这一天同名作品不止一条」时文件名没有身份 → is_known 直接放行，
+            # 交给 ID 层去认（2026-11-13：一天两三条 `#ootd` 会被这条吞掉）
+            _dk = key_of_desc(desc, dl)
             if is_known(local, date_idx, date, desc, dl,
-                        bare_total=bare_cnt.get(
-                            (date, deco_strip(key_of_desc(desc, dl))), 1)):
+                        bare_total=bare_cnt.get((date, deco_strip(_dk)), 1),
+                        same_total=exact_cnt.get((date, _dk), 1)):
                 seen.add(aid)
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 stats["skipped"] += 1

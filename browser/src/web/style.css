@@ -6751,6 +6751,9 @@ body.gallery-open { overflow: hidden; }
    数据也永远在同一列上，数字列还用了等宽数字，扫一列不会左右跳。 */
 .wv-tbl-watch { table-layout: fixed; }
 .wv-tbl-watch th, .wv-tbl-watch td { overflow: hidden; text-overflow: ellipsis; }
+.wv-tbl-watch td:first-child { white-space: nowrap; }
+.wv-tbl-watch .wv-nm { max-width: 100%; }
+.wv-tbl-watch .wv-nm b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wv-tbl-watch th:first-child, .wv-tbl-watch td:first-child { padding-left: 16px; }
 .wv-tbl-watch th:last-child, .wv-tbl-watch td:last-child { padding-right: 16px; }
 /* 表头可点排序 */

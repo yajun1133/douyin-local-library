@@ -3477,8 +3477,9 @@ def _watch_status():
             "last_scan": s.get("last_scan") or "",
             "next_check": float(s.get("next_check") or 0),
             "is_hot": bool(s.get("is_hot")),
-            # 老状态里没有 tier 字段：现算一遍，别让升级前的作者全显示成"静档"
-            "tier": s.get("tier") or WC.tier_of(s, cfg)[0],
+            # 档位**每次现算**：状态里存的可能是上一版四档的名字（热/温/冷/静），
+            # 而且「密度」（cad24/cad3）只在扫描时才更新 —— 现算才不会显示成过期档位。
+            "tier": ("fixed" if a.get("interval") else WC.tier_of(s, cfg)[0]),
             "last_post": int(s.get("last_post") or 0),
             "last_ts": int(s.get("last_ts") or 0),
             "interval": int(a.get("interval") or 0),
@@ -3521,7 +3522,7 @@ def _watch_status():
         est_daily = 0
     tiers = {}
     for r in rows:
-        t = r.get("tier") or ("hot" if r.get("is_hot") else "idle")
+        t = r.get("tier") or "hot"
         tiers[t] = tiers.get(t, 0) + 1
 
     # 「扫不到」：本地有作品、但接口连查三次（同号两次 + 换号一次）都空。

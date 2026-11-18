@@ -93,12 +93,30 @@ def fresh_state():
 
 now = time.time()
 
-print("\n[1] 四档边界")
-for days, want in [(0.5, "hot"), (1.99, "hot"), (2.01, "warm"), (6.9, "warm"),
-                   (7.1, "cold"), (29.9, "cold"), (30.1, "idle")]:
+print("\n[1] 六档边界（沸/热/温/凉/寒/冻）+ 「沸」的密度门槛")
+for days, want in [(1.5, "hot"), (2.9, "hot"), (3.1, "warm"), (6.9, "warm"),
+                   (7.1, "cool"), (29.9, "cool"), (30.1, "chill"),
+                   (89.9, "chill"), (90.1, "frozen"), (200, "frozen")]:
     t, _ = W.tier_of({"last_post": now - days * 86400}, CFG, now)
     chk("%.2f 天 -> %s" % (days, want), t == want, t)
-chk("没有 last_post -> idle", W.tier_of({}, CFG, now)[0] == "idle")
+
+# 24 小时内：光有时间不够，还得有「确实在日更」的密度证据
+chk("24h 内只发 1 条 -> 热（不算日更）",
+    W.tier_of({"last_post": now - 3600, "cad24": 1, "cad3": 1}, CFG, now)[0] == "hot")
+chk("24h 内 2 条 -> 沸",
+    W.tier_of({"last_post": now - 3600, "cad24": 2, "cad3": 2}, CFG, now)[0] == "boil")
+chk("24h 内 1 条但 72h 内 3 条 -> 沸",
+    W.tier_of({"last_post": now - 3600, "cad24": 1, "cad3": 3}, CFG, now)[0] == "boil")
+chk("停更很久后刚发一条（老状态没有密度数据）-> 热，不会直接沸",
+    W.tier_of({"last_post": now - 600}, CFG, now)[0] == "hot")
+chk("没有 last_post -> 热（刚加进来的按热档先查）", W.tier_of({}, CFG, now)[0] == "hot")
+
+# 六档间隔：越冷越大，且必须严格递增（配错就是把作者晾在那儿）
+_seq = ["boil", "hot", "warm", "cool", "chill", "frozen"]
+_ivs = [CFG["interval_%s" % k] for k in _seq]
+chk("六档间隔严格递增", all(a < b for a, b in zip(_ivs, _ivs[1:])), _ivs)
+chk("沸 15 分钟 / 热 30 分钟 / 温 1 小时 / 凉 4 小时 / 寒 12 小时 / 冻 3 天",
+    _ivs == [900, 1800, 3600, 14400, 43200, 259200], _ivs)
 
 print("\n[2] 每日额度用完")
 st = fresh_state()

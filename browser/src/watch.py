@@ -77,18 +77,20 @@ def cmd_status(args):
     st = W.load_state()
     cfg = d["settings"]
     au = d.get("authors") or []
-    cnt = {"hot": 0, "warm": 0, "cold": 0, "idle": 0}
+    cnt = {"boil": 0, "hot": 0, "warm": 0, "cool": 0, "chill": 0, "frozen": 0}
     for a in au:
         s = st["authors"].get(str(a.get("uid"))) or {}
-        t = s.get("tier") or ("hot" if s.get("is_hot") else "idle")
+        t = ("fixed" if a.get("interval") else W.tier_of(s, cfg)[0])
         cnt[t] = cnt.get(t, 0) + 1
     total_dl = sum(int((st["authors"].get(str(a.get("uid"))) or {}).get("downloads") or 0)
                    for a in au)
-    print("名单 %d 位   热 %d / 温 %d / 冷 %d / 静 %d   累计追更下载 %d 条"
-          % (len(au), cnt["hot"], cnt["warm"], cnt["cold"], cnt["idle"], total_dl))
-    print("节奏：热 %.0f 分钟 / 温 %.0f 分钟 / 冷 %.0f 小时 / 静 %.0f 小时 / 每个作者间隔 %.1f 秒"
-          % (cfg["interval_hot"] / 60.0, cfg["interval_warm"] / 60.0,
-             cfg["interval_cold"] / 3600.0, cfg["interval_idle"] / 3600.0, cfg["gap"]))
+    print("名单 %d 位   沸 %d / 热 %d / 温 %d / 凉 %d / 寒 %d / 冻 %d / 定 %d   累计追更下载 %d 条"
+          % (len(au), cnt["boil"], cnt["hot"], cnt["warm"], cnt["cool"],
+             cnt["chill"], cnt["frozen"], cnt.get("fixed", 0), total_dl))
+    print("节奏：沸 %.0f 分 / 热 %.0f 分 / 温 %.0f 分 / 凉 %.0f 时 / 寒 %.0f 时 / 冻 %.0f 时 / 作者间隔 %.1f 秒"
+          % (cfg["interval_boil"] / 60.0, cfg["interval_hot"] / 60.0,
+             cfg["interval_warm"] / 60.0, cfg["interval_cool"] / 3600.0,
+             cfg["interval_chill"] / 3600.0, cfg["interval_frozen"] / 3600.0, cfg["gap"]))
     day = time.strftime("%Y-%m-%d")
     used = int(st.get("req_today") or 0) if st.get("req_day") == day else 0
     try:

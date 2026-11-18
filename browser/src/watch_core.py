@@ -50,16 +50,27 @@ DOWNLOADS_FILE = os.path.join(paths.DATA_DIR, "watch_downloads.jsonl")
 ACCOUNTS_FILE = os.path.join(paths.DATA_DIR, "watch_accounts.json")
 
 DEFAULT_CFG = {
-    # 检查节奏按「这位作者上次发作品距今多久」分四档。
-    # 刚发过的更可能再发，查得勤；久没动静的放宽到一天一次。
-    # 这样 200 位作者的日常请求量只有「全员 15 分钟」的 1/6 左右，见 tier_of()。
-    "interval_hot": 900,        # 2 天内发过 → 15 分钟
-    "interval_warm": 3600,      # 7 天内发过 → 1 小时
-    "interval_cold": 10800,     # 30 天内发过 → 3 小时
-    "interval_idle": 86400,     # 更久（或从没抓到过新作品）→ 24 小时
-    "hot_days": 2,
+    # 六档（2026-11-13 用户定的边界）：按「距上次发作品多久」分档，越活跃查得越勤。
+    #   沸 ≤24 小时 · 热 ≤3 天 · 温 ≤7 天 · 凉 ≤30 天 · 寒 ≤3 个月 · 冻 >3 个月
+    # 为什么这么配：现在 87% 的请求都耗在「2 天内发过」的 380 位身上，而其中真正
+    # 天天更的只有一百来位。把「刚发过」和「确实在日更」拆开，总量能砍一半，
+    # 日更那批反而更快被发现。见 tier_of()。
+    "interval_boil": 900,       # 沸 → 15 分钟（只给有「日更证据」的人，见 boil_n24）
+    "interval_hot": 1800,       # 热 → 30 分钟
+    "interval_warm": 3600,      # 温 → 1 小时
+    "interval_cool": 14400,     # 凉 → 4 小时
+    "interval_chill": 43200,    # 寒 → 12 小时
+    "interval_frozen": 259200,  # 冻 → 3 天（停更 3 个月以上，扫到就当捡的）
+    "boil_hours": 24,
+    "hot_days": 3,
     "warm_days": 7,
-    "cold_days": 30,
+    "cool_days": 30,
+    "chill_days": 90,
+    # 「沸」不只看时间。停更半年的人今天随手发一条，光看时间他就成沸档了，
+    # 接下来一整天白打几十枪。真正的日更作者一定有密度：24 小时内 ≥2 条，
+    # 或 72 小时内 ≥3 条。只有一条的先按「热」观察，发出第二条再自然升上去。
+    "boil_n24": 2,
+    "boil_n3": 3,
     "per_author_pages": 1,      # 每个作者翻几页（每页 18~20 条）；1 页够覆盖绝大多数日更
     "backfill_pages": 4,        # 补漏时最多往下翻几页（只有"整页都比上次新"才会用上）
     # 「本地一件作品都没有」的作者，第一次要把现有作品整体补一遍 ——
@@ -577,6 +588,17 @@ def load_watch():
     # 一次，200 位作者就是每天一万九千次请求，太猛）。补上温/静两档后，把热档收窄到 2 天。
     if raw and "warm_days" not in raw:
         cfg["hot_days"] = DEFAULT_CFG["hot_days"]
+    # 2026-11-13 六档改版：边界和间隔整套换了（热从「2 天内 15 分钟」变成「3 天内
+    # 30 分钟」，另加 沸/凉/寒/冻）。老配置里那四个 interval_* 留着会让新档位算错，
+    # 一次性清掉按新默认走 —— 用户是要求「重新定一套频率」，不是要保留旧值。
+    if raw and "boil_hours" not in raw:
+        for _k in ("interval_hot", "interval_warm", "interval_cold", "interval_idle",
+                   "hot_days", "warm_days", "cold_days"):
+            cfg.pop(_k, None)
+        cfg.update({k: DEFAULT_CFG[k] for k in (
+            "interval_boil", "interval_hot", "interval_warm", "interval_cool",
+            "interval_chill", "interval_frozen", "boil_hours", "hot_days",
+            "warm_days", "cool_days", "chill_days", "boil_n24", "boil_n3")})
     d["settings"] = cfg
     return d
 
@@ -1882,28 +1904,51 @@ def download_aweme(dy, aweme, author_dir, nickname, desc_len=None, out=None):
 # ② 每日请求硬上限；③ 连续失败立即熔断冷却，绝不在被限流时继续打。
 # ---------------------------------------------------------------------------
 
-TIER_LABEL = {"hot": "热", "warm": "温", "cold": "冷", "idle": "静", "fixed": "定"}
+TIER_LABEL = {"boil": "沸", "hot": "热", "warm": "温", "cool": "凉",
+              "chill": "寒", "frozen": "冻", "fixed": "定"}
 
 
 def tier_of(st, cfg, now=None):
-    """按「这位作者上次在抖音发作品距今多久」分档，返回 (档名, 该档间隔秒数)。"""
+    """按「这位作者上次在抖音发作品距今多久」分六档，返回 (档名, 该档间隔秒数)。
+
+    两条规则叠在一起：
+      ① **时间**定档的上下限 —— 24h / 3d / 7d / 30d / 3 个月；
+      ② **密度**决定能不能进「沸」—— 只有时间一条的话，停更半年的人今天随手
+         发一条，last_post 就是今天，立刻当沸档 15 分钟一次，白白打一整天枪。
+         真日更的人一定有密度（24h ≥2 条 或 72h ≥3 条），凑不够就先按热档观察。
+
+    升档是即时的：只要看到新作品，last_post 立刻变新 → 当场重算档位。
+    降档是自然的：跟着天数一档一档往后退，不会一天之内从沸砸到冻。
+    """
     now = now or time.time()
     # 优先级：last_post（亲眼看到的最新作品时间）> last_ts（已处理到的最新作品）
     # > last_new（上次下到新作品的时间）。加后两个兜底是为了让升级前就存在的
-    # 老状态也能立刻算准档位，不会因为缺 last_post 把活跃作者当成"静档"。
+    # 老状态也能立刻算准档位，不会因为缺 last_post 把活跃作者当成"冻档"。
     ref = (float(st.get("last_post") or 0)
            or float(st.get("last_ts") or 0)
            or float(st.get("last_new") or 0))
     if not ref:
-        return "idle", float(cfg.get("interval_idle") or 86400)
-    days = (now - ref) / 86400.0
-    if days <= float(cfg.get("hot_days") or 2):
-        return "hot", float(cfg.get("interval_hot") or 900)
+        # 一件作品都没抓到过（多半是刚加进名单）：按热档查，别用最慢的档晾着
+        return "hot", float(cfg.get("interval_hot") or 1800)
+    hours = (now - ref) / 3600.0
+    if hours <= float(cfg.get("boil_hours") or 24):
+        n24 = int(st.get("cad24") or 0)
+        n3 = int(st.get("cad3") or 0)
+        if (n24 >= int(cfg.get("boil_n24") or 2)
+                or n3 >= int(cfg.get("boil_n3") or 3)):
+            return "boil", float(cfg.get("interval_boil") or 900)
+        # 24 小时内只发了一条：先按「热」观察，发出第二条就自动升到沸
+        return "hot", float(cfg.get("interval_hot") or 1800)
+    days = hours / 24.0
+    if days <= float(cfg.get("hot_days") or 3):
+        return "hot", float(cfg.get("interval_hot") or 1800)
     if days <= float(cfg.get("warm_days") or 7):
         return "warm", float(cfg.get("interval_warm") or 3600)
-    if days <= float(cfg.get("cold_days") or 30):
-        return "cold", float(cfg.get("interval_cold") or 10800)
-    return "idle", float(cfg.get("interval_idle") or 86400)
+    if days <= float(cfg.get("cool_days") or 30):
+        return "cool", float(cfg.get("interval_cool") or 14400)
+    if days <= float(cfg.get("chill_days") or 90):
+        return "chill", float(cfg.get("interval_chill") or 43200)
+    return "frozen", float(cfg.get("interval_frozen") or 259200)
 
 
 def guard(state, cfg, now=None, accounts=1):
@@ -2276,12 +2321,22 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 记下亲眼看到的最新作品时间：分档节奏靠它，比「上次下到新作品」准得多
         if newest > int(st.get("last_post") or 0):
             st["last_post"] = newest
-            tier, iv = tier_of(st, cfg)
-            if st.get("tier") == "fixed" and float(item.get("interval") or 0) > 0:
-                tier, iv = "fixed", float(item.get("interval"))
-            st["tier"] = tier
-            if not dry:
-                st["next_check"] = time.time() + iv
+        if not dry:
+            # 更新密度：这一页里 24 小时 / 72 小时各有多少条。**这是「沸」的门槛**——
+            # 只用 last_post 定档的话，停更半年的人随手发一条就会被当成日更作者狂扫。
+            # 一页够看（再活跃的作者一天也发不满一页），不用额外发请求。
+            st["cad24"] = sum(1 for t in cts if now - t <= 86400)
+            st["cad3"] = sum(1 for t in cts if now - t <= 259200)
+            st["cad_ts"] = now
+            # 重算档位并排下一轮：升档是即时的（有作品就当场升），降档跟着天数
+            # 一档一档退，不会一天之内从沸砸到冻。
+            if float(item.get("interval") or 0) > 0:
+                st["tier"] = "fixed"
+                st["next_check"] = now + float(item.get("interval"))
+            else:
+                st["tier"], _iv = tier_of(st, cfg, now)
+                st["is_hot"] = (st["tier"] == "boil")   # 兼容旧字段（面板早就不读了）
+                st["next_check"] = now + _iv
 
         # 关机一夜/几天回来时，第一页可能整页都比基线新（说明漏的不止一页）。
         # 这时自动往下多翻几页，保证「漏了的那段时间」一条都不剩。

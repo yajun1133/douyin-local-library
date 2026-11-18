@@ -9942,9 +9942,12 @@ document.addEventListener('DOMContentLoaded', () => {
 // 'down' / 'off' 不是档位，是两个常用的查看口径（有下载 / 已停用）。
 const WV_FILTERS = [
     ['all', '全部', '名单里的全部作者'],
-    ['warm', '温档', '7 天内发过作品'],
-    ['cold', '冷档', '30 天内发过作品'],
-    ['idle', '静档', '30 天以上没动静'],
+    ['boil', '沸档', '24 小时内更过、而且确实在日更（24h ≥2 条 或 72h ≥3 条）'],
+    ['hot', '热档', '3 天内更过'],
+    ['warm', '温档', '7 天内更过'],
+    ['cool', '凉档', '30 天内更过'],
+    ['chill', '寒档', '3 个月内更过'],
+    ['frozen', '冻档', '3 个月以上没更'],
     ['fixed', '定档', '手动指定了固定间隔'],
     ['down', '有下载', '追更过程中真的下到过作品的'],
     ['off', '已停用', '在名单里但暂时不查的'],
@@ -9952,10 +9955,12 @@ const WV_FILTERS = [
 
 // 行内那颗小标签：档位 → [显示字, 鼠标悬停说明, 配色]
 const WV_TIER_TAG = {
-    hot: ['热', '2 天内发过', 'hot'],
-    warm: ['温', '7 天内发过', 'warm'],
-    cold: ['冷', '30 天内发过', 'cold'],
-    idle: ['静', '更久没动静', 'cold'],
+    boil: ['沸', '24 小时内更过，且有日更的证据', 'boil'],
+    hot: ['热', '3 天内更过', 'hot'],
+    warm: ['温', '7 天内更过', 'warm'],
+    cool: ['凉', '30 天内更过', 'cool'],
+    chill: ['寒', '3 个月内更过', 'chill'],
+    frozen: ['冻', '3 个月以上没更', 'frozen'],
     fixed: ['定', '按指定间隔查', 'hot'],
 };
 
@@ -9987,7 +9992,7 @@ function wvMatch(r, f) {
     if (f === 'all') return true;
     if (f === 'down') return (r.downloads || 0) > 0;
     if (f === 'off') return !r.enabled;
-    return (r.tier || 'idle') === f;
+    return (r.tier || 'hot') === f;
 }
 
 // 切换筛选：只重绘，不重新请求（数据已经在手里，切换必须瞬时）
@@ -10122,8 +10127,8 @@ function wvRender() {
     const d = wvState.data;
     if (!d) return;
     const rowsAll = d.authors || [];
-    // 档位按钮少了一个（热档 2026-11-09 撤掉）：会话里残留的 filter='hot' 要兜回「全部」，
-    // 否则名单会一直按一个已经没有按钮的档位筛着
+    // 会话里残留的 filter 可能指向已经不存在的档位（比如 2026-11-13 改六档后
+    // 的 'cold' / 'idle'）：兜回「全部」，否则名单会一直按一个没有按钮的档位筛着
     if (!WV_FILTERS.some(([k]) => k === wvState.filter)) wvState.filter = 'all';
     const root = document.getElementById('watchView');
     if (root) root.classList.remove('wv-booting');
@@ -10242,16 +10247,18 @@ function wvOpenNoApi(el) {
 // 设置项回填。用户正在改任意一个输入框时不要回填 —— 否则 5 秒轮询会把
 // 刚敲进去的数字重置掉（老页面上踩过这个坑，这里保留同样的保护）。
 function wvRenderSettings(d) {
-    const IDS = ['wvSHot', 'wvSWarm', 'wvSCold', 'wvSIdle', 'wvSGap', 'wvSBudget', 'wvSMax',
-                 'wvSAuto'];
+    const IDS = ['wvSBoil', 'wvSHot', 'wvSWarm', 'wvSCool', 'wvSChill', 'wvSFrozen',
+                 'wvSGap', 'wvSBudget', 'wvSMax', 'wvSAuto'];
     const editing = IDS.some((id) => document.activeElement === document.getElementById(id));
     if (editing) return;
     const s = d.settings || {};
     const put = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    put('wvSBoil', s.interval_boil);
     put('wvSHot', s.interval_hot);
     put('wvSWarm', s.interval_warm);
-    put('wvSCold', s.interval_cold);
-    put('wvSIdle', s.interval_idle);
+    put('wvSCool', s.interval_cool);
+    put('wvSChill', s.interval_chill);
+    put('wvSFrozen', s.interval_frozen);
     put('wvSGap', s.gap);
     put('wvSMax', s.max_per_round);
     put('wvSBudget', s.daily_budget);
@@ -10304,7 +10311,7 @@ function wvRenderTable(rowsAll) {
     }
 
     tb.innerHTML = rows.map((r) => {
-        let t = WV_TIER_TAG[r.tier] || WV_TIER_TAG.idle;
+        let t = WV_TIER_TAG[r.tier] || WV_TIER_TAG.hot;
         if (r.tier === 'fixed' && r.interval) {
             t = ['定', '每 ' + Math.round(r.interval / 60) + ' 分钟查一次', 'hot'];
         }
@@ -10529,10 +10536,12 @@ function wvSaveCfg(okMsg) {
         action: 'settings',
         auto_start: !!(auto && auto.checked),
         settings: {
+            interval_boil: num('wvSBoil'),
             interval_hot: num('wvSHot'),
             interval_warm: num('wvSWarm'),
-            interval_cold: num('wvSCold'),
-            interval_idle: num('wvSIdle'),
+            interval_cool: num('wvSCool'),
+            interval_chill: num('wvSChill'),
+            interval_frozen: num('wvSFrozen'),
             max_per_round: num('wvSMax'),
             gap: num('wvSGap'),
             daily_budget: num('wvSBudget'),

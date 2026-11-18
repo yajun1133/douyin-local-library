@@ -6698,10 +6698,15 @@ body.gallery-open { overflow: hidden; }
     width: 5px; height: 5px; border-radius: 50%;
     background: currentColor; opacity: .75; flex: 0 0 auto;
 }
-.wv-tag.hot { background: rgba(254, 44, 85, .1); color: #d81e46; }
+.wv-tag.boil { background: rgba(216, 30, 70, .14); color: #b3143c; }
+.wv-tag.hot { background: rgba(232, 89, 12, .14); color: #c2410c; }
 .wv-tag.warm { background: rgba(250, 173, 20, .16); color: #96610a; }
+.wv-tag.cool { background: rgba(31, 122, 224, .12); color: #1a5fb4; }
+.wv-tag.chill { background: #eef2f7; color: #51617a; }
+.wv-tag.frozen { background: #eaeff5; color: #8090a8; }
 .wv-tag.cold { background: #eef2f7; color: #51617a; }
 .wv-tag.off { background: #f1f5f9; color: #64748b; }
+.wv-tag.boil .wv-dot { opacity: 1; }
 .wv-tag.hot .wv-dot { opacity: 1; }
 .wv-tag.warm .wv-dot { opacity: 1; }
 

@@ -8,7 +8,7 @@
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261110c176">
     <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261110c176">
-    <link rel="stylesheet" href="style.css?v=20261113a190">
+    <link rel="stylesheet" href="style.css?v=20261113b1745">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -62,7 +62,7 @@
                     <li class="side-item" data-action="fetchFavorites" title="抓取抖音最近收藏/喜欢的作者，按黑名单/已下载/未下载分类，可一键加入黑名单"><i class="si" data-ico="heart" aria-hidden="true"></i><span class="si-t">获取最近收藏</span></li>
                     <li class="side-item" data-action="exportAuthors" title="把作者信息导出成表格：等级、标签、状态等都可以先选好范围，预览后再导出"><i class="si" data-ico="upload" aria-hidden="true"></i><span class="si-t">导出作者信息</span></li>
                     <li class="side-item" data-action="newDownloads" title="只看最近下载下来的文件：按作者分组、组内按作品发布时间排，每张卡片下面标作者和发布时间"><i class="si" data-ico="download" aria-hidden="true"></i><span class="si-t">新下载</span> <span class="count zero" id="newDlBadge">0</span></li>
-                    <li class="side-item" data-action="watch" title="追更：盯住一批重点作者，发现新作品就自动下载（名单可按热/温/冷/静档筛选）"><i class="si" data-ico="radar" aria-hidden="true"></i><span class="si-t">追更</span> <span class="count zero" id="watchBadge">0</span></li>
+                    <li class="side-item" data-action="watch" title="追更：盯住一批重点作者，发现新作品就自动下载（名单可按沸/热/温/凉/寒/冻档筛选）"><i class="si" data-ico="radar" aria-hidden="true"></i><span class="si-t">追更</span> <span class="count zero" id="watchBadge">0</span></li>
                     <li class="side-item" data-action="files" title="改文件夹名（让文件夹跟着你标注的昵称走）、清理合并产生的重复文件"><i class="si" data-ico="folder" aria-hidden="true"></i><span class="si-t">文件管理</span></li>
                     <li class="side-item" data-action="settings" title="设置：更新频率禁用状态、文件地址、缓存管理"><i class="si" data-ico="settings" aria-hidden="true"></i><span class="si-t">设置</span></li>
                 </ul>
@@ -687,10 +687,12 @@
                                     <details>
                                         <summary>节奏与安全设置（改完立刻生效，正在跑的进程下一轮就会读到）</summary>
                                         <div class="wv-fgrid">
-                                            <div class="wv-f"><label for="wvSHot">热档间隔</label><input type="number" id="wvSHot" min="60" step="60"><span class="u">秒 · 2 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSWarm">温档间隔</label><input type="number" id="wvSWarm" min="300" step="300"><span class="u">秒 · 7 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSCold">冷档间隔</label><input type="number" id="wvSCold" min="600" step="600"><span class="u">秒 · 30 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSIdle">静档间隔</label><input type="number" id="wvSIdle" min="3600" step="3600"><span class="u">秒 · 更久没动静</span></div>
+                                            <div class="wv-f"><label for="wvSBoil">沸档间隔</label><input type="number" id="wvSBoil" min="300" step="60"><span class="u">秒 · 24 小时内且确实在日更</span></div>
+                                            <div class="wv-f"><label for="wvSHot">热档间隔</label><input type="number" id="wvSHot" min="600" step="60"><span class="u">秒 · 3 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSWarm">温档间隔</label><input type="number" id="wvSWarm" min="900" step="300"><span class="u">秒 · 7 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSCool">凉档间隔</label><input type="number" id="wvSCool" min="1800" step="600"><span class="u">秒 · 30 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSChill">寒档间隔</label><input type="number" id="wvSChill" min="3600" step="3600"><span class="u">秒 · 3 个月内发过</span></div>
+                                            <div class="wv-f"><label for="wvSFrozen">冻档间隔</label><input type="number" id="wvSFrozen" min="3600" step="3600"><span class="u">秒 · 3 个月以上没更</span></div>
                                             <div class="wv-f"><label for="wvSGap">每个作者间隔</label><input type="number" id="wvSGap" min="1" step="0.5"><span class="u">秒 · 别低于 2</span></div>
                                             <div class="wv-f"><label for="wvSBudget">每日请求上限</label><input type="number" id="wvSBudget" min="100" step="500"><span class="u">次 · 全部号合计</span></div>
                                             <div class="wv-f"><label for="wvSMax">单轮下载上限</label><input type="number" id="wvSMax" min="1" step="1"><span class="u">条 · 防一次性爆量</span></div>
@@ -999,6 +1001,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261113a190"></script>
+    <script src="app.js?v=20261113b1745"></script>
 </body>
 </html>

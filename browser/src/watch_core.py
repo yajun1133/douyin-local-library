@@ -2720,37 +2720,46 @@ def which_authors_due(watch, state, now=None):
     now = now or time.time()
     cfg = watch.get("settings") or {}
     probe_gap = float(cfg.get("no_api_probe_days") or 7) * 86400
-    due, pending, probes = [], [], []
+    due, pending, probes, manual = [], [], [], []
     noapi = state.get("no_api") or {}
     for item in watch.get("authors") or []:
         uid = str(item.get("uid") or "")
-        # 界面上点了「探测」：不管档位、不管停没停用，下一轮就查这一位
+        # 界面上点了「探测」：不管档位、不管停没停用，**下一轮第一个查它**。
+        # 手动探测是人点出来的，一轮可能排队几百位，排到队尾要等十几分钟。
         want = bool(item.get("probe_now"))
         if not item.get("enabled", True):
             # 手动停用的不管；自动停用的（在 no_api 里有记录）到点探一枪
             rec = noapi.get(uid) or {}
-            if not rec and not want:
+            if want:
+                it = dict(item)
+                it["_probe"] = True
+                manual.append(it)
+                continue
+            if not rec:
                 continue
             # next_probe 缺（老状态，或升级前就停用的）就按 ts + 间隔算；
             # 显式的 0 表示「马上探」，不能用 or 兜底成一周后
             _np = rec.get("next_probe")
             nxt = (float(_np) if _np is not None
                    else float(rec.get("ts") or 0) + probe_gap)
-            if want or nxt <= now:
+            if nxt <= now:
                 it = dict(item)
                 it["_probe"] = True
                 probes.append(it)
             continue
         st = state["authors"].get(uid) or {}
         nxt = float(st.get("next_check") or 0)
+        if want:
+            manual.append(item)
+            continue
         if (item.get("full_scan")
                 and st.get("full_done_for") != (item.get("added_at") or "")):
             # 还没开始（st 里没有 bulk）→ 立刻插队；
             # 已经在补（bulk=True）→ 按 next_check 到点才再来，否则会被这里
             # 一次次立刻叫起来，把额度全耗在同一个作者身上。
-            if not st.get("bulk") or nxt <= now or want:
+            if not st.get("bulk") or nxt <= now:
                 pending.append(item)
             continue
-        if nxt <= now or want:
+        if nxt <= now:
             due.append(item)
-    return pending + due + probes
+    return manual + pending + due + probes

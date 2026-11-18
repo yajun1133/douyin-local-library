@@ -566,7 +566,7 @@ function authorRowHtml(a) {
     <div class="author-row" data-uid="${escapeHtml(a.uid)}">
         <div class="ar-head" onclick="openAuthor('${onClickArg(a.uid)}')" title="点击进入作者详情页">
             <span class="ar-dot"></span>
-            <span class="ar-name">${a.starred ? '⭐' : ''}${a.watch ? '<span class="watch-chip" title="在追更名单里">追更</span>' : ''}${nameHtml(a)}</span>
+            <span class="ar-name">${a.starred ? '⭐' : ''}${a.watch ? '<span class="watch-chip' + (a.watch_enabled === false ? ' off' : '') + '" title="' + (a.watch_enabled === false ? '在追更名单里，但已停用（不自动查新作品）' : '在追更名单里') + '">' + (a.watch_enabled === false ? '追更·停' : '追更') + '</span>' : ''}${nameHtml(a)}</span>
             <span class="ar-chips">${chips}</span>
             <span class="ar-side">${dlHtml}<span class="ar-cnt">${a.work_count} 个作品</span></span>
         </div>
@@ -908,8 +908,13 @@ function authorCardHtml(a) {
         : `<div class="author-cover placeholder cm-${state.coverMode}" style="display:flex;align-items:center;justify-content:center;font-size:32px">📱</div>`;
     // 追更标记：左上角一枚小角标。判据是后端 /api/authors 逐条带的 watch 字段
     // （直接来自 data/watch.json 名单，按 uid 认人），前端不用再单独请求一次名单。
+    // 2026-11-13：在名单里但**已停用**的要单独标出来 —— 停用只是不查新作品，
+    // 人还在追更名单里（「追更中」这个筛选照样能筛到他），不标会让人以为还在天天查。
+    const watchOff = a.watch && a.watch_enabled === false;
     const watchBadge = a.watch
-        ? `<span class="watch-badge" title="在追更名单里：这位作者发新作品会自动下载">追更</span>`
+        ? `<span class="watch-badge${watchOff ? ' off' : ''}" title="${watchOff
+            ? '在追更名单里，但已停用：不会自动查新作品（在追更面板里可以手动探测，或直接启用）'
+            : '在追更名单里：这位作者发新作品会自动下载'}">${watchOff ? '追更·已停用' : '追更'}</span>`
         : '';
     return `
     <div class="author-card${a.watch ? ' is-watch' : ''}" data-uid="${escapeHtml(a.uid)}" onclick="openAuthor('${onClickArg(a.uid)}')">
@@ -1563,7 +1568,10 @@ const WATCH_FREQS = [[0, '自动'], [900, '15 分钟'], [1800, '30 分钟'], [36
 
 function watchNextText(a) {
     if (!a.watching) return '';
-    if (a.watch_enabled === false) return '追更已暂停';
+    if (a.watch_enabled === false) {
+        // 停用（扫不到自动停 / 手动停）：不查新作品，但还是追更名单里的人
+        return '追更已停用（不查新作品）';
+    }
     const t = Number(a.watch_next || 0);
     if (!t) return '等下一轮检查';
     const ms = t * 1000 - Date.now();
@@ -1581,11 +1589,11 @@ function watchBarHtml(a) {
     // 没 SEC_UID 的作者：追更了也下载不了。按钮照旧可点（点了会明确说原因），
     // 但提示语先讲清楚，别让人以为是坏了。
     const noSec = !inList && !String(a.sec_uid || '').trim();
-    const label = on ? '追更中' : (inList ? '已暂停' : '未追更');
+    const label = on ? '追更中' : (inList ? '已停用' : '未追更');
     const tip = noSec
         ? '这位作者还没有 SEC_UID：先在 SEC_UID 那一栏填上，才能加入追更'
         : (on ? '正在追更：发新作品会自动下载。点一下取消'
-            : (inList ? '追更已暂停（在追更面板里关掉的）。点一下恢复'
+            : (inList ? '追更已停用（在追更面板里关掉的，或连续扫不到被自动停用）。点一下恢复'
                 : '加入追更：定时检查这位作者，发现新作品自动下载'));
     const chips = WATCH_FREQS.map(function (f) {
         const v = f[0], lb = f[1];
@@ -10210,16 +10218,15 @@ function wvRenderNoApi(d) {
     }
     if (hint) hint.textContent = rows.length + ' 位 · 本地有作品但接口返回空';
     list.innerHTML = rows.map((r) => {
-        // 连续第几次 + 到第几次会自动停用 + 下次什么时候再探，都写进悬停提示。
-        // 2026-11-13 用户口径：到阈值不再「取消追更」，改成「打标签 + 停用」，
-        // 人还留在名单里，之后每 no_api_probe_days 天回探一次，扫到了自动恢复。
+        // 2026-11-13 口径：这个面板**只放还没到停用阈值的**（第 1、2 次空）。
+        // 到第 3 次就自动停用、从这儿移出，去名单的「已停用」筛选里看
+        // （那边带下次回探时间和「探测」按钮）。
         const st0 = d.settings || {};
         const limit = Number(st0.no_api_drop_rounds || 3);
-        const probeDays = Number(st0.no_api_probe_days || 7);
         const nth = r.rounds ? ('连续第 ' + r.rounds + ' 次') : '';
-        const tail = r.off
-            ? ('已自动停用' + (r.next_probe ? '，' + wvAgo(r.next_probe) + '再探一次' : '，每 ' + probeDays + ' 天再探一次'))
-            : (limit ? ('再空 ' + Math.max(0, limit - (r.rounds || 0)) + ' 次就会被加「扫不到」标签并停用') : '');
+        const tail = limit
+            ? ('再空 ' + Math.max(0, limit - (r.rounds || 0)) + ' 次就会被停用（转到「已停用」里）')
+            : '';
         const tip = [r.reason || '', (r.tries ? '试了 ' + r.tries + ' 次' : ''), nth, tail]
             .filter(Boolean).join('　');
         // 点一行 → 进这位作者的本地主页（2026-11-10 用户要求）。
@@ -10228,7 +10235,6 @@ function wvRenderNoApi(d) {
             + ' title="' + escapeHtml(tip + '　点一下进 TA 的本地主页') + '"'
             + ' onclick="wvOpenNoApi(this)">'
             + '<span class="wv-noapi-n">' + escapeHtml(r.nickname) + '</span>'
-            + (r.off ? '<span class="wv-noapi-off">已停用</span>' : '')
             + '<span class="wv-noapi-c">本地 ' + (r.local || 0) + ' 条</span>'
             + (r.rounds > 1 ? '<span class="wv-noapi-r">第 ' + r.rounds + ' 次</span>' : '')
             + '<span class="wv-noapi-t">' + (r.ts ? wvAgo(r.ts) : '') + '</span>'
@@ -10319,12 +10325,15 @@ function wvRenderTable(rowsAll) {
                  '<i class="wv-dot"></i>' + t[0] + '档</span>';
         if (!r.enabled) {
             // 2026-11-13：扫不到的作者不再移出名单，改成停用；这里把原因说清楚，
-            // 免得用户以为是自己点错了
+            // 免得用户以为是自己点错了。用橙色（.stop）而不是灰的 —— 灰的和「不在库」
+            // 那种次要标记一个色，用户在两三屏里根本找不到（他当天就没看见）。
             const why = r.no_api
-                ? '连续多次扫不到作品，已自动停用；仍留在名单里，会定期回探，扫到就自动恢复'
-                : '手动停用';
-            st = '<span class="wv-tag off" title="' + escapeHtml(why) +
-                 '"><i class="wv-dot"></i>已停用</span>';
+                ? ('连续 ' + (r.rounds || 3) + ' 次扫不到作品，已自动停用。' +
+                   (r.probe_at ? wvAgo(r.probe_at) + '自动回探一次' : '会定期回探') +
+                   '，扫到就自动恢复 —— 也可以点「探测」立刻查')
+                : '手动停用：不再自动查新作品，但仍留在追更名单里（点「探测」可以查一次）';
+            st = '<span class="wv-tag stop" title="' + escapeHtml(why) + '">' +
+                 '<i class="wv-dot"></i>已停用</span>';
         }
         const extra = r.fails ? ' <span class="wv-tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
 
@@ -10338,12 +10347,19 @@ function wvRenderTable(rowsAll) {
 
         // 「检查」一列叠两行：上次查过 / 下次大概什么时候。
         // 名单收窄后（右边要让给日志）再拆成两列会把作者名挤成「乌…」，
-        // 所以两列合一列、竖着排（2026-11-08）
+        // 所以两列合一列、竖着排（2026-11-08）。
+        // 停用的行第二行显示「下次自动探测」—— 停用不等于不管，每 7 天回探一枪。
+        const nextTxt = r.enabled
+            ? (r.next_check ? wvAgo(r.next_check) : '—')
+            : (r.probe_at ? wvAgo(r.probe_at) + '探' : '—');
+        const nextTip = r.enabled
+            ? '下次检查'
+            : (r.probe_at ? '下次自动探测（停用的作者每 7 天回探一次，探到作品自动恢复）'
+                          : '已停用，没有安排自动探测（可以点「探测」手动查一次）');
         const when = '<div class="wv-when">' +
             '<span class="wv-when-l" title="上次检查：' + escapeHtml(r.last_scan || '—') + '">' +
                 escapeHtml(wvShortTime(r.last_scan)) + '</span>' +
-            '<span class="wv-when-n" title="下次检查">' +
-                (r.next_check ? wvAgo(r.next_check) : '—') + '</span>' +
+            '<span class="wv-when-n" title="' + escapeHtml(nextTip) + '">' + nextTxt + '</span>' +
             '</div>';
 
         return '<tr class="wv-link' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
@@ -10353,6 +10369,8 @@ function wvRenderTable(rowsAll) {
             '<td>' + when + '</td>' +
             '<td>' + st + extra + '</td>' +
             '<td class="wv-ops">' +
+                '<button class="btn btn-mini" data-act="probe" data-uid="' + escapeHtml(r.uid) + '"' +
+                    ' title="立刻查一次这位作者（停用的也能查；因扫不到被停用的，查到作品会自动恢复追更）">探测</button>' +
                 '<button class="btn btn-mini" data-act="toggle" data-uid="' + escapeHtml(r.uid) + '">' +
                     (r.enabled ? '停用' : '启用') + '</button>' +
                 '<button class="btn btn-mini" data-act="remove" data-uid="' + escapeHtml(r.uid) + '">移出</button>' +
@@ -10423,6 +10441,14 @@ function wvBindOnce() {
                 const uid = btn.getAttribute('data-uid');
                 const act = btn.getAttribute('data-act');
                 if (act === 'toggle') wvPost({ action: 'toggle', uid: uid }, '已切换');
+                if (act === 'probe') {
+                    // 手动探测：立刻把这位排进下一轮（停用的也能查，探到就自动恢复）。
+                    // 不去改按钮文字 —— 回包后 wvPull 会把整张表重绘，改了就白改。
+                    const row = ((wvState.data && wvState.data.authors) || [])
+                        .filter((r) => r.uid === uid)[0];
+                    wvPost({ action: 'probe', uid: uid },
+                           '已排进下一轮：最多 1 分钟后查「' + (row ? row.nickname : uid) + '」');
+                }
                 if (act === 'remove') {
                     const row = ((wvState.data && wvState.data.authors) || [])
                         .filter((r) => r.uid === uid)[0];

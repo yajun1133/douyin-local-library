@@ -482,6 +482,25 @@ chk("恢复后还是启用中的人，不会被再探一次",
     all(str(x.get("uid")) != "z" or not x.get("_probe")
         for x in W.which_authors_due(W.load_watch(), st)))
 
+print("\n[18c] 手动「探测」：名单里的 probe_now 能立刻派活，消费后摘掉")
+with open(W.WATCH_FILE, "w", encoding="utf-8") as f:
+    json.dump({"authors": [{"uid": "p", "sec_uid": "SECp", "nickname": "Np",
+                           "enabled": False, "added_at": "T"}],
+               "settings": dict(CFG)}, f, ensure_ascii=False)
+st3 = fresh_state()
+st3["no_api"] = {"p": {"nickname": "Np", "local": 3, "rounds": 3,
+                       "ts": time.time() - 86400,
+                       "next_probe": time.time() + 7 * 86400}}
+chk("停用且没到回探时间：不派活",
+    all(str(x.get("uid")) != "p" for x in W.which_authors_due(W.load_watch(), st3)))
+chk("request_probe 写进名单", W.request_probe("p") is True)
+_hit = [x for x in W.which_authors_due(W.load_watch(), st3) if str(x.get("uid")) == "p"]
+chk("点了探测：立刻派一枪（不管到没到点、停没停用）",
+    bool(_hit) and _hit[0].get("_probe") is True, [(x.get("uid"), x.get("_probe")) for x in _hit])
+W.clear_probe_flag("p")
+chk("消费掉之后不再重复触发",
+    all(str(x.get("uid")) != "p" for x in W.which_authors_due(W.load_watch(), st3)))
+
 print("\n[19] 空描述同日两条：第二条不能被同名文件吞掉（2026-11-12 线上丢过一条）")
 DAY = "2026-11-11"
 NICK = "K"

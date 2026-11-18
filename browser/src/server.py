@@ -3465,6 +3465,7 @@ def _watch_status():
         uid = str(a.get("uid") or "")
         s = (state.get("authors") or {}).get(uid) or {}
         acc = accounts.get(uid) or {}
+        rec = (state.get("no_api") or {}).get(uid) or {}
         total_dl += int(s.get("downloads") or 0)
         rows.append({
             "uid": uid,
@@ -3486,7 +3487,12 @@ def _watch_status():
             "fails": len(s.get("fails") or {}),
             # 是不是「因为扫不到被自动停用」的那一类：表格里那颗「已停用」标签
             # 靠它换个悬停说明，用户才知道不是自己手动关的（2026-11-13）
-            "no_api": bool((state.get("no_api") or {}).get(uid)),
+            "no_api": bool(rec),
+            # 下次自动回探时间（停用行显示「几天后探测」）、已连空几次、
+            # 有没有人手动点了「探测」还没被消费
+            "probe_at": float(rec.get("next_probe") or 0),
+            "rounds": int(rec.get("rounds") or 0),
+            "probe_now": bool(a.get("probe_now")),
         })
     # 「累计追更下载」以**明细条数**为准：卡片上那个数字点开就是这份列表，两边必须一致。
     # watch_state 里每个作者只有一个计数，而状态文件被重建过（2026-11-08 09:39 那次
@@ -3527,17 +3533,22 @@ def _watch_status():
 
     # 「扫不到」：本地有作品、但接口连查三次（同号两次 + 换号一次）都空。
     # 2026-11-10 用户要求把每次扫到的这种作者都列出来，放在名单右边。
-    # 2026-11-13 起：连查 3 次空不再移出名单，改成「打标签 + 停用」，
-    # 所以这里要多给一个 off（已经停用）和 next_probe（下次回探时间）。
-    off_uids = {str(a.get("uid")) for a in (watch.get("authors") or [])
-                if not a.get("enabled", True)}
+    # 2026-11-13 口径：这个面板**只放「还没到停用阈值」的**（第 1、2 次空）。
+    # 到第 3 次就自动停用、归到「已停用」里去 —— 面板再挂着只会重复显示同一批人。
+    watch_uids = {str(a.get("uid")) for a in (watch.get("authors") or [])}
+    limit_rounds = int((cfg or {}).get("no_api_drop_rounds") or 3)
     no_api = []
     for _uid, rec in (state.get("no_api") or {}).items():
         if not isinstance(rec, dict):
             continue
+        uid = str(_uid)
+        if uid not in watch_uids:
+            continue            # 人已经不在名单里了，别挂在这
+        if int(rec.get("rounds") or 0) >= limit_rounds:
+            continue            # 已经停用：去「已停用」筛选项里看
         no_api.append({
-            "uid": str(_uid),
-            "nickname": rec.get("nickname") or str(_uid),
+            "uid": uid,
+            "nickname": rec.get("nickname") or uid,
             "local": int(rec.get("local") or 0),
             "tries": int(rec.get("tries") or 0),
             # 连续第几次被判定扫不到。到 no_api_drop_rounds 次就会被打上「扫不到」标签
@@ -3545,7 +3556,6 @@ def _watch_status():
             "rounds": int(rec.get("rounds") or 0),
             "ts": float(rec.get("ts") or 0),
             "reason": rec.get("reason") or "",
-            "off": str(_uid) in off_uids,
             "next_probe": float(rec.get("next_probe") or 0),
         })
     no_api.sort(key=lambda r: -r["ts"])
@@ -3934,6 +3944,18 @@ def _watch_toggle(uid, enabled=None):
     if hit.get("enabled", True):
         _reset_no_api_rounds(uid)
     return {"ok": True, "enabled": bool(hit.get("enabled"))}
+
+
+@_watch_locked
+def _watch_probe(uid):
+    """「探测」按钮：让这位作者下一轮就查一次。
+
+    停用的作者也能点 —— 这正是它的主要用途：想看某位停用的号恢复没有，
+    不用等满 7 天，点一下马上探一枪。探到作品会自动恢复启用并摘标签。
+    """
+    if not WC.request_probe(uid):
+        return {"ok": False, "error": "名单里没有这个 uid"}
+    return {"ok": True, "hint": "已排进下一轮，最多 1 分钟内开查"}
 
 
 def _reset_no_api_rounds(uid):
@@ -4454,10 +4476,14 @@ class Handler(BaseHTTPRequestHandler):
         accs = CACHE.get("accounts") or {}
         # 「这位作者在不在追更名单里」—— 前端要在名字上打标记（2026-11-10）。
         # 名单很小（几百条），每次请求读一遍 JSON 不心疼；读坏了就当没有，不影响列表。
+        # 同时算一份「停用」集合：卡片上的角标要靠它显示「追更·已停用」，
+        # 而「追更中」这个筛选口径**不排除停用的**（停用只是不查，人还在名单里）。
         try:
-            _wset = {str(x.get("uid") or "") for x in (WC.load_watch().get("authors") or [])}
+            _wa = WC.load_watch().get("authors") or []
+            _wset = {str(x.get("uid") or "") for x in _wa}
+            _woff = {str(x.get("uid") or "") for x in _wa if not x.get("enabled", True)}
         except Exception:
-            _wset = set()
+            _wset, _woff = set(), set()
 
         # 作者属性筛选 —— 和「导出作者信息」那一栏同一套口径（等级/标签/状态/更新频率/
         # 最后下载时间，每行自己一个 ＋/－ 组合开关）。先算出命中的作者，再让 SQL 按 uid 过滤，
@@ -4515,6 +4541,8 @@ class Handler(BaseHTTPRequestHandler):
                 g = {"uid": f["uid"], "nickname": nick, "items": [],
                      # 追更中：前端据此给名字换底色（不再用那个红点）
                      "watch": f["uid"] in _wset,
+                     # 在名单里但被停用（扫不到自动停 / 手动停）：卡片角标要能区分
+                     "watch_enabled": f["uid"] not in _woff,
                      # 作者身上的标注（播放区下方要显示）：等级 / 更新频率 / 状态 / 标签
                      "level": str(acc.get("level") or "").strip(),
                      "freq": str(acc.get("update_freq") or "").strip(),
@@ -5046,9 +5074,11 @@ class Handler(BaseHTTPRequestHandler):
         # 追更名单（一次读进内存）：卡片左上角的「追更」角标靠它，
         # 免得前端为了一个标记再额外请求一遍 /api/watch/status。
         try:
-            _watch_uids = {str(x.get("uid") or "") for x in (WC.load_watch().get("authors") or [])}
+            _wl = WC.load_watch().get("authors") or []
+            _watch_uids = {str(x.get("uid") or "") for x in _wl}
+            _watch_off = {str(x.get("uid") or "") for x in _wl if not x.get("enabled", True)}
         except Exception:
-            _watch_uids = set()
+            _watch_uids, _watch_off = set(), set()
 
         result = []
         for item in lst:
@@ -5122,6 +5152,7 @@ class Handler(BaseHTTPRequestHandler):
                            "alias": item.get("alias") or "",
                            "starred": bool(a and a.get("starred")),
                            "watch": str(item.get("uid") or "") in _watch_uids,
+                           "watch_enabled": str(item.get("uid") or "") not in _watch_off,
                            "status": (a or {}).get("status", ""),
                            "level": (a or {}).get("level", ""),
                            "update_freq": (a or {}).get("update_freq", ""),
@@ -6099,6 +6130,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json(_watch_remove(data.get("uids") or []))
                 elif act == "toggle":
                     self._send_json(_watch_toggle(data.get("uid"), data.get("enabled")))
+                elif act == "probe":
+                    # 名单里的「探测」按钮：立刻查一次（停用的作者也支持）
+                    self._send_json(_watch_probe(data.get("uid")))
                 elif act == "mark":
                     # 作者详情页的「自动追更」：enabled=true 进名单，false 退名单，
                     # interval 改检查间隔（0=自动分级，不传=不改）

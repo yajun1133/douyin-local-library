@@ -6706,6 +6706,10 @@ body.gallery-open { overflow: hidden; }
 .wv-tag.frozen { background: #eaeff5; color: #8090a8; }
 .wv-tag.cold { background: #eef2f7; color: #51617a; }
 .wv-tag.off { background: #f1f5f9; color: #64748b; }
+/* 「已停用」用橙色实底：和灰色的「不在库」区分开。2026-11-13 用户反馈
+   「名单里根本看不到你说的已停用」—— 灰标签和次要标记同色，混在 700 行里找不到。 */
+.wv-tag.stop { background: #fff1e6; color: #b3500f; box-shadow: inset 0 0 0 1px #f6cfb4; }
+.wv-tag.stop .wv-dot { opacity: 1; }
 .wv-tag.boil .wv-dot { opacity: 1; }
 .wv-tag.hot .wv-dot { opacity: 1; }
 .wv-tag.warm .wv-dot { opacity: 1; }
@@ -7219,6 +7223,12 @@ details > summary:focus-visible {
     box-shadow: 0 2px 6px rgba(254, 44, 85, .38);
     pointer-events: none;
 }
+/* 在名单里但已停用（扫不到自动停 / 手动停）：角标改成橙色，
+   和「正在追更」的红区分开 —— 用户要能一眼看出「这号我不查了，但没删」 */
+.watch-badge.off {
+    background: #c2410c;
+    box-shadow: 0 2px 6px rgba(194, 65, 12, .35);
+}
 .watch-chip {
     display: inline-block;
     margin-right: 5px;
@@ -7231,6 +7241,7 @@ details > summary:focus-visible {
     background: var(--primary);
     vertical-align: 1px;
 }
+.watch-chip.off { background: #c2410c; }
 
 /* =====================================================================
    追更页布局重排（2026-11-09）

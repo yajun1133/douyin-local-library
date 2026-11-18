@@ -735,6 +735,44 @@ def set_watch_enabled(uid, enabled):
     return True
 
 
+def request_probe(uid):
+    """界面上「探测」按钮：让这位作者**下一轮就查一次**。
+
+    为什么记在 watch.json 的 `probe_now` 而不是改 state 的 next_check：
+    常驻进程每分钟重新读一次 watch.json（`W.load_watch()`），但 state 是整份
+    在内存里改完再落盘的 —— 网页这边写 state 会被它下一次 `_save()` 覆盖掉，
+    点了按钮没反应。写名单就没有这个问题。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    w = load_watch()
+    for a in w.get("authors") or []:
+        if str(a.get("uid")) == uid:
+            a["probe_now"] = time.time()
+            save_watch(w)
+            return True
+    return False
+
+
+def clear_probe_flag(uid):
+    """探测请求被消费掉：把 `probe_now` 摘掉，别每分钟都重新触发一次。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    w = load_watch()
+    hit = None
+    for a in w.get("authors") or []:
+        if str(a.get("uid")) == uid:
+            hit = a
+            break
+    if hit is None or "probe_now" not in hit:
+        return False
+    hit.pop("probe_now", None)
+    save_watch(w)
+    return True
+
+
 def load_state():
     d = _read_json(STATE_FILE, {})
     if not isinstance(d, dict):
@@ -2153,6 +2191,12 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         if only_uid and uid != str(only_uid):
             continue
         stats["authors"] += 1
+        # 手动点了「探测」：先把名单里那个标记消费掉，否则常驻循环每分钟
+        # 都会把他重新排进队列，变成一直插队
+        if item.get("probe_now"):
+            item.pop("probe_now", None)
+            if not dry:
+                clear_probe_flag(uid)
 
         # 闸门二：每位作者之前都复查一次，额度一满就立刻收手（不用等整轮跑完）
         _sync_quota()
@@ -2680,17 +2724,19 @@ def which_authors_due(watch, state, now=None):
     noapi = state.get("no_api") or {}
     for item in watch.get("authors") or []:
         uid = str(item.get("uid") or "")
+        # 界面上点了「探测」：不管档位、不管停没停用，下一轮就查这一位
+        want = bool(item.get("probe_now"))
         if not item.get("enabled", True):
             # 手动停用的不管；自动停用的（在 no_api 里有记录）到点探一枪
             rec = noapi.get(uid) or {}
-            if not rec:
+            if not rec and not want:
                 continue
             # next_probe 缺（老状态，或升级前就停用的）就按 ts + 间隔算；
             # 显式的 0 表示「马上探」，不能用 or 兜底成一周后
             _np = rec.get("next_probe")
             nxt = (float(_np) if _np is not None
                    else float(rec.get("ts") or 0) + probe_gap)
-            if nxt <= now:
+            if want or nxt <= now:
                 it = dict(item)
                 it["_probe"] = True
                 probes.append(it)
@@ -2702,9 +2748,9 @@ def which_authors_due(watch, state, now=None):
             # 还没开始（st 里没有 bulk）→ 立刻插队；
             # 已经在补（bulk=True）→ 按 next_check 到点才再来，否则会被这里
             # 一次次立刻叫起来，把额度全耗在同一个作者身上。
-            if not st.get("bulk") or nxt <= now:
+            if not st.get("bulk") or nxt <= now or want:
                 pending.append(item)
             continue
-        if nxt <= now:
+        if nxt <= now or want:
             due.append(item)
     return pending + due + probes

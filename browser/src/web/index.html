@@ -8,7 +8,7 @@
     <!-- 标签页图标：纯黑抖音音符。SVG 优先（矢量最清晰），ICO 给不认 SVG 的老浏览器兜底 -->
     <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261110c176">
     <link rel="icon" type="image/x-icon" href="favicon.ico?v=20261110c176">
-    <link rel="stylesheet" href="style.css?v=20261113c1820">
+    <link rel="stylesheet" href="style.css?v=20261113d1855">
 </head>
 <body>
     <!-- 顶栏 -->
@@ -630,6 +630,9 @@
                         <div class="wv-panel wv-main">
                             <div class="wv-hd">名单<span class="hint" id="wvTblHint"></span>
                                 <div class="wv-spacer"></div>
+                                <button class="btn btn-mini" id="wvProbeOff" onclick="wvProbeAllOff()"
+                                        title="把所有「已停用」的作者各探一枪：扫到作品就自动恢复成追更中，扫不到继续停着">
+                                    一键探测停用<b class="wf-n" id="wvProbeOffN">0</b></button>
                                 <button class="btn btn-mini" id="wvAddBtn" onclick="wvToggleAdd()"
                                         title="把作者加进追更名单：uid / SEC_UID / 主页链接 / 库里唯一的昵称都行">＋ 加作者</button>
                             </div>
@@ -641,19 +644,57 @@
                             </div>
                             <div class="wv-filter-bar">
                                 <div class="wall-filters" id="wvFilter" role="tablist" aria-label="按档位筛选追更作者"></div>
+                                <!-- 右侧：排序 + 显示模式（2026-11-13 用户要求可切换） -->
+                                <div class="wv-filter-tools">
+                                    <label class="wv-sortbox" title="排序方式（点一下换一种）">
+                                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h13"/><path d="M4 12h9"/><path d="M4 17h5"/><path d="M18 9l3 3-3 3"/></svg>
+                                        <select id="wvSortKey" onchange="wvSetSort(this.value)">
+                                            <option value="recent">最近发布</option>
+                                            <option value="next">下次检查</option>
+                                            <option value="works">作品数</option>
+                                            <option value="dl">追更下载</option>
+                                            <option value="tier">档位</option>
+                                            <option value="name">昵称</option>
+                                        </select>
+                                    </label>
+                                    <button class="wv-sortdir" id="wvSortDir" onclick="wvToggleSortDir()"
+                                            title="升序 / 降序">↓</button>
+                                    <div class="wv-vswitch" role="group" aria-label="显示模式">
+                                        <button data-view="table" onclick="wvSetView('table')"
+                                                title="横栏模式：一位作者一行，信息更紧凑">
+                                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>横栏</button>
+                                        <button data-view="card" onclick="wvSetView('card')"
+                                                title="卡片模式：一位作者一张卡，名字和档位更醒目">
+                                            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="7" height="6" rx="1.5"/><rect x="13" y="5" width="7" height="6" rx="1.5"/><rect x="4" y="13" width="7" height="6" rx="1.5"/><rect x="13" y="13" width="7" height="6" rx="1.5"/></svg>卡片</button>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="wv-bd wv-bd-flush">
-                                <table class="wv-tbl">
+                            <div class="wv-bd wv-bd-flush" id="wvTableWrap">
+                                <table class="wv-tbl wv-tbl-watch">
+                                    <!-- 列宽固定：不定死的话每列宽度跟着内容跳，表头和下面那行永远差半格
+                                         （2026-11-13 用户截图说「这一行没对齐」） -->
+                                    <colgroup>
+                                        <col>
+                                        <col style="width:72px">
+                                        <col style="width:84px">
+                                        <col style="width:116px">
+                                        <col style="width:150px">
+                                        <col style="width:190px">
+                                    </colgroup>
                                     <thead><tr>
-                                        <th>作者</th>
-                                        <th class="wv-num">作品</th>
-                                        <th class="wv-num">追更下载</th>
-                                        <th class="wv-when-col">检查</th>
+                                        <th class="wv-th-sort" data-sort="name" onclick="wvSortBy('name')">作者</th>
+                                        <th class="wv-num wv-th-sort" data-sort="works" onclick="wvSortBy('works')">作品</th>
+                                        <th class="wv-num wv-th-sort" data-sort="dl" onclick="wvSortBy('dl')">追更下载</th>
+                                        <th class="wv-when-col wv-th-sort" data-sort="next" onclick="wvSortBy('next')">检查</th>
                                         <th>状态</th>
                                         <th class="wv-ops-col"></th>
                                     </tr></thead>
                                     <tbody id="wvTbody"><tr><td colspan="6" class="wv-empty">读取中…</td></tr></tbody>
                                 </table>
+                            </div>
+                            <!-- 卡片模式：同一个数据源，换成一张张卡片 -->
+                            <div class="wv-bd wv-bd-flush hidden" id="wvCardsWrap">
+                                <div class="wv-grid" id="wvCards"></div>
                             </div>
                         </div>
 
@@ -687,12 +728,24 @@
                                     <details>
                                         <summary>节奏与安全设置（改完立刻生效，正在跑的进程下一轮就会读到）</summary>
                                         <div class="wv-fgrid">
-                                            <div class="wv-f"><label for="wvSBoil">沸档间隔</label><input type="number" id="wvSBoil" min="300" step="60"><span class="u">秒 · 24 小时内且确实在日更</span></div>
-                                            <div class="wv-f"><label for="wvSHot">热档间隔</label><input type="number" id="wvSHot" min="600" step="60"><span class="u">秒 · 3 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSWarm">温档间隔</label><input type="number" id="wvSWarm" min="900" step="300"><span class="u">秒 · 7 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSCool">凉档间隔</label><input type="number" id="wvSCool" min="1800" step="600"><span class="u">秒 · 30 天内发过</span></div>
-                                            <div class="wv-f"><label for="wvSChill">寒档间隔</label><input type="number" id="wvSChill" min="3600" step="3600"><span class="u">秒 · 3 个月内发过</span></div>
-                                            <div class="wv-f"><label for="wvSFrozen">冻档间隔</label><input type="number" id="wvSFrozen" min="3600" step="3600"><span class="u">秒 · 3 个月以上没更</span></div>
+                                            <div class="wv-f"><label for="wvSBoil">沸档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSBoil" min="1" step="1"><select id="wvSBoilU" onchange="wvUnitChanged('wvSBoil')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">24 小时内且确实在日更</span></div>
+                                            <div class="wv-f"><label for="wvSHot">热档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSHot" min="1" step="1"><select id="wvSHotU" onchange="wvUnitChanged('wvSHot')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">3 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSWarm">温档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSWarm" min="1" step="1"><select id="wvSWarmU" onchange="wvUnitChanged('wvSWarm')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">7 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSCool">凉档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSCool" min="1" step="1"><select id="wvSCoolU" onchange="wvUnitChanged('wvSCool')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">30 天内发过</span></div>
+                                            <div class="wv-f"><label for="wvSChill">寒档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSChill" min="1" step="1"><select id="wvSChillU" onchange="wvUnitChanged('wvSChill')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">3 个月内发过</span></div>
+                                            <div class="wv-f"><label for="wvSFrozen">冻档间隔</label>
+                                                <div class="wv-amt"><input type="number" id="wvSFrozen" min="1" step="1"><select id="wvSFrozenU" onchange="wvUnitChanged('wvSFrozen')"><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
+                                                <span class="u">3 个月以上没更</span></div>
                                             <div class="wv-f"><label for="wvSGap">每个作者间隔</label><input type="number" id="wvSGap" min="1" step="0.5"><span class="u">秒 · 别低于 2</span></div>
                                             <div class="wv-f"><label for="wvSBudget">每日请求上限</label><input type="number" id="wvSBudget" min="100" step="500"><span class="u">次 · 全部号合计</span></div>
                                             <div class="wv-f"><label for="wvSMax">单轮下载上限</label><input type="number" id="wvSMax" min="1" step="1"><span class="u">条 · 防一次性爆量</span></div>
@@ -1001,6 +1054,6 @@
     <!-- 致命错误提示（脚本报错时显示，平时隐藏） -->
     <div class="fatal-bar hidden" id="fatalBar"></div>
 
-    <script src="app.js?v=20261113c1820"></script>
+    <script src="app.js?v=20261113d1855"></script>
 </body>
 </html>

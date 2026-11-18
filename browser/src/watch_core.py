@@ -755,6 +755,30 @@ def request_probe(uid):
     return False
 
 
+def request_probe_all(only_off=True):
+    """「一键探测」：把一批作者一次性排进下一轮，逐个各探一枪。
+
+    only_off=True 时只排**已停用**的 —— 这正是界面上那个按钮的用途：
+    停用的号到底恢复没有，不用等每 7 天那一次，点一下全查一遍，
+    扫到作品的会被 scan_round 自动恢复成「追更中」并摘掉「扫不到」标签。
+
+    返回实际排进去的人数。没有 sec_uid 的跳过（没 ID 查不了，排了也是白排）。
+    """
+    w = load_watch()
+    now = time.time()
+    n = 0
+    for a in w.get("authors") or []:
+        if only_off and a.get("enabled", True):
+            continue
+        if not str(a.get("sec_uid") or ""):
+            continue
+        a["probe_now"] = now
+        n += 1
+    if n:
+        save_watch(w)
+    return n
+
+
 def clear_probe_flag(uid):
     """探测请求被消费掉：把 `probe_now` 摘掉，别每分钟都重新触发一次。"""
     uid = str(uid or "").strip()
@@ -825,11 +849,15 @@ _DL_LOCK = __import__("threading").Lock()
 
 
 def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=False,
-                    aid=""):
+                    aid="", ct=0):
     """追加一条下载明细。rels 是相对 SCAN_ROOT 的路径（和 download_log.db 同一口径）。
 
     aid：这条作品在抖音的 aweme_id。**必须记**（2026-11-12 起）：描述为空的作品
     文件名里没有身份，判重只能靠 ID；这份明细就是"我们自己下过哪些 ID"的账本。
+
+    ct：这条作品在抖音上的**发布时间**（create_time，epoch 秒，精确到秒）。
+    2026-11-13 用户要求「下载作品的发布时间精确到秒」：文件名里只有日期，
+    秒级时间只能记在这里。`ts` 是我们下载它的时刻，两者不是一回事。
     """
     rels = [r for r in (rels or []) if r]
     if not rels:
@@ -845,6 +873,9 @@ def record_download(uid, nickname, date, desc, rels, size, ts=None, backfill=Fal
     }
     if aid:
         rec["aid"] = str(aid)
+    if ct:
+        rec["post_ts"] = int(ct)
+        rec["post_at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(ct)))
     if backfill:
         rec["backfill"] = True
     try:
@@ -1411,17 +1442,19 @@ class Douyin(object):
                            impersonate="chrome146", timeout=25,
                            **NO_PROXY_OPTS)
 
-    def author_works(self, sec_uid, pages=1, retry=2, with_more=False):
+    def author_works(self, sec_uid, pages=1, retry=2, with_more=False, start_cursor="0"):
         """拉作者主页作品列表（新→旧）。返回 aweme_list。
 
-        with_more=True 时返回 (列表, 是否还有更早的没翻到)。
-        新作者「全量扫一遍」需要它：翻满 pages 页但抖音说 has_more 还在，
-        就说明这次没翻到底，得再跑一轮，不能当成「已经全扫完了」。
+        with_more=True 时返回 (列表, 是否还有更早的没翻到, 下次从哪个游标接着翻)。
+        `start_cursor` 就是上一次返回的那个游标 —— **必须能接着翻**：
+        只从 "0" 开始的话，作品超过 pages×20 条的作者每一轮都只能拿到最近那批，
+        has_more 永远为真，「全量补齐」就永远结束不了（2026-11-13 那位的实况：
+        每 60 秒重翻 40 页、一天几万次请求，日志里天天「还没翻到底」）。
 
         失败时**先换号再重试**：同一个号上连着打三四枪既慢又最容易被盯上，
         换个号往往一次就过。只有池子里没有别的号可用时才原地等。
         """
-        out, cursor, seen = [], "0", set()
+        out, cursor, seen = [], str(start_cursor or "0"), set()
         more_left = False
         for _ in range(max(1, pages)):
             last = ""
@@ -1487,7 +1520,7 @@ class Douyin(object):
             # 拿到的总数不足一页（20 条）就一定到底了。抖音偶尔对只有十几条作品的
             # 账号也返回 has_more=1；不加这条，「全量」会每 60 秒重翻 40 页白烧请求
             # （2026-11-10 实测：小喵米只有 11 条，has_more 却给的是 1）。
-            return out, bool(more_left) and len(out) >= 20
+            return out, bool(more_left) and len(out) >= 20, cursor
         return out
 
 
@@ -1946,6 +1979,54 @@ TIER_LABEL = {"boil": "沸", "hot": "热", "warm": "温", "cool": "凉",
               "chill": "寒", "frozen": "冻", "fixed": "定"}
 
 
+def _begin_bulk(st):
+    """把某位作者切到「首次全量补齐」状态，并重置翻页游标。
+
+    游标（bulk_cursor）是 2026-11-13 加的：以前每轮都从最新一条重翻 40 页，
+    作品多的作者永远翻不到底，于是每 60 秒又来一轮 —— 日志里天天
+    「全量还没翻到底」，请求量还翻倍。现在从上次停下的游标接着往下翻。
+    """
+    st["bulk"] = True
+    st["bulk_more"] = True
+    st["bulk_cursor"] = "0"
+    st["bulk_rounds"] = 0
+    st["bulk_newest"] = 0
+
+
+def _end_bulk(st, newest=0):
+    """全量补齐收尾：清掉翻页状态，把基线推到「见过的最新一条作品」。
+
+    newest 是这一轮第一页里最新的时间兜底 —— 老状态里没有 bulk_newest
+    （2026-11-13 之前没有这个字段），靠它才不会把基线留在很早以前。
+    """
+    st["bulk"] = False
+    st["bulk_done"] = True
+    st["last_ts"] = max(int(st.get("last_ts") or 0),
+                        int(st.get("bulk_newest") or 0),
+                        int(newest or 0))
+    for k in ("bulk_more", "bulk_cursor", "bulk_rounds", "bulk_newest"):
+        st.pop(k, None)
+
+
+def _bulk_next(st, cfg, nick):
+    """全量翻页还能不能接着翻：True=下轮继续，False=到此为止。
+
+    两道停下来的条件：
+      ① 抖音说没有更早的作品了（bulk_more=False）；
+      ② 翻的轮数到顶（bulk_max_rounds，默认 25 轮 ≈ 2 万条）——
+         作品特别多的号不能把当天的请求额度全吃掉。
+    """
+    if not st.get("bulk_more"):
+        return False
+    rounds = int(st.get("bulk_rounds") or 0)
+    cap = int(cfg.get("bulk_max_rounds") or 25)
+    if rounds >= cap:
+        log("· %s 全量已翻 %d 轮（约 %d 条），先停在这里，以后按新作品追"
+            % (nick, rounds, rounds * int(cfg.get("full_pages") or 40) * 20))
+        return False
+    return True
+
+
 def tier_of(st, cfg, now=None):
     """按「这位作者上次在抖音发作品距今多久」分六档，返回 (档名, 该档间隔秒数)。
 
@@ -1959,12 +2040,13 @@ def tier_of(st, cfg, now=None):
     降档是自然的：跟着天数一档一档往后退，不会一天之内从沸砸到冻。
     """
     now = now or time.time()
-    # 优先级：last_post（亲眼看到的最新作品时间）> last_ts（已处理到的最新作品）
-    # > last_new（上次下到新作品的时间）。加后两个兜底是为了让升级前就存在的
-    # 老状态也能立刻算准档位，不会因为缺 last_post 把活跃作者当成"冻档"。
-    ref = (float(st.get("last_post") or 0)
-           or float(st.get("last_ts") or 0)
-           or float(st.get("last_new") or 0))
+    # **只认作品发布时间**（抖音接口的 create_time，epoch 秒，精确到秒）：
+    #   · last_post = 亲眼看到的最新一条作品的发布时间；
+    #   · last_ts   = 已经处理到的最新一条作品的发布时间（同一条线的兜底）。
+    # 绝不能用 last_new（我们下到新作品的时刻）—— 那是本地时钟，和作者发没发作品
+    # 没有半点关系。停更半年的人今天被我们补下一批老作品，last_new 就是今天，
+    # 用它会把人误判成「刚更新」直接提到热档（2026-11-13 用户明确要求按作品时间）。
+    ref = float(st.get("last_post") or 0) or float(st.get("last_ts") or 0)
     if not ref:
         # 一件作品都没抓到过（多半是刚加进名单）：按热档查，别用最慢的档晾着
         return "hot", float(cfg.get("interval_hot") or 1800)
@@ -2411,8 +2493,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         want_full = (bool(item.get("full_scan"))
                      and st.get("full_done_for") != _full_stamp)
         if want_full and not st.get("bulk"):
-            st["bulk"] = True
-            st["bulk_more"] = True
+            _begin_bulk(st)
             st["last_ts"] = 0
             st["seen"] = []
             last_ts = 0
@@ -2442,7 +2523,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 # 本地一件都没有 = 需要「首次全量补齐」：见下面 st["bulk"] 的处理。
                 # 不能只靠 last_ts=0 那一轮：候选按时间升序下，下到最新的那条之后
                 # last_ts 就被推到最新，比它更老的（第 2 页往后）永远 ct <= last_ts 被跳过。
-                st["bulk"] = True
+                _begin_bulk(st)
             st["last_ts"] = int(base)
             # 只把「基线之前」的作品记成处理过；比基线新的留着当候选去下载
             st["seen"] = [str(a.get("aweme_id")) for a in al
@@ -2472,7 +2553,7 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 试运行不改状态：否则一次 --dry 就会把基线清成 0（自检 [8] 就是抓这个）。
         if (not dry and not st.get("bulk") and not local and lib_idx and author_dir
                 and not st.get("bulk_done")):
-            st["bulk"] = True
+            _begin_bulk(st)
             st["last_ts"] = 0
             st["seen"] = []
             last_ts = 0
@@ -2482,19 +2563,33 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         # 首次全量补齐：多翻几页，把现有作品整体过一遍。
         # 作者还没有文件夹时不深翻 —— 下了也没地方放，白白多打几枪接口。
         # 页数用 full_pages（默认 40 页 ≈ 800 条）：用户要的是「全部作品」，
-        # bulk_pages=10（200 条）对作品多的作者根本不够。翻满还没到底会记在
-        # st["bulk_more"] 里，下一轮接着翻，不会漏。
+        # bulk_pages=10（200 条）对作品多的作者根本不够。
+        #
+        # **游标必须接着上次的往下翻**（2026-11-13 修）：以前每次都从 "0" 开始，
+        # 只有「翻满 800 条还没到底」的作者会一直停在最近那 800 条上，
+        # has_more 永远为真 → 每 60 秒重翻 40 页 → 日志天天「还没翻到底」。
         if st.get("bulk") and author_dir:
             try:
-                more, _has_more = dy.author_works(
-                    sec, pages=int(cfg.get("full_pages") or 40), with_more=True)
+                _cur = str(st.get("bulk_cursor") or "0")
+                more, _has_more, _next = dy.author_works(
+                    sec, pages=int(cfg.get("full_pages") or 40), with_more=True,
+                    start_cursor=_cur)
+                st["bulk_cursor"] = _next
                 st["bulk_more"] = bool(_has_more)
-                if len(more) > len(al):
+                st["bulk_rounds"] = int(st.get("bulk_rounds") or 0) + 1
+                _mct = [int(x.get("create_time") or 0) for x in more]
+                if _mct:
+                    st["bulk_newest"] = max(int(st.get("bulk_newest") or 0), max(_mct))
+                if more:
+                    # 这一批就是本轮要处理的（接着游标翻出来的那一段）
                     al = more
-                    cts = [int(x.get("create_time") or 0) for x in more]
-                    newest = max(cts) if cts else newest
-                    log("· %s 全量：往下翻到 %d 条作品%s"
-                        % (nick, len(al), "（还没到底，下轮接着翻）" if _has_more else ""))
+                    newest = max([newest] + _mct)
+                    log("· %s 全量：第 %d 轮，从上一轮停下的位置往下翻到 %d 条作品%s"
+                        % (nick, int(st.get("bulk_rounds") or 1), len(al),
+                           "（还没到底，下轮接着翻）" if _has_more else "（到底了）"))
+                elif _cur != "0":
+                    # 接着翻却一条都没了 = 确实到底了（抖音偶尔 has_more 给得不准）
+                    st["bulk_more"] = False
             except Exception as e:
                 log("· %s 全量翻页失败（不影响本轮，下轮再补）：%s" % (nick, str(e)[:60]))
 
@@ -2553,15 +2648,13 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
         if not cand:
             # 没有可下的作品（正常模式：没有比基线更新的；首次全量：这一批都处理过了）
             if st.get("bulk") and not dry:
-                if st.get("bulk_more"):
+                if _bulk_next(st, cfg, nick):
                     # 这一批处理完了，但抖音那边还有更早的没翻到 —— 不能算做完
                     st["next_check"] = time.time() + 60
-                    log("· %s 全量还没翻到底，1 分钟后接着翻" % nick)
+                    log("· %s 全量还没翻到底（第 %d 轮），1 分钟后接着翻"
+                        % (nick, int(st.get("bulk_rounds") or 1)))
                 else:
-                    st["bulk"] = False
-                    st["bulk_done"] = True
-                    st.pop("bulk_more", None)
-                    st["last_ts"] = max(int(st.get("last_ts") or 0), newest)
+                    _end_bulk(st, newest)
                     st["full_done_for"] = _full_stamp
                     log("✔ %s 首次全量补齐完成（现有作品都过了一遍），之后按新作品追" % nick)
             _save()
@@ -2622,13 +2715,15 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
                 stats["downloaded"] += 1
                 stats["bytes"] += size
                 st["downloads"] = int(st.get("downloads") or 0) + 1
+                # last_new 是「我们下到它的时刻」= 本地时钟，只给调试看，
+                # **不参与分档**（分档只认作品发布时间 last_post / last_ts）
                 st["last_new"] = time.time()
                 st["last_ts"] = max(int(st.get("last_ts") or 0), ct2)
                 # 记流水：主界面的「累计追更下载」点开就是这份明细
                 try:
                     _rels = [os.path.relpath(p, paths.SCAN_ROOT).replace(os.sep, "/")
                              for p in _got]
-                    record_download(uid, nick, date, desc, _rels, size, aid=aid)
+                    record_download(uid, nick, date, desc, _rels, size, aid=aid, ct=ct2)
                 except Exception as _e:      # 记账失败不影响下载结果
                     print("[watch] 记下载明细失败：%s" % _e)
                 seen.add(aid)
@@ -2680,16 +2775,14 @@ def scan_round(dy, watch, state, lib_idx, lib_folders, dry=False, only_uid=None,
             if budget_hit:
                 st["next_check"] = time.time() + 300
                 log("· %s 首次全量还没补完，5 分钟后接着补" % nick)
-            elif st.get("bulk_more"):
+            elif _bulk_next(st, cfg, nick):
                 # 这一批下完了，但列表还没翻到底（作品多）：1 分钟后再翻一轮，
                 # 别按档位睡到几小时后，那样「全部作品」要等好几天才补齐
                 st["next_check"] = time.time() + 60
-                log("· %s 全量还没翻到底，1 分钟后接着翻" % nick)
+                log("· %s 全量还没翻到底（第 %d 轮），1 分钟后接着翻"
+                    % (nick, int(st.get("bulk_rounds") or 1)))
             else:
-                st["bulk"] = False
-                st["bulk_done"] = True
-                st.pop("bulk_more", None)
-                st["last_ts"] = max(int(st.get("last_ts") or 0), newest)
+                _end_bulk(st, newest)
                 st["full_done_for"] = _full_stamp
                 log("✔ %s 首次全量补齐完成（现有作品都过了一遍），之后按新作品追" % nick)
 

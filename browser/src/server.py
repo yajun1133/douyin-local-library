@@ -3493,6 +3493,9 @@ def _watch_status():
             "probe_at": float(rec.get("next_probe") or 0),
             "rounds": int(rec.get("rounds") or 0),
             "probe_now": bool(a.get("probe_now")),
+            # 正在「首次全量补齐」：界面上标一颗「全量中」，用户就知道这人为什么
+            # 反复出现在日志里（2026-11-13 用户问「某位作者怎么天天在翻」）
+            "bulk": bool(s.get("bulk")),
         })
     # 「累计追更下载」以**明细条数**为准：卡片上那个数字点开就是这份列表，两边必须一致。
     # watch_state 里每个作者只有一个计数，而状态文件被重建过（2026-11-08 09:39 那次
@@ -3956,6 +3959,23 @@ def _watch_probe(uid):
     if not WC.request_probe(uid):
         return {"ok": False, "error": "名单里没有这个 uid"}
     return {"ok": True, "hint": "已排进下一轮，最多 1 分钟内开查"}
+
+
+def _watch_probe_all():
+    """「一键探测」：所有已停用的作者一次排进下一轮。
+
+    停用的人平时只按 no_api_probe_days（7 天）回探一次，等不及的时候用这个：
+    查到了会自动恢复成「追更中」并摘掉「扫不到」标签，查不到的继续停着。
+    """
+    try:
+        n = WC.request_probe_all(only_off=True)
+    except Exception as e:
+        return {"ok": False, "error": "排探测失败：%s" % e}
+    if not n:
+        return {"ok": False, "error": "没有可探测的已停用作者（或有几位缺 SEC_UID）"}
+    return {"ok": True, "count": n,
+            "hint": "已把 %d 位停用作者排进下一轮，逐个探测（约 %d 分钟查完）"
+                    % (n, max(1, int(round(n * 0.6))))}
 
 
 def _reset_no_api_rounds(uid):
@@ -6133,6 +6153,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif act == "probe":
                     # 名单里的「探测」按钮：立刻查一次（停用的作者也支持）
                     self._send_json(_watch_probe(data.get("uid")))
+                elif act == "probe_all":
+                    # 「一键探测」：所有已停用的作者一次排进下一轮
+                    self._send_json(_watch_probe_all())
                 elif act == "mark":
                     # 作者详情页的「自动追更」：enabled=true 进名单，false 退名单，
                     # interval 改检查间隔（0=自动分级，不传=不改）

@@ -9972,7 +9972,106 @@ const WV_TIER_TAG = {
     fixed: ['定', '按指定间隔查', 'hot'],
 };
 
-const wvState = { data: null, filter: 'all', loading: false, bound: false, timer: 0 };
+const wvState = {
+    data: null, filter: 'all', loading: false, bound: false, timer: 0,
+    // 显示模式（横栏 / 卡片）、排序方式，都记住上次的选择（2026-11-13 用户要求可切换）
+    view: 'table', sortKey: 'recent', sortDir: 1,
+};
+try {
+    const v = localStorage.getItem('wvView');
+    if (v === 'card' || v === 'table') wvState.view = v;
+    const k = localStorage.getItem('wvSortKey');
+    if (k && ['recent', 'next', 'works', 'dl', 'tier', 'name'].indexOf(k) >= 0) wvState.sortKey = k;
+    const dr = Number(localStorage.getItem('wvSortDir'));
+    if (dr === 1 || dr === -1) wvState.sortDir = dr;
+} catch (e) { /* 隐私模式禁掉 localStorage：用默认值就好 */ }
+
+// 档位从热到冷的顺序（排序用）
+const WV_TIER_ORDER = { boil: 0, hot: 1, warm: 2, cool: 3, chill: 4, frozen: 5, fixed: 6 };
+
+// 排序：每个键定义「自然顺序」（1 = 正序，界面上的 ↓/↑ 只是在这个基础上翻过来）
+const WV_SORTS = {
+    recent: { label: '最近发布', cmp: (a, b) => (b.last_post || 0) - (a.last_post || 0) },
+    next: { label: '下次检查', cmp: (a, b) => (a.next_check || 9e18) - (b.next_check || 9e18) },
+    works: { label: '作品数', cmp: (a, b) => (b.works || 0) - (a.works || 0) },
+    dl: { label: '追更下载', cmp: (a, b) => (b.downloads || 0) - (a.downloads || 0) },
+    tier: {
+        label: '档位',
+        cmp: (a, b) => (WV_TIER_ORDER[a.tier] ?? 9) - (WV_TIER_ORDER[b.tier] ?? 9)
+            || (b.last_post || 0) - (a.last_post || 0),
+    },
+    name: {
+        label: '昵称',
+        cmp: (a, b) => String(a.nickname || '').localeCompare(String(b.nickname || ''), 'zh-Hans-CN'),
+    },
+};
+
+function wvSortRows(rows) {
+    const s = WV_SORTS[wvState.sortKey] || WV_SORTS.recent;
+    const out = rows.slice().sort(s.cmp);
+    if (wvState.sortDir === -1) out.reverse();
+    return out;
+}
+
+function wvSavePrefs() {
+    try {
+        localStorage.setItem('wvView', wvState.view);
+        localStorage.setItem('wvSortKey', wvState.sortKey);
+        localStorage.setItem('wvSortDir', String(wvState.sortDir));
+    } catch (e) { /* 存不了就算了，本次会话内还是好用的 */ }
+}
+
+function wvSetView(v) {
+    if (v !== 'table' && v !== 'card') return;
+    if (wvState.view === v) return;
+    wvState.view = v;
+    wvSavePrefs();
+    wvRender();
+}
+
+function wvSetSort(k) {
+    if (!WV_SORTS[k]) return;
+    wvState.sortKey = k;
+    wvSavePrefs();
+    wvRender();
+}
+
+function wvToggleSortDir() {
+    wvState.sortDir = wvState.sortDir === 1 ? -1 : 1;
+    wvSavePrefs();
+    wvRender();
+}
+
+// 点表头排序：点同一个键 = 换个方向；换一个键 = 用它自己的自然顺序
+function wvSortBy(k) {
+    if (!WV_SORTS[k]) return;
+    if (wvState.sortKey === k) wvState.sortDir = wvState.sortDir === 1 ? -1 : 1;
+    else { wvState.sortKey = k; wvState.sortDir = 1; }
+    wvSavePrefs();
+    wvRender();
+}
+
+// 一键探测：所有「已停用」的作者各探一枪（扫到就自动恢复追更）
+function wvProbeAllOff() {
+    const n = ((wvState.data && wvState.data.authors) || []).filter((r) => !r.enabled).length;
+    if (!n) { showToast('现在没有已停用的作者'); return; }
+    if (!confirm('把 ' + n + ' 位「已停用」的作者各探一枪？\n\n· 能扫到作品的会自动恢复成「追更中」\n· 扫不到的继续停着，不影响别的作者')) return;
+    wvPost({ action: 'probe_all' }, '已排队：正在逐个探测 ' + n + ' 位停用作者');
+}
+
+// 输入框 + 单位（秒/分钟/小时/天）联动：换单位时把数字一起换算，别让 900 秒变成 900 分钟
+function wvUnitChanged(id) {
+    const inp = document.getElementById(id);
+    const sel = document.getElementById(id + 'U');
+    if (!inp || !sel) return;
+    const oldU = Number(inp.dataset.u || 1);
+    const newU = Number(sel.value || 1);
+    if (oldU !== newU) {
+        const v = parseFloat(inp.value);
+        if (isFinite(v)) inp.value = Math.round(v * oldU / newU * 100) / 100;
+    }
+    inp.dataset.u = String(newU);
+}
 
 // 距离某个时间戳多久（未来 = 「N 分钟后」，过去 = 「N 分钟前」）
 function wvAgo(ts) {
@@ -10254,17 +10353,20 @@ function wvOpenNoApi(el) {
 // 刚敲进去的数字重置掉（老页面上踩过这个坑，这里保留同样的保护）。
 function wvRenderSettings(d) {
     const IDS = ['wvSBoil', 'wvSHot', 'wvSWarm', 'wvSCool', 'wvSChill', 'wvSFrozen',
-                 'wvSGap', 'wvSBudget', 'wvSMax', 'wvSAuto'];
+                 'wvSGap', 'wvSBudget', 'wvSMax', 'wvSAuto',
+                 'wvSBoilU', 'wvSHotU', 'wvSWarmU', 'wvSCoolU', 'wvSChillU', 'wvSFrozenU'];
     const editing = IDS.some((id) => document.activeElement === document.getElementById(id));
     if (editing) return;
     const s = d.settings || {};
     const put = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-    put('wvSBoil', s.interval_boil);
-    put('wvSHot', s.interval_hot);
-    put('wvSWarm', s.interval_warm);
-    put('wvSCool', s.interval_cool);
-    put('wvSChill', s.interval_chill);
-    put('wvSFrozen', s.interval_frozen);
+    // 秒 → 最自然的单位（能整天就整天，能整小时就整小时）。用户 2026-11-13：
+    // 「只显示这种数字不直观，要改为小时、分钟还有按天那种」。
+    wvPutSec('wvSBoil', s.interval_boil);
+    wvPutSec('wvSHot', s.interval_hot);
+    wvPutSec('wvSWarm', s.interval_warm);
+    wvPutSec('wvSCool', s.interval_cool);
+    wvPutSec('wvSChill', s.interval_chill);
+    wvPutSec('wvSFrozen', s.interval_frozen);
     put('wvSGap', s.gap);
     put('wvSMax', s.max_per_round);
     put('wvSBudget', s.daily_budget);
@@ -10273,6 +10375,27 @@ function wvRenderSettings(d) {
     wvState.content = s.content || 'all';
     const auto = document.getElementById('wvSAuto');
     if (auto) auto.checked = !!d.auto_start;
+}
+
+// 秒 → (数字, 单位)。整 5 天就显示「5 天」，1500 秒就显示「25 分钟」。
+const WV_UNIT_STEPS = [[86400, '86400'], [3600, '3600'], [60, '60'], [1, '1']];
+function wvPickUnit(sec) {
+    const v = Math.abs(Number(sec) || 0);
+    for (const [f, u] of WV_UNIT_STEPS) {
+        if (v >= f && v % f === 0) return { f: f, u: u };
+    }
+    return { f: 1, u: '1' };
+}
+function wvPutSec(id, sec) {
+    const inp = document.getElementById(id);
+    const sel = document.getElementById(id + 'U');
+    if (!inp) return;
+    const n = Number(sec);
+    if (!isFinite(n) || n <= 0) return;
+    const { f, u } = wvPickUnit(n);
+    inp.value = Math.round(n / f * 100) / 100;
+    inp.dataset.u = u;
+    if (sel) sel.value = u;
 }
 
 // 筛选按钮：观感 = 作者详情页的作品分类（灰底分段控件 + 白色选中块 + 计数胶囊）。
@@ -10299,82 +10422,167 @@ function wvRenderFilter(rows) {
     });
 }
 
+// 档位小标签（横栏和卡片两处共用）
+function wvTierTag(r) {
+    let t = WV_TIER_TAG[r.tier] || WV_TIER_TAG.hot;
+    if (r.tier === 'fixed' && r.interval) {
+        t = ['定', '每 ' + Math.round(r.interval / 60) + ' 分钟查一次', 'hot'];
+    }
+    return '<span class="wv-tag ' + t[2] + '" title="' + escapeHtml(t[1]) + '">' +
+           '<i class="wv-dot"></i>' + t[0] + '档</span>';
+}
+
+// 「已停用」那颗橙标（2026-11-13：灰色在七百行里根本看不见，改橙色实底）
+function wvStopTag(r) {
+    if (r.enabled) return '';
+    const why = r.no_api
+        ? ('连续 ' + (r.rounds || 3) + ' 次扫不到作品，已自动停用。' +
+           (r.probe_at ? wvAgo(r.probe_at) + '自动回探一次' : '会定期回探') +
+           '，扫到就自动恢复 —— 也可以点「探测」立刻查')
+        : '手动停用：不再自动查新作品，但仍留在追更名单里（点「探测」可以查一次）';
+    return '<span class="wv-tag stop" title="' + escapeHtml(why) + '">' +
+           '<i class="wv-dot"></i>已停用</span>';
+}
+
+// 作品发布时间的「秒级」写法：11-13 17:52:03。
+// 分档看的就是这个时间（抖音接口的 create_time），不是我们下载它的时间。
+function wvStamp(ts) {
+    if (!ts) return '—';
+    const d = new Date(Number(ts) * 1000);
+    const p = (n) => String(n).padStart(2, '0');
+    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' +
+           p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
 function wvRenderTable(rowsAll) {
     const tb = document.getElementById('wvTbody');
     if (!tb) return;
-    const rows = rowsAll.filter((r) => wvMatch(r, wvState.filter));
+    const rows = wvSortRows(rowsAll.filter((r) => wvMatch(r, wvState.filter)));
     const hint = document.getElementById('wvTblHint');
     if (hint) {
-        hint.textContent = rows.length === rowsAll.length
+        hint.textContent = (rows.length === rowsAll.length
             ? ('共 ' + rowsAll.length + ' 位')
-            : ('筛出 ' + rows.length + ' / ' + rowsAll.length + ' 位');
+            : ('筛出 ' + rows.length + ' / ' + rowsAll.length + ' 位'))
+            + ' · 按' + (WV_SORTS[wvState.sortKey] || WV_SORTS.recent).label
+            + (wvState.sortDir === 1 ? '↓' : '↑');
     }
 
+    // 显示模式：横栏（表格）/ 卡片。两块都留着，只切显隐 —— 切回来时不用重建 DOM。
+    const isCard = wvState.view === 'card';
+    const tw = document.getElementById('wvTableWrap');
+    const cw = document.getElementById('wvCardsWrap');
+    if (tw) tw.classList.toggle('hidden', isCard);
+    if (cw) cw.classList.toggle('hidden', !isCard);
+    document.querySelectorAll('.wv-vswitch button').forEach((b) => {
+        b.classList.toggle('active', b.dataset.view === wvState.view);
+    });
+    const dirBtn = document.getElementById('wvSortDir');
+    if (dirBtn) {
+        dirBtn.textContent = wvState.sortDir === 1 ? '↓' : '↑';
+        dirBtn.title = wvState.sortDir === 1 ? '当前：按' +
+            (WV_SORTS[wvState.sortKey] || WV_SORTS.recent).label + ' 正序（点一下反向）'
+            : '当前：按' + (WV_SORTS[wvState.sortKey] || WV_SORTS.recent).label + ' 倒序（点一下换个方向）';
+    }
+    const sortSel = document.getElementById('wvSortKey');
+    if (sortSel && sortSel.value !== wvState.sortKey) sortSel.value = wvState.sortKey;
+    // 一键探测停用：按钮上那个数字跟着名单走
+    const offN = rowsAll.filter((r) => !r.enabled).length;
+    const offB = document.getElementById('wvProbeOff');
+    const offC = document.getElementById('wvProbeOffN');
+    if (offC) offC.textContent = String(offN);
+    if (offB) {
+        offB.disabled = !offN;
+        offB.title = offN
+            ? ('把 ' + offN + ' 位已停用的作者各探一枪：扫到作品的自动恢复成追更中')
+            : '现在没有已停用的作者';
+    }
+
+    const emptyMsg = rowsAll.length ? '当前筛选没有匹配的作者' : '名单是空的，先在上面加几位';
+    // 横栏这边保留这张表（卡片模式下它被隐藏，但数据还留着）
     if (!rows.length) {
-        const msg = rowsAll.length ? '当前筛选没有匹配的作者' : '名单是空的，先在上面加几位';
-        tb.innerHTML = '<tr><td colspan="6" class="wv-empty">' + msg + '</td></tr>';
+        tb.innerHTML = '<tr><td colspan="6" class="wv-empty">' + emptyMsg + '</td></tr>';
+    } else {
+        tb.innerHTML = rows.map((r) => {
+            const st = wvTierTag(r);
+            const stop = wvStopTag(r);
+            const extra = r.fails ? ' <span class="wv-tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
+            const bulkTag = r.bulk ? ' <span class="wv-tag cool" title="正在把这位作者的历史作品整体补一遍；日志里会反复出现属于正常">全量中</span>' : '';
+
+            // 名字包成 <a>：中键 / Ctrl+点击可以「在新标签打开」，左键走应用内详情页
+            const href = '/#author=' + encodeURIComponent(r.uid);
+            const nm = r.in_lib
+                ? '<a class="wv-nm" href="' + href + '" data-uid="' + escapeHtml(r.uid) + '" title="打开「' +
+                  escapeHtml(r.nickname) + '」的主页"><b>' + escapeHtml(r.nickname) + '</b><i class="go">↗</i></a>'
+                : '<span class="wv-nm" title="还不在本地作品库里，暂时没有主页可跳"><b>' +
+                  escapeHtml(r.nickname) + '</b></span>';
+
+            // 「检查」一列叠两行：上次查过 / 下次大概什么时候。
+            // 停用的行第二行显示「下次自动探测」—— 停用不等于不管，每 7 天回探一枪。
+            const nextTxt = r.enabled
+                ? (r.next_check ? wvAgo(r.next_check) : '—')
+                : (r.probe_at ? wvAgo(r.probe_at) + '探' : '—');
+            const nextTip = r.enabled
+                ? '下次检查'
+                : (r.probe_at ? '下次自动探测（停用的作者每 7 天回探一次，探到作品自动恢复）'
+                              : '已停用，没有安排自动探测（可以点「探测」手动查一次）');
+            // 悬停里给到秒：用户要的是「作品发布时间精确到秒」，那也是分档的依据
+            const when = '<div class="wv-when">' +
+                '<span class="wv-when-l" title="上次检查：' + escapeHtml(r.last_scan || '—') + '">' +
+                    escapeHtml(wvShortTime(r.last_scan)) + '</span>' +
+                '<span class="wv-when-n" title="' + escapeHtml(nextTip) + '">' + nextTxt + '</span>' +
+                '</div>';
+
+            const lastPostTip = '最新作品发布于 ' + wvStamp(r.last_post) +
+                '（分档就是按这个时间算的，精确到秒）';
+            return '<tr class="wv-link' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
+                '<td>' + nm + (r.in_lib ? '' : ' <span class="wv-tag off">不在库</span>') + '</td>' +
+                '<td class="wv-num">' + (r.works || 0) + '</td>' +
+                '<td class="wv-num">' + (r.downloads || '—') + '</td>' +
+                '<td>' + when + '</td>' +
+                '<td><span title="' + escapeHtml(lastPostTip) + '">' + st + '</span>' +
+                    (stop ? ' ' + stop : '') + bulkTag + extra + '</td>' +
+                '<td class="wv-ops">' +
+                    '<button class="btn btn-mini" data-act="probe" data-uid="' + escapeHtml(r.uid) + '"' +
+                        ' title="立刻查一次这位作者（停用的也能查；因扫不到被停用的，查到作品会自动恢复追更）">探测</button>' +
+                    '<button class="btn btn-mini" data-act="toggle" data-uid="' + escapeHtml(r.uid) + '">' +
+                        (r.enabled ? '停用' : '启用') + '</button>' +
+                    '<button class="btn btn-mini" data-act="remove" data-uid="' + escapeHtml(r.uid) + '">移出</button>' +
+                '</td></tr>';
+        }).join('');
+    }
+
+    // 卡片
+    const box = document.getElementById('wvCards');
+    if (!box) return;
+    if (!rows.length) {
+        box.innerHTML = '<div class="wv-empty">' + emptyMsg + '</div>';
         return;
     }
-
-    tb.innerHTML = rows.map((r) => {
-        let t = WV_TIER_TAG[r.tier] || WV_TIER_TAG.hot;
-        if (r.tier === 'fixed' && r.interval) {
-            t = ['定', '每 ' + Math.round(r.interval / 60) + ' 分钟查一次', 'hot'];
-        }
-        let st = '<span class="wv-tag ' + t[2] + '" title="' + escapeHtml(t[1]) + '">' +
-                 '<i class="wv-dot"></i>' + t[0] + '档</span>';
-        if (!r.enabled) {
-            // 2026-11-13：扫不到的作者不再移出名单，改成停用；这里把原因说清楚，
-            // 免得用户以为是自己点错了。用橙色（.stop）而不是灰的 —— 灰的和「不在库」
-            // 那种次要标记一个色，用户在两三屏里根本找不到（他当天就没看见）。
-            const why = r.no_api
-                ? ('连续 ' + (r.rounds || 3) + ' 次扫不到作品，已自动停用。' +
-                   (r.probe_at ? wvAgo(r.probe_at) + '自动回探一次' : '会定期回探') +
-                   '，扫到就自动恢复 —— 也可以点「探测」立刻查')
-                : '手动停用：不再自动查新作品，但仍留在追更名单里（点「探测」可以查一次）';
-            st = '<span class="wv-tag stop" title="' + escapeHtml(why) + '">' +
-                 '<i class="wv-dot"></i>已停用</span>';
-        }
-        const extra = r.fails ? ' <span class="wv-tag off" title="失败重试中">' + r.fails + ' 失败</span>' : '';
-
-        // 名字包成 <a>：中键 / Ctrl+点击可以「在新标签打开」，左键走应用内详情页
-        const href = '/#author=' + encodeURIComponent(r.uid);
-        const nm = r.in_lib
-            ? '<a class="wv-nm" href="' + href + '" data-uid="' + escapeHtml(r.uid) + '" title="打开「' +
-              escapeHtml(r.nickname) + '」的主页"><b>' + escapeHtml(r.nickname) + '</b><i class="go">↗</i></a>'
-            : '<span class="wv-nm" title="还不在本地作品库里，暂时没有主页可跳"><b>' +
-              escapeHtml(r.nickname) + '</b></span>';
-
-        // 「检查」一列叠两行：上次查过 / 下次大概什么时候。
-        // 名单收窄后（右边要让给日志）再拆成两列会把作者名挤成「乌…」，
-        // 所以两列合一列、竖着排（2026-11-08）。
-        // 停用的行第二行显示「下次自动探测」—— 停用不等于不管，每 7 天回探一枪。
+    box.innerHTML = rows.map((r) => {
+        const stop = wvStopTag(r);
         const nextTxt = r.enabled
-            ? (r.next_check ? wvAgo(r.next_check) : '—')
-            : (r.probe_at ? wvAgo(r.probe_at) + '探' : '—');
-        const nextTip = r.enabled
-            ? '下次检查'
-            : (r.probe_at ? '下次自动探测（停用的作者每 7 天回探一次，探到作品自动恢复）'
-                          : '已停用，没有安排自动探测（可以点「探测」手动查一次）');
-        const when = '<div class="wv-when">' +
-            '<span class="wv-when-l" title="上次检查：' + escapeHtml(r.last_scan || '—') + '">' +
-                escapeHtml(wvShortTime(r.last_scan)) + '</span>' +
-            '<span class="wv-when-n" title="' + escapeHtml(nextTip) + '">' + nextTxt + '</span>' +
-            '</div>';
-
-        return '<tr class="wv-link' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
-            '<td>' + nm + (r.in_lib ? '' : ' <span class="wv-tag off">不在库</span>') + '</td>' +
-            '<td class="wv-num">' + (r.works || 0) + '</td>' +
-            '<td class="wv-num">' + (r.downloads || '—') + '</td>' +
-            '<td>' + when + '</td>' +
-            '<td>' + st + extra + '</td>' +
-            '<td class="wv-ops">' +
-                '<button class="btn btn-mini" data-act="probe" data-uid="' + escapeHtml(r.uid) + '"' +
-                    ' title="立刻查一次这位作者（停用的也能查；因扫不到被停用的，查到作品会自动恢复追更）">探测</button>' +
+            ? (r.next_check ? wvAgo(r.next_check) + '查' : '—')
+            : (r.probe_at ? wvAgo(r.probe_at) + '探' : '停用中');
+        return '<div class="wv-citem' + (r.enabled ? '' : ' wv-off') + '" data-uid="' + escapeHtml(r.uid) + '" tabindex="0">' +
+            '<div class="wv-ci-top">' +
+                '<span class="wv-ci-name" title="' + escapeHtml(r.nickname) + '">' + escapeHtml(r.nickname) + '</span>' +
+                wvTierTag(r) + (stop ? ' ' + stop : '') +
+            '</div>' +
+            '<div class="wv-ci-nums">' +
+                '<span><b>' + (r.works || 0) + '</b> 作品</span>' +
+                '<span><b>' + (r.downloads || 0) + '</b> 追更下载</span>' +
+            '</div>' +
+            '<div class="wv-ci-sub" title="最新作品发布于 ' + wvStamp(r.last_post) + '（分档按这个时间，精确到秒）">' +
+                '最新 ' + wvStamp(r.last_post) + '</div>' +
+            '<div class="wv-ci-sub2">下次 ' + nextTxt +
+                (r.bulk ? ' · <span class="wv-ci-bulk">全量中</span>' : '') +
+                (r.fails ? ' · ' + r.fails + ' 失败' : '') + '</div>' +
+            '<div class="wv-ci-ops">' +
+                '<button class="btn btn-mini" data-act="probe" data-uid="' + escapeHtml(r.uid) + '" title="立刻查一次">探测</button>' +
                 '<button class="btn btn-mini" data-act="toggle" data-uid="' + escapeHtml(r.uid) + '">' +
                     (r.enabled ? '停用' : '启用') + '</button>' +
                 '<button class="btn btn-mini" data-act="remove" data-uid="' + escapeHtml(r.uid) + '">移出</button>' +
-            '</td></tr>';
+            '</div></div>';
     }).join('');
 }
 
@@ -10432,55 +10640,59 @@ function wvBindOnce() {
     if (wvState.bound) return;
     wvState.bound = true;
 
-    // 名单：整行可点进详情；行内两颗按钮优先
+    // 名单：整行可点进详情；行内按钮优先。
+    // 横栏（tbody）和卡片（#wvCards）用的是同一套 data-act / data-uid，绑同一份逻辑。
+    const onListClick = (e) => {
+        const btn = e.target.closest('button[data-act]');
+        if (btn) {
+            const uid = btn.getAttribute('data-uid');
+            const act = btn.getAttribute('data-act');
+            if (act === 'toggle') wvPost({ action: 'toggle', uid: uid }, '已切换');
+            if (act === 'probe') {
+                // 手动探测：立刻把这位排进下一轮（停用的也能查，探到就自动恢复）。
+                // 不去改按钮文字 —— 回包后 wvPull 会把整张表重绘，改了就白改。
+                const row = ((wvState.data && wvState.data.authors) || [])
+                    .filter((r) => r.uid === uid)[0];
+                wvPost({ action: 'probe', uid: uid },
+                       '已排进下一轮：最多 1 分钟后查「' + (row ? row.nickname : uid) + '」');
+            }
+            if (act === 'remove') {
+                const row = ((wvState.data && wvState.data.authors) || [])
+                    .filter((r) => r.uid === uid)[0];
+                if (!confirm('把「' + (row ? row.nickname : uid) + '」移出追更名单？\n（已经下载的文件不受影响）')) return;
+                wvPost({ action: 'remove', uids: [uid] }, '已移出');
+            }
+            return;
+        }
+        const tr = e.target.closest('tr[data-uid], .wv-citem[data-uid]');
+        if (!tr) return;
+        const uid = tr.getAttribute('data-uid');
+        const who = ((wvState.data && wvState.data.authors) || [])
+            .filter((r) => r.uid === uid)[0];
+        // 点在名字那根 <a> 上且按了修饰键 / 中键 → 交给浏览器开新标签
+        if (e.target.closest('a.wv-nm') && (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0)) return;
+        e.preventDefault();
+        if (who && who.in_lib === false) {
+            showToast('「' + who.nickname + '」还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来');
+            return;
+        }
+        openAuthor(uid);
+    };
     const tb = document.getElementById('wvTbody');
-    if (tb) {
-        tb.addEventListener('click', (e) => {
-            const btn = e.target.closest('button[data-act]');
-            if (btn) {
-                const uid = btn.getAttribute('data-uid');
-                const act = btn.getAttribute('data-act');
-                if (act === 'toggle') wvPost({ action: 'toggle', uid: uid }, '已切换');
-                if (act === 'probe') {
-                    // 手动探测：立刻把这位排进下一轮（停用的也能查，探到就自动恢复）。
-                    // 不去改按钮文字 —— 回包后 wvPull 会把整张表重绘，改了就白改。
-                    const row = ((wvState.data && wvState.data.authors) || [])
-                        .filter((r) => r.uid === uid)[0];
-                    wvPost({ action: 'probe', uid: uid },
-                           '已排进下一轮：最多 1 分钟后查「' + (row ? row.nickname : uid) + '」');
-                }
-                if (act === 'remove') {
-                    const row = ((wvState.data && wvState.data.authors) || [])
-                        .filter((r) => r.uid === uid)[0];
-                    if (!confirm('把「' + (row ? row.nickname : uid) + '」移出追更名单？\n（已经下载的文件不受影响）')) return;
-                    wvPost({ action: 'remove', uids: [uid] }, '已移出');
-                }
-                return;
-            }
-            const tr = e.target.closest('tr[data-uid]');
-            if (!tr) return;
-            const uid = tr.getAttribute('data-uid');
-            const who = ((wvState.data && wvState.data.authors) || [])
-                .filter((r) => r.uid === uid)[0];
-            // 点在名字那根 <a> 上且按了修饰键 / 中键 → 交给浏览器开新标签
-            if (e.target.closest('a.wv-nm') && (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0)) return;
-            e.preventDefault();
-            if (who && who.in_lib === false) {
-                showToast('「' + who.nickname + '」还不在本地作品库里，没有主页可跳 —— 追更会照常下载，下完就能点进来');
-                return;
-            }
-            openAuthor(uid);
-        });
-        // 键盘可达：回车/空格进详情（tabindex 已经在生成时加过）
-        tb.addEventListener('keydown', (e) => {
-            if (e.key !== 'Enter' && e.key !== ' ') return;
-            const tr = e.target.closest('tr[data-uid]');
-            if (!tr) return;
-            if (e.target.closest('button')) return;
-            e.preventDefault();
-            tr.click();
-        });
-    }
+    if (tb) tb.addEventListener('click', onListClick);
+    const cards = document.getElementById('wvCards');
+    if (cards) cards.addEventListener('click', onListClick);
+    // 键盘可达：回车/空格进详情（tabindex 已经在生成时加过）
+    const onListKey = (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const tr = e.target.closest('tr[data-uid], .wv-citem[data-uid]');
+        if (!tr) return;
+        if (e.target.closest('button')) return;
+        e.preventDefault();
+        tr.click();
+    };
+    if (tb) tb.addEventListener('keydown', onListKey);
+    if (cards) cards.addEventListener('keydown', onListKey);
 
     // 账号池
     const acc = document.getElementById('wvAccBody');
@@ -10554,6 +10766,12 @@ function wvRefresh() { wvPull(); }
 
 function wvSaveCfg(okMsg) {
     const num = (id) => +((document.getElementById(id) || {}).value || 0);
+    // 档位间隔现在是「数字 + 单位」：900 秒 = 15 分钟，259200 秒 = 3 天。
+    // 存进去的永远是秒（后端只认秒），所以这里乘回单位。
+    const sec = (id) => {
+        const u = +(((document.getElementById(id + 'U') || {}).value) || 1);
+        return Math.round(num(id) * u);
+    };
     const auto = document.getElementById('wvSAuto');
     // 「追更内容」下拉已经删了，但服务端这个设置还在（默认 all）。保存时原样带回去，
     // 否则每存一次设置就把用户以前选过的值重置成 all。
@@ -10562,12 +10780,12 @@ function wvSaveCfg(okMsg) {
         action: 'settings',
         auto_start: !!(auto && auto.checked),
         settings: {
-            interval_boil: num('wvSBoil'),
-            interval_hot: num('wvSHot'),
-            interval_warm: num('wvSWarm'),
-            interval_cool: num('wvSCool'),
-            interval_chill: num('wvSChill'),
-            interval_frozen: num('wvSFrozen'),
+            interval_boil: sec('wvSBoil'),
+            interval_hot: sec('wvSHot'),
+            interval_warm: sec('wvSWarm'),
+            interval_cool: sec('wvSCool'),
+            interval_chill: sec('wvSChill'),
+            interval_frozen: sec('wvSFrozen'),
             max_per_round: num('wvSMax'),
             gap: num('wvSGap'),
             daily_budget: num('wvSBudget'),

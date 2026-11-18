@@ -57,20 +57,26 @@ class FakeDy:
         self.fail_all = fail_all
         self.empty_first = empty_first      # 前 N 枪返回空列表（模拟软限流）
         self.calls = []
+        self.cursors = []                   # 每次调用用的游标（全量接着翻的用例要看它）
         self.reqs = 0
 
-    def author_works(self, sec_uid, pages=1, retry=2, with_more=False):
+    def author_works(self, sec_uid, pages=1, retry=2, with_more=False, start_cursor="0"):
         self.calls.append((sec_uid, pages))
+        self.cursors.append(str(start_cursor))
         self.reqs += 1
         if self.fail_all:
             raise RuntimeError("HTTP 444")
         if len(self.calls) <= self.empty_first:
-            return ([], False) if with_more else []
+            return ([], False, "0") if with_more else []
         allw = self.works.get(sec_uid) or []
         n = max(1, pages) * 20
-        out = allw[:n]
-        # with_more：告诉调用方「翻满页数后还有没有更早的作品」（全量扫要它）
-        return (out, len(allw) > n) if with_more else out
+        # start_cursor：模拟抖音的 max_cursor = 已经翻过的条数（真实接口给的是时间游标，
+        # 这里只关心「从上次停下的地方继续」，用条数等价即可）
+        off = int(str(start_cursor or "0") or 0)
+        out = allw[off:off + n]
+        nxt = str(off + len(out))
+        # with_more：翻满页数后还有没有更早的作品（全量扫要它）+ 下次从哪接着翻
+        return (out, len(allw) > off + len(out), nxt) if with_more else out
 
 
 def mk_aweme(aid, ts, desc="d"):
@@ -110,6 +116,14 @@ chk("24h 内 1 条但 72h 内 3 条 -> 沸",
 chk("停更很久后刚发一条（老状态没有密度数据）-> 热，不会直接沸",
     W.tier_of({"last_post": now - 600}, CFG, now)[0] == "hot")
 chk("没有 last_post -> 热（刚加进来的按热档先查）", W.tier_of({}, CFG, now)[0] == "hot")
+
+# 2026-11-13 用户口径：分档看**作品发布时间**，不是我们下载它的时间。
+# 停更 200 天的人今天被我们补下一批老作品，last_new 是今天 —— 不能因此变沸/热。
+chk("200 天前的作品 + 今天刚下载 -> 冻档（不被下载时间拉热）",
+    W.tier_of({"last_post": now - 200 * 86400, "last_new": now,
+               "cad24": 5, "cad3": 5}, CFG, now)[0] == "frozen")
+chk("只有 last_ts（已处理到的作品发布时间）也能定档",
+    W.tier_of({"last_ts": now - 10 * 86400}, CFG, now)[0] == "cool")
 
 # 六档间隔：越冷越大，且必须严格递增（配错就是把作者晾在那儿）
 _seq = ["boil", "hot", "warm", "cool", "chill", "frozen"]
@@ -377,6 +391,29 @@ W.scan_round(dy, w, st, lib_d, {"d": "dirD"})
 chk("第二轮不再重复全量（没有新候选）", st["authors"]["d"]["downloads"] == sd["downloads"],
     st["authors"]["d"]["downloads"])
 
+print("\n[16b] 作品多：全量翻页要接着上次的游标往下翻（否则永远翻不到底）")
+# 60 条作品、每页 20、full_pages=1：要 3 轮才翻完。
+# 改之前每轮都从 "0" 开始，has_more 永远为真 → 每 60 秒重翻一轮，日志天天「还没翻到底」。
+w5 = base_watch(["e"])
+w5["authors"][0]["full_scan"] = True
+w5["authors"][0]["added_at"] = "T-E"
+w5["settings"] = dict(CFG)
+w5["settings"]["full_pages"] = 1
+many = {"SECe": [mk_aweme("e%02d" % i, int(now - i * 3600), "作品%d" % i) for i in range(60)]}
+st5 = fresh_state()
+dy5 = FakeDy(many)
+for _ in range(4):
+    W.scan_round(dy5, w5, st5, {"e": set()}, {"e": "dirE"})
+se = st5["authors"]["e"]
+# 每轮除了「全量深翻」还会先打一枪常规页（游标 0），所以只看非 0 的游标
+_nonzero = [c for c in dy5.cursors if c != "0"]
+chk("深翻用了 20、40 两个续翻游标（0 → 20 → 40）",
+    _nonzero == ["20", "40"], dy5.cursors)
+chk("翻完之后不再深翻（没有更多续翻游标）", len(_nonzero) == 2, _nonzero)
+chk("翻到底后收尾（bulk 结束、留 full_done_for）",
+    not se.get("bulk") and se.get("full_done_for") == "T-E",
+    (se.get("bulk"), se.get("full_done_for")))
+
 print("\n[17] 新加的作者插到队首；补不完时不会被立刻反复叫起来")
 w2 = base_watch(["p", "q"])
 w2["authors"][1]["full_scan"] = True
@@ -506,6 +543,23 @@ chk("手动探测排在到点的普通作者前面（一轮几百位，排后面
 W.clear_probe_flag("p")
 chk("消费掉之后不再重复触发",
     all(str(x.get("uid")) != "p" for x in W.which_authors_due(W.load_watch(), st3)))
+
+print("\n[18d] 一键探测停用：只排停用的，启用的不重复排，没 SEC_UID 的跳过")
+with open(W.WATCH_FILE, "w", encoding="utf-8") as f:
+    json.dump({"authors": [
+        {"uid": "on1", "sec_uid": "SECon1", "nickname": "N-on", "enabled": True},
+        {"uid": "off1", "sec_uid": "SECoff1", "nickname": "N-off1", "enabled": False},
+        {"uid": "off2", "sec_uid": "SECoff2", "nickname": "N-off2", "enabled": False},
+        {"uid": "nosec", "nickname": "N-nosec", "enabled": False},
+    ], "settings": dict(CFG)}, f, ensure_ascii=False)
+_n = W.request_probe_all(only_off=True)
+_w = W.load_watch()
+chk("只排了 2 位（没 SEC_UID 的跳过）", _n == 2, _n)
+chk("两位停用的都排上了",
+    all(any(a["uid"] == u and a.get("probe_now") for a in _w["authors"])
+        for u in ("off1", "off2")))
+chk("启用的那位没被排", not any(a["uid"] == "on1" and a.get("probe_now")
+                                for a in _w["authors"]))
 
 print("\n[19] 空描述同日两条：第二条不能被同名文件吞掉（2026-11-12 线上丢过一条）")
 DAY = "2026-11-11"

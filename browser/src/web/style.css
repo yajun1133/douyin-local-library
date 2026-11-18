@@ -6645,6 +6645,65 @@ body.gallery-open { overflow: hidden; }
     padding: 9px 12px; background: #fafbfc;
     border-bottom: 1px solid var(--border);
 }
+
+/* 筛选条右侧：排序 + 显示模式（2026-11-13 用户要求「最右边加一个转换显示模式」） */
+.wv-filter-tools {
+    display: flex; align-items: center; gap: 8px;
+    margin-left: auto; flex: 0 0 auto;
+}
+.wv-sortbox {
+    position: relative; display: inline-flex; align-items: center; gap: 5px;
+    height: 26px; padding: 0 6px 0 7px;
+    border: 1px solid var(--border); border-radius: 7px; background: #fff;
+    color: #64748b; cursor: pointer;
+}
+.wv-sortbox:hover { border-color: #cfd6e0; color: #334155; }
+.wv-sortbox svg {
+    width: 13px; height: 13px; flex: none;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round;
+}
+.wv-sortbox select {
+    appearance: none; border: 0; outline: 0; background: transparent;
+    font-size: 12px; color: #334155; padding: 0 14px 0 0; height: 24px;
+    cursor: pointer; font-family: inherit;
+}
+/* 自带的小三角：原生 select 箭头在深色/窄条里位置很飘 */
+.wv-sortbox::after {
+    content: ""; position: absolute; right: 7px; top: 50%; width: 5px; height: 5px;
+    border-right: 1.5px solid #94a3b8; border-bottom: 1.5px solid #94a3b8;
+    transform: translateY(-70%) rotate(45deg); pointer-events: none;
+}
+.wv-sortdir {
+    width: 26px; height: 26px; flex: none; border-radius: 7px;
+    border: 1px solid var(--border); background: #fff;
+    color: #475569; font-size: 13px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+}
+.wv-sortdir:hover { border-color: #cfd6e0; background: #f6f8fa; }
+
+/* 横栏 / 卡片：和作品分类那套分段控件同一手感（灰底轨道 + 白色选中块） */
+.wv-vswitch {
+    display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+    background: #eef1f5; border-radius: 8px; flex: none;
+}
+.wv-vswitch button {
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 22px; padding: 0 9px; border: 0; border-radius: 6px;
+    background: transparent; color: #64748b;
+    font-size: 12px; line-height: 1; cursor: pointer; white-space: nowrap;
+    font-family: inherit;
+}
+.wv-vswitch button svg {
+    width: 12px; height: 12px; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+.wv-vswitch button:hover { color: #334155; }
+.wv-vswitch button.active {
+    background: #fff; color: #1f2937; font-weight: 600;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .1);
+}
+
 /* 详情页那两处 !important 是给作品筛选压高度的，这里同样适用，不用再写 */
 
 /* 名单表格：**只有名单这一张**吸顶。账号池那张也是 .wv-tbl，但它在上面的面板里、
@@ -6686,6 +6745,70 @@ body.gallery-open { overflow: hidden; }
 }
 .wv-tbl tr.wv-link:hover .wv-nm .go { opacity: 1; }
 .wv-tbl .wv-empty { text-align: center; color: var(--text-muted); padding: 26px 0; font-size: 13px; }
+
+/* 追更名单这张表固定列宽（2026-11-13）：以前是 auto 布局，每列宽度跟着这一屏
+   内容的多少变，表头那几个字和下面那行永远差半格。定死之后表头就是列名，
+   数据也永远在同一列上，数字列还用了等宽数字，扫一列不会左右跳。 */
+.wv-tbl-watch { table-layout: fixed; }
+.wv-tbl-watch th, .wv-tbl-watch td { overflow: hidden; text-overflow: ellipsis; }
+.wv-tbl-watch th:first-child, .wv-tbl-watch td:first-child { padding-left: 16px; }
+.wv-tbl-watch th:last-child, .wv-tbl-watch td:last-child { padding-right: 16px; }
+/* 表头可点排序 */
+.wv-th-sort { cursor: pointer; user-select: none; }
+.wv-th-sort:hover { color: #334155; background: #f4f6f9; }
+
+/* 卡片模式：一位作者一张卡。和横栏同一份数据，只是换个看法（2026-11-13） */
+.wv-grid {
+    display: grid; gap: 10px; padding: 12px 14px;
+    grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+}
+.wv-citem {
+    border: 1px solid var(--border); border-radius: 10px; background: #fff;
+    padding: 10px 12px 9px; cursor: pointer; min-width: 0;
+    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.wv-citem:hover {
+    border-color: #d7dde6; box-shadow: 0 2px 10px rgba(15, 23, 42, .07);
+    transform: translateY(-1px);
+}
+.wv-citem:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.wv-citem.wv-off { background: #fcfcfd; }
+.wv-ci-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wv-ci-name {
+    font-weight: 600; font-size: 13px; color: #1f2937;
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+}
+.wv-ci-nums {
+    display: flex; gap: 12px; margin-top: 7px;
+    font-size: 11.5px; color: #94a3b8;
+}
+.wv-ci-nums b { color: #334155; font-weight: 650; font-variant-numeric: tabular-nums; }
+.wv-ci-sub {
+    margin-top: 4px; font-size: 11.5px; color: #64748b;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wv-ci-sub2 {
+    margin-top: 2px; font-size: 11.5px; color: #94a3b8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wv-ci-bulk { color: #1a5fb4; }
+.wv-ci-ops {
+    display: flex; gap: 4px; margin-top: 9px; padding-top: 8px;
+    border-top: 1px solid #f1f3f6;
+}
+.wv-ci-ops .btn-mini { padding: 0 8px; height: 22px; font-size: 11.5px; }
+
+/* 设置里「数字 + 单位」：900 秒不如 15 分钟直观（2026-11-13 用户要求） */
+.wv-amt { display: flex; align-items: center; gap: 6px; }
+.wv-amt input, .wv-amt input[type=number] { flex: 1 1 0; width: auto; min-width: 0; }
+.wv-amt select {
+    flex: 0 0 auto; width: 62px; height: 32px; padding: 0 4px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; color: #334155; font-size: 12px;
+    font-family: inherit; cursor: pointer;
+}
 
 /* 行内小标签（档位 / 停用 / 失败 / 不在库） */
 .wv-tag {

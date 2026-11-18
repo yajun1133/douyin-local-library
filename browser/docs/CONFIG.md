@@ -108,7 +108,7 @@ browser/
 | 文件 | 内容 | 丢了会怎样 |
 |---|---|---|
 | `data/watch.json` | `authors[]`（`uid` / `sec_uid` / `nickname` / `enabled` / `interval` / `added_at` / `full_scan`）、`settings{}`、号池 `accounts[]` | **丢名单**——得重新一个一个加。详情页那条横栏和追更面板读写的是**同一份** |
-| `data/watch_state.json` | 每位作者的 `seen[]`（判重用）/ `last_ts` / `next_check` / `tier` / `fails` / `downloads` / `last_scan`，以及 `bulk` / `bulk_more` / `full_done_for`（全量补齐的进度锚点） | 只是进度：会从「本地最新作品」重建基线，最多把已有的当新作品查一遍（不会重下，下载前按四层判重挡住） |
+| `data/watch_state.json` | 每位作者的 `seen[]`（判重用）/ `last_ts` / `next_check` / `tier` / `fails` / `downloads` / `last_scan`，以及 `bulk` / `bulk_more` / `bulk_cursor` / `bulk_rounds` / `full_done_for`（全量补齐的进度锚点） | 只是进度：会从「本地最新作品」重建基线，最多把已有的当新作品查一遍（不会重下，下载前按四层判重挡住） |
 
 `authors[]` 里两个字段专门管「全量补齐」：`full_scan:true`（加入时写入，表示还没全量扫过）+ `added_at`
 （`full_done_for == added_at` 才算做完，所以**同一位作者移出再加一次 = 重新全量扫一遍**）。
@@ -123,7 +123,8 @@ browser/
 | `per_author_pages` | 1 | 常规检查翻几页（一页 20 条，1 页够覆盖绝大多数日更） |
 | `backfill_pages` | 4 | 关机回来发现「整页都比基线新」时，往下补翻几页 |
 | `bulk_pages` | 10 | 本地**零作品**的作者首次补齐翻几页（≈200 条） |
-| `full_pages` | 40 | 「全量扫一遍」（新加进追更）翻几页（≈800 条）；翻满未到底由 `bulk_more` 接力 |
+| `full_pages` | 40 | 「全量扫一遍」（新加进追更）**每轮**翻几页（≈800 条）；游标存在 `state.bulk_cursor`，下一轮从上次停下的位置接着往下翻，翻到底才收尾 |
+| `bulk_max_rounds` | 25 | 全量补齐最多翻几轮（25 × 800 ≈ 2 万条）。到顶就收尾，避免作品特别多的号把当天额度吃光 |
 | `gap` / `gap_jitter` | 2.0 秒 / 0.3 | 每个作者之间的间隔与抖动（防风控，别低于 2） |
 | `daily_budget` | 20000（**80000**） | **每个号**每天的请求上限，实际总额度 = 该值 × 可用号数；到了当天就停 |
 | `rest_every` / `rest_secs` | 100 / 20 | 每查 N 位歇 N 秒 |

@@ -49,14 +49,70 @@ CREATE TABLE IF NOT EXISTS author (
 """
 
 
+class _SharedConn:
+    """常驻连接的壳子：调用方照旧 `c.execute(...)` / `with c:` / `finally: c.close()`，
+    但 close() 什么都不做 —— 真正断开由进程退出（或 close_shared()）负责。
+
+    为什么要包一层：SQLite 在 WAL 模式下，**最后一个连接关掉的那一刻会把
+    `-wal` / `-shm` 两个临时文件 unlink 掉**。原来 record_folder() 是「一个作者文件夹
+    开一次、关一次」，全量扫描 2361 个文件夹就是 2361 次开关 → 每个作者各 unlink 一次。
+    在本机的沙箱里，Python 的 unlink 被换成「移进回收站」，于是一次全量扫描往回收站
+    丢几千个 download_log.db-wal / .db-shm（2026-11-13 用户在回收站看到的那一堆就是它）。
+    改成整进程一个连接后，一次扫描最多只留 1 对，而且主库内容完全不受影响。
+    """
+
+    __slots__ = ("_raw",)
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, *a, **kw):
+        return self._raw.execute(*a, **kw)
+
+    def executescript(self, *a, **kw):
+        return self._raw.executescript(*a, **kw)
+
+    def __enter__(self):
+        self._raw.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._raw.__exit__(*exc)
+
+    def close(self):        # noqa: D401 —— 故意什么都不做
+        pass
+
+
+_CONN = None
+
+
 def _connect():
-    """每次开连接（扫描器和网页是两个进程/线程，长连接容易踩锁）。"""
+    """取常驻连接（首次调用时建，之后复用）。
+
+    扫描器和网页是两个进程，各自的连接互不影响；同进程内靠 _LOCK 串行化，
+    所以 check_same_thread=False 是安全的（所有读写都走 _LOCK）。
+    """
+    global _CONN
+    if _CONN is not None:
+        return _CONN
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    c = sqlite3.connect(DB_PATH, timeout=10)
+    c = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=NORMAL")
     c.executescript(_SCHEMA)
-    return c
+    _CONN = _SharedConn(c)
+    return _CONN
+
+
+def close_shared():
+    """显式断开常驻连接（进程收尾用；不调也没事，退出时自然会关）。"""
+    global _CONN
+    if _CONN is not None:
+        try:
+            _CONN._raw.close()
+        except Exception:
+            pass
+        _CONN = None
 
 
 def _delete_missing(c, folder, rels):

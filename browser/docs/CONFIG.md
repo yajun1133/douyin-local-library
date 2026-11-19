@@ -189,7 +189,7 @@ browser/
 | `server.py` | HTTP 服务：网页、媒体、全部 `/api/*`、回收站、文件管理、批量任务 | ✅ `python src/server.py` |
 | `scanner.py` | 扫 `downnnnnnnn` 生成 `data/data.json`（增量，只扫 mtime 变了的文件夹） | ✅ `python scanner.py [--full]` |
 | `watcher.py` | `ReadDirectoryChangesW` 监听下载目录，攒批后通知扫描 | 作为模块被 server 用 |
-| `download_db.py` | SQLite 下载记录库（`data/download_log.db`），「多久没下载过」全靠它 | ✅ 直接跑打印总量 |
+| `download_db.py` | SQLite 下载记录库（`data/download_log.db`），「多久没下载过」全靠它。**进程内常驻单连接**（2026-11-13 改）：原来每个作者文件夹开一次关一次，全量扫描会触发 2361 次 SQLite 关库 → `-wal`/`-shm` 被安全删除钩子丢进回收站几千个 | ✅ 直接跑打印总量 |
 | `folder_merge.py` | 同一 uid 多个文件夹的自动归一（`os.rename`，不复制） | ✅ `python folder_merge.py [--apply]`（默认 dry-run） |
 | `paths.py` | 唯一路径源 | ✅ 打印当前生效路径 |
 | `douk_config.py` | 读写 DouK 的 `settings.json` / pyc 常量 | ✅ 需 **3.12**，stdin 收 JSON |

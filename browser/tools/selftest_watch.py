@@ -756,6 +756,24 @@ chk("普通序号 `_1` 仍然是序号（图文第 2 张）",
     _p_seq.get("seq") == "1" and not _p_seq.get("id"), _p_seq)
 chk("没后缀的照旧", _p_plain.get("desc") == "#ootd" and not _p_plain.get("id"), _p_plain)
 
+print("\n[24] 从文件名认作品 ID（描述为空的作品只能靠它认出「本地已有」）")
+# 2026-11-13：批量补下载时成片报「已删不补」，其实是空描述作品在 is_known() 里
+# 没有名字可比，本地明明有也被当成「DouK 下过、本地没有」。ID 才是唯一身份。
+import tempfile as _tf     # noqa: E402
+_td = _tf.mkdtemp(prefix="aids_")
+for _n in ("2026-10-25-某作者-7700480853021192891.mp4",        # 描述为空 → 名字就是 ID
+           "2026-10-27-某作者-#甜妹_7701306048880338042.mp4",   # 撞名保护的后缀
+           "2026-10-28-某作者-7700819404212352697_1.jpg",       # 图文第 2 张
+           "2026-10-09-某作者-#ootd_1.jpg",                     # 小序号不是 ID
+           "2026-10-09-某作者-随便写点东西.mp4"):               # 普通名字没有 ID
+    open(os.path.join(_td, _n), "wb").close()
+_aids = W.local_aids(_td)
+chk("名字里就是 ID 的能认出来", "7700480853021192891" in _aids, _aids)
+chk("撞名后缀 `_<ID>` 能认出来", "7701306048880338042" in _aids, _aids)
+chk("图文 `_<ID>_1` 能认出来", "7700819404212352697" in _aids, _aids)
+chk("小序号 `_1` 不会被当成 ID", len(_aids) == 3, _aids)
+chk("目录不存在不炸", W.local_aids(os.path.join(_td, "没有这个目录")) == set())
+
 print("\n========================")
 
 if FAIL:

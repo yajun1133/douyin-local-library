@@ -101,6 +101,10 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None,
         _ke = (_d, _kd)
         exact_cnt[_ke] = exact_cnt.get(_ke, 0) + 1
     print("接口返回 %d 条 | 本地索引 %d 条 | 目录 %s" % (len(al), len(local), folder))
+    # 文件名里带作品 ID 的那些（描述为空的作品只能靠它认，见 watch_core.local_aids）
+    disk_ids = W.local_aids(author_dir)
+    if disk_ids:
+        print("本地文件名里带作品 ID 的 %d 条" % len(disk_ids))
 
     dl = sk = fail = gone = 0
     misses = []
@@ -108,6 +112,7 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None,
         ct = int(a.get("create_time") or 0)
         date = datetime.fromtimestamp(ct).strftime("%Y-%m-%d")
         desc = a.get("desc") or ""
+        aid = str(a.get("aweme_id") or "")
         _dk = W.key_of_desc(desc, 64)
         _n_same = exact_cnt.get((date, _dk), 1)
         _loc_same = sum(1 for k in (date_idx.get(date) or ())
@@ -116,24 +121,37 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None,
         # 下载器（和 DouK）会把它们写到同一个路径 → 只剩最后一条。
         # --fill-dups：这种情况下不看「DouK 下过 = 你删了」，按缺的条数补齐。
         _dup_day = (fill_dups and _n_same > 1 and _loc_same < _n_same)
+        # **第一道判据：本地文件名的 ID 就是他**。描述为空的作品在 is_known() 里
+        # 没有名字可比（直接返回 False），以前会一路滚到「DouK 下过、本地没有」，
+        # 被误当成「你删过」——盘上明明还在（2026-11-13 用户看到成片「已删不补」）。
+        if aid and aid in disk_ids:
+            sk += 1
+            continue
+        # **第二道判据：同一天、同一描述，本地条数够就算都在。**
+        # 描述为空的作品名字里既没字也没 ID（DouK 落成 `日期-昵称.mp4`），名字层认不出来，
+        # 只能按条数对账：接口这天有 3 条、本地也有 3 条 → 都在，谁也别补。
+        # 少一条才是真缺（同名覆盖），交给下面的 _dup_day 决定要不要补。
+        if _loc_same >= _n_same:
+            sk += 1
+            continue
         if not _dup_day and W.is_known(local, date_idx, date, desc, 64,
                                        bare_total=bare_cnt.get((date, W.deco_strip(_dk)), 1),
                                        same_total=_n_same):
             sk += 1
             continue
-        aid = str(a.get("aweme_id") or "")
-        # DouK 记录里有、本地却没有 = 用户自己删掉的。**别再补回来**：
-        # 删作品就是为了不要它，补下载工具不该跟用户对着干。
+        # DouK 记录里有、本地也没有（名字层和 ID 层都没认出来）= 大概率你自己删掉的。
+        # **别再补回来**：删作品就是为了不要它，补下载工具不该跟用户对着干。
         # （同一天重名的那批例外：那是撞名覆盖，不是用户删的，见上面的 _dup_day）
         if not _dup_day and aid in douk_ids:
             gone += 1
-            print("  - %s  %s  （DouK 下过、本地没有 → 当你删了，跳过）"
+            print("  - %s  %s  （DouK 有记录、本地也没有 → 当你删过，跳过）"
                   % (date, desc[:40]))
             continue
         misses.append(date)
         files, size, err = W.download_aweme(dy, a, author_dir, nick, 64)
         if files:
             dl += 1
+            disk_ids.add(aid)
             k = W.key_of_desc(desc, 64)
             local.add((date, k))
             date_idx.setdefault(date, []).append(k)
@@ -144,7 +162,7 @@ def backfill_one(dy, lib_idx, lib_folders, uid, sec, nick, pages, douk_ids=None,
         else:
             sk += 1
     print("-" * 64)
-    print("汇总：新增 %d  跳过 %d  失败 %d  已删不补 %d  (接口总数 %d)"
+    print("汇总：新增 %d  跳过 %d  失败 %d  DouK有但本地无 %d  (接口总数 %d)"
           % (dl, sk, fail, gone, len(al)))
     if misses:
         print("  本地原本缺失的日期：%s" % ", ".join(sorted(set(misses))))

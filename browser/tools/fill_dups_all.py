@@ -159,12 +159,12 @@ def main():
                 pass
         el = time.time() - t0
         avg = el / i
-        log("   小计 新增 %d / 跳过 %d / 失败 %d / 已删不补 %d ｜ 累计新增 %d ｜ "
+        log("   小计 新增 %d / 跳过 %d / 失败 %d / DouK有但本地无 %d ｜ 累计新增 %d ｜ "
             "还剩约 %.0f 分钟" % (r[0], r[1], r[2], r[3], prog["totals"][0],
                               avg * (len(todo) - i) / 60.0))
 
     log("=" * 60)
-    log("全部完成：新增 %d 条  跳过 %d 条  失败 %d 条  已删不补 %d 条（共 %d 位作者）"
+    log("全部完成：新增 %d 条  跳过 %d 条  失败 %d 条  DouK有但本地无 %d 条（共 %d 位作者）"
         % (prog["totals"][0], prog["totals"][1], prog["totals"][2],
            prog["totals"][3], len(done)))
     return 0

@@ -464,6 +464,35 @@ def ellipse_split(key):
     return key[:m.start()], key[m.end():]
 
 
+_AID_IN_NAME_RE = re.compile(r"(?:^|[-_])(\d{15,20})(?:_\d+)?(?=\.[A-Za-z0-9]+$)")
+
+
+def local_aids(author_dir):
+    """这个作者目录里，文件名带作品 ID 的那些 ID 的集合（只读文件名，不碰文件内容）。
+
+    为什么需要它：**描述为空的作品在 is_known() 里没有身份**（`douk_filter_name("")`
+    为假，函数直接返回 False），名字层永远对不上。于是「本地明明有」也会走到
+    「DouK 下过但本地没有」那一支，被当成「用户删过」（2026-11-13 用户在批量
+    补下载的日志里看到成片的「已删不补」，实际文件都在盘上）。
+    ID 才是作品的唯一身份 —— 下载时文件名里就写进去了，最可靠：
+      · `日期-昵称-<ID>.mp4`（描述为空时 DouK 的落名）
+      · `日期-昵称-描述_<ID>.mp4`（撞名保护加的后缀）
+      · `日期-昵称-<ID>_1.jpg`（图文第 2 张起带序号）
+    """
+    out = set()
+    try:
+        with os.scandir(author_dir) as it:
+            for e in it:
+                if not e.is_file():
+                    continue
+                m = _AID_IN_NAME_RE.search(e.name)
+                if m:
+                    out.add(m.group(1))
+    except OSError:
+        pass
+    return out
+
+
 def build_date_index(local):
     """{(date, key)} → {date: [key, ...]}。模糊判重只在同一天内做。"""
     out = {}

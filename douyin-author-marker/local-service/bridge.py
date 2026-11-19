@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -572,6 +573,10 @@ IDX = AuthorIndex()
 
 
 # ------------------------------------------------------------ 待下载区（队列）
+class QueuePersistenceError(RuntimeError):
+    """队列落盘失败；调用方必须回滚内存状态，不能返回成功。"""
+
+
 class Queue:
     """浏览器插件 → 管理后台的「待下载区」。
 
@@ -643,12 +648,15 @@ class Queue:
                 if isinstance(d, dict):
                     raw_items = d.get("items") or []
                     raw_undo = d.get("undo") or []
+                    self.data["items"] = list(raw_items)
+                    self.data["undo"] = list(raw_undo)
+                    self.data["cleared_at"] = d.get("cleared_at") or ""
+                    before = copy.deepcopy(self.data)
                     self.data["items"] = self._dedup(raw_items)
                     self.data["undo"] = self._dedup(raw_undo)
-                    self.data["cleared_at"] = d.get("cleared_at") or ""
                     if len(self.data["items"]) != len(raw_items):
                         log("待下载区：清理了 %d 条重复" % (len(raw_items) - len(self.data["items"])))
-                        self._save()
+                        self._save_or_rollback(before)
         except Exception as e:
             log("待下载区读取失败：", e)
 
@@ -663,6 +671,7 @@ class Queue:
             return 0
         fixed = 0
         with self.lock:
+            before = copy.deepcopy(self.data)
             for it in self.data["items"]:
                 uid = str(it.get("uid") or "").strip()
                 sec = str(it.get("sec_uid") or "").strip()
@@ -688,7 +697,7 @@ class Queue:
                 if changed:
                     fixed += 1
             if fixed:
-                self._save()
+                self._save_or_rollback(before)
         if fixed:
             log("待下载区：用本地库补全了 %d 条的昵称/资料" % fixed)
         return fixed
@@ -700,9 +709,18 @@ class Queue:
             os.replace(tmp, self.path)
         except Exception as e:
             log("待下载区写入失败：", e)
+            raise QueuePersistenceError(str(e)) from e
+
+    def _save_or_rollback(self, before):
+        try:
+            self._save()
+        except Exception:
+            self.data = before
+            raise
 
     def add(self, item: dict) -> tuple:
         with self.lock:
+            before = copy.deepcopy(self.data)
             for it in self.data["items"]:
                 if self._same(item, it):
                     # 已经在了：把新拿到的信息补进去（uid 往往是建档后才有）
@@ -720,11 +738,11 @@ class Queue:
                         it["note"] = item.get("note") or it.get("note") or ""
                         changed = True
                     if changed:
-                        self._save()
+                        self._save_or_rollback(before)
                     return it, False          # 已在队列里
             item["added_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             self.data["items"].insert(0, item)
-            self._save()
+            self._save_or_rollback(before)
             return item, True
 
     def snapshot(self) -> dict:
@@ -739,11 +757,12 @@ class Queue:
 
     def clear(self) -> dict:
         with self.lock:
+            before = copy.deepcopy(self.data)
             self.data["undo"] = list(self.data["items"])
             n = len(self.data["items"])
             self.data["items"] = []
             self.data["cleared_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            self._save()
+            self._save_or_rollback(before)
             return {"cleared": n, **self.snapshot()}
 
     def remove(self, uid: str = "", sec_uid: str = "", nickname: str = "") -> dict:
@@ -755,6 +774,7 @@ class Queue:
             return {"ok": False, "error": "缺少 uid / sec_uid / nickname", "removed": 0,
                     **self.snapshot()}
         with self.lock:
+            before = copy.deepcopy(self.data)
             keep, gone = [], []
             for it in self.data["items"]:
                 iu = str(it.get("uid") or "").strip()
@@ -766,7 +786,7 @@ class Queue:
             if not gone:
                 return {"ok": True, "removed": 0, "name": "", **self.snapshot()}
             self.data["items"] = keep
-            self._save()
+            self._save_or_rollback(before)
             first = gone[0]
             return {"ok": True, "removed": len(gone),
                     "name": first.get("nickname") or first.get("uid") or "",
@@ -774,10 +794,11 @@ class Queue:
 
     def undo_clear(self) -> dict:
         with self.lock:
+            before = copy.deepcopy(self.data)
             self.data["items"] = list(self.data["undo"]) + list(self.data["items"])
             self.data["undo"] = []
             self.data["cleared_at"] = ""
-            self._save()
+            self._save_or_rollback(before)
             return self.snapshot()
 
 
@@ -926,6 +947,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/queue":
             try:
                 QUEUE.backfill(IDX)
+            except QueuePersistenceError as e:
+                return self._json({"ok": False, "error": "待下载区保存失败：%s" % e}, 500)
             except Exception as e:  # noqa: BLE001
                 log("待下载区补全失败：", e)
             snap = QUEUE.snapshot()
@@ -1048,6 +1071,8 @@ class Handler(BaseHTTPRequestHandler):
             s = IDX.rebuild()
             try:
                 s["queue_fixed"] = QUEUE.backfill(IDX)
+            except QueuePersistenceError as e:
+                return self._json({"ok": False, "error": "待下载区保存失败：%s" % e}, 500)
             except Exception as e:  # noqa: BLE001
                 log("待下载区补全失败：", e)
             return self._json({"ok": True, **s})

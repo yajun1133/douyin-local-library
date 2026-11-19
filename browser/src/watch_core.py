@@ -32,6 +32,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths  # noqa: E402
+from user_data_store import merge_save_user_data, read_validated_user_data  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -666,77 +667,26 @@ def save_watch(d):
 NO_API_TAG = "扫不到"       # 连续查不到作品时自动挂上的标签，恢复后自动摘掉
 
 
-def _read_user_data():
-    """读 user_data.json。读不出来返回 None —— 调用方必须放弃写入。
-
-    绝不能把「读失败」当成空库写回去：那是全库标注被清空的事故形态，
-    server.merge_save_user_data 里专门防过同一件事，这里保持一样的口径。
-    """
-    try:
-        with open(paths.USER_DATA, "r", encoding="utf-8") as fp:
-            d = json.load(fp)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(d, dict):
-        return None
-    if "accounts" not in d and d:
-        d = {"accounts": d}     # 结构自愈：正确结构是 {"accounts": {...}}
-    return d
-
-
-def _write_user_data(d):
-    """原子写：先写同目录临时文件再 os.replace，写一半断电也不会留下半个 JSON。"""
-    import tempfile
-    tmp_fd, tmp_path = tempfile.mkstemp(
-        dir=os.path.dirname(paths.USER_DATA), prefix=".user_data.", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-            json.dump(d, fp, ensure_ascii=False, indent=2)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp_path, paths.USER_DATA)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-
-
 def tag_author(uid, tag, add=True):
-    """给某位作者加/摘一个标签，只动 tags 字段，其它标注原样保留。
-
-    追更进程是独立进程，调不到 server 的合并写，所以自带一份最小实现：
-    · 读不出来 → 放弃（返回 False），绝不覆盖；
-    · 已经是目标状态 → 不写盘（少写一次就少一次和 server 抢文件的窗口）；
-    · 没有其它标签了就把 tags 字段整个摘掉，别留下 `"tags": []` 这种噪音。
-    """
+    """给某位作者加/摘一个标签，只提交 tags 字段，不回传其它旧标注。"""
     uid = str(uid or "").strip()
     tag = (tag or "").strip()
     if not uid or not tag:
         return False
-    d = _read_user_data()
-    if d is None:
-        return False
-    accs = d.setdefault("accounts", {})
-    rec = accs.get(uid)
-    if not isinstance(rec, dict):
-        rec = {}
-    tags = [str(t).strip() for t in (rec.get("tags") or []) if str(t).strip()]
-    has = tag in tags
-    if add and not has:
-        tags.append(tag)
-    elif not add and has:
-        tags = [t for t in tags if t != tag]
-    else:
-        return False
-    if tags:
-        rec["tags"] = tags
-    else:
-        rec.pop("tags", None)
-    accs[uid] = rec
     try:
-        _write_user_data(d)
+        d = read_validated_user_data()
+        rec = (d.get("accounts") or {}).get(uid)
+        if not isinstance(rec, dict):
+            rec = {}
+        tags = [str(t).strip() for t in (rec.get("tags") or []) if str(t).strip()]
+        has = tag in tags
+        if add and not has:
+            tags.append(tag)
+        elif not add and has:
+            tags = [t for t in tags if t != tag]
+        else:
+            return False
+        merge_save_user_data({"accounts": {uid: {"tags": tags if tags else None}}})
         return True
     except Exception as e:
         log("· 写标签失败（%s / %s）：%s" % (uid, tag, e))

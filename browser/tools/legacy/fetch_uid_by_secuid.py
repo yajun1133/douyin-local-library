@@ -41,6 +41,7 @@ import sys  # noqa: E402
 sys.path.insert(0, _TOOLS)                       # tools/ 下的 blacklist、downloaded
 sys.path.insert(0, os.path.join(_ROOT, "src"))   # src/paths.py 统一路径
 import paths  # noqa: E402
+from user_data_store import merge_save_user_data, read_validated_user_data  # noqa: E402
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))   # 仅用于拼本目录内的东西
 DATA_JSON = os.path.join(SCRIPT_DIR, "data.json")
@@ -208,44 +209,29 @@ def main():
     data = json.load(open(DATA_JSON, encoding="utf-8"))
     accounts = data.get("accounts", {})
 
-    ud = {"accounts": {}}
-    if os.path.isfile(USER_DATA):
-        try:
-            ud = json.load(open(USER_DATA, encoding="utf-8")) or {"accounts": {}}
-        except ValueError:
-            ud = {"accounts": {}}
+    ud = read_validated_user_data(USER_DATA)
     uacc = ud.setdefault("accounts", {})
 
     filled = 0
     not_found = 0
+    filled_accounts = {}
     for sec, info in all_result.items():
         uid = str(info["uid"])
         if uid in accounts:
             if not accounts[uid].get("sec_uid") and not (uacc.get(uid, {}) or {}).get("sec_uid"):
                 uacc.setdefault(uid, {})["sec_uid"] = sec
+                filled_accounts[uid] = {"sec_uid": sec}
                 filled += 1
         else:
             not_found += 1
 
-    # 原子写（备份 + 临时文件替换）
-    import tempfile, shutil
+    # 保留显式备份；普通写入统一走跨进程合并入口。
+    import shutil
     from datetime import datetime
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = USER_DATA + ".bak-" + stamp
     shutil.copy2(USER_DATA, backup)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=SCRIPT_DIR, prefix=".user_data.", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-            json.dump(ud, fp, ensure_ascii=False, indent=2)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp_path, USER_DATA)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    merge_save_user_data({"accounts": filled_accounts}, path=USER_DATA)
 
     print(f"\n[回填] 补入 {filled} 个 sec_uid（uid 不在 data.json 的 {not_found} 个，可能是新账号）")
     print(f"[备份] {os.path.basename(backup)}")

@@ -34,6 +34,7 @@ import sys  # noqa: E402
 sys.path.insert(0, _TOOLS)                       # tools/ 下的 blacklist、downloaded
 sys.path.insert(0, os.path.join(_ROOT, "src"))   # src/paths.py 统一路径
 import paths  # noqa: E402
+from user_data_store import merge_save_user_data, read_validated_user_data  # noqa: E402
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))   # 仅用于拼本目录内的东西
 USER_DATA = paths.USER_DATA
@@ -163,21 +164,10 @@ def main():
     _os.makedirs(_bak_dir, exist_ok=True)
     backup = _os.path.join(_bak_dir, _os.path.basename(USER_DATA) + ".bak-" + stamp)
     shutil.copy2(USER_DATA, backup)
-    # 原子替换写盘，防止中途崩溃留下半截 JSON
-    import tempfile
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=HERE, prefix=".user_data.", suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=2)
-            fp.flush()
-            os.fsync(fp.fileno())
-        os.replace(tmp_path, USER_DATA)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    # 统一入口会在文件锁内重读最新数据并归一化，避免提交此脚本之前的旧快照。
+    merge_save_user_data({}, path=USER_DATA)
+    data = read_validated_user_data(USER_DATA)
+    accounts = data["accounts"]
 
     after = build_groups(accounts)
     after_multi = [g for g in after.values() if len(g) > 1]

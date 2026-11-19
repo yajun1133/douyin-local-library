@@ -30,122 +30,22 @@ import urllib.parse
 import urllib.request
 from urllib.parse import urlparse, unquote, parse_qs
 
-# 写 user_data.json 的互斥锁：ThreadingHTTPServer 是多线程的，多个保存请求
-# 并发到达会同时读写同一文件，导致互相覆盖甚至写出半截 JSON。所有「读-改-写」
-# 必须作为一个整体持锁执行（见 merge_save_user_data），否则并发保存仍会丢更新。
-_WRITE_LOCK = threading.Lock()
+from user_data_store import (
+    UserDataError,
+    merge_save_user_data as _merge_save_user_data,
+)
+
+
+def merge_save_user_data(partial):
+    """保留主服务调用接口；统一存储模块负责跨进程锁、字段合并与安全写盘。"""
+    return _merge_save_user_data(partial, path=USER_DATA, before_write=_auto_backup)
+
 
 # 内存索引的锁。ThreadingHTTPServer 是多线程的：一个请求线程在
 # `for uid, a in CACHE["accounts"].items()` 遍历时，另一个线程重建索引，
 # 会抛 RuntimeError: dictionary changed size during iteration（表现为随机 500 / 空响应）。
 # 规则：重建一律在 _CACHE_LOCK 内完成，并且只替换引用、不原地 append。
 _CACHE_LOCK = threading.RLock()
-
-
-class UserDataError(RuntimeError):
-    """标注文件读不出/结构坏，拒绝写盘。宁可这次保存失败，也不能把整库覆盖掉。"""
-
-
-def merge_save_user_data(partial):
-    """在锁内完成「读磁盘 → 合并 body → 归一化 → 原子写」，返回修正的 alt 条数。
-
-    partial 是前端 POST 的 body（含 accounts 和可选 alt_group_names）。
-    合并语义：partial.accounts 里出现的账号按字段 merge 进磁盘现有；没出现的保留。
-    锁必须覆盖整个读-改-写，否则并发请求各读各写，后写的覆盖先写的（丢更新）。
-    """
-    with _WRITE_LOCK:
-        _auto_backup()          # 写之前先留一份快照（5 分钟一次）
-        try:
-            with open(USER_DATA, "r", encoding="utf-8") as fp:
-                disk = json.load(fp)
-        except FileNotFoundError:
-            disk = {}           # 首次运行，允许新建
-        except (OSError, ValueError) as e:
-            # 关键：文件存在却读不出来（被杀毒/索引器占用、JSON 只写了半截）时，
-            # **绝不能退化成空库继续写**。否则一次瞬时 OSError 就会把整份标注
-            # 覆盖成只剩本次提交的那几个账号，正是历史丢数据事故的形态。
-            raise UserDataError("user_data.json 读取失败，已中止保存：%s" % e)
-        if not isinstance(disk, dict):
-            raise UserDataError("user_data.json 顶层不是对象，已中止保存")
-        # 结构自愈：正确结构是 {"accounts": {uid: 标注}}。曾有外部脚本把 accounts
-        # 的内容误写成顶层（丢包装层），这里检测到就自动包回，别让坏结构扩散。
-        if "accounts" not in disk and disk:
-            disk = {"accounts": disk}
-
-        merged = dict(disk.get("accounts") or {})
-        for uid, ua in (partial.get("accounts") or {}).items():
-            # ua 为 null = **把整个账号从标注里删掉**（配合「删除博主 + 加入黑名单」用）。
-            # 只删某个字段是 {字段: null}，两者语义不同，别混：
-            # 账号删了以后这个 uid 在 user_data 里彻底消失，重扫后不会再冒成合成账号。
-            if ua is None:
-                merged.pop(uid, None)
-                continue
-            base = dict(merged.get(uid) or {})
-            if isinstance(ua, dict):
-                for k, v in ua.items():
-                    # null = 显式删除该字段（合并写无法靠「键不存在」表达删除，
-                    # 否则解除大小号关联会被磁盘旧值顶回来，表现为「解除了还在」）
-                    if v is None:
-                        base.pop(k, None)
-                    else:
-                        base[k] = v
-            merged[uid] = base
-        disk["accounts"] = merged
-
-        if isinstance(partial.get("alt_group_names"), dict):
-            names = dict(disk.get("alt_group_names") or {})
-            for k, v in partial["alt_group_names"].items():
-                # null / 空串 = 显式删除这个自定义文件夹名。合并写无法用「键不存在」
-                # 表达删除，否则前端清空名字后刷新又变回旧名字。
-                if v is None or (isinstance(v, str) and not v.strip()):
-                    names.pop(k, None)
-                else:
-                    names[k] = v
-            disk["alt_group_names"] = names
-
-        # 账号状态说明：{ 状态名: 用户自己写的理解 }，和 accounts 平级。
-        # 按 key 合并（前端只发改过的那个状态），null / 空串 = 删除。
-        # 这是用户一个一个字敲的内容，绝不能因为某次没带上就整份清掉。
-        if isinstance(partial.get("status_notes"), dict):
-            notes = dict(disk.get("status_notes") or {})
-            for k, v in partial["status_notes"].items():
-                if not isinstance(k, str) or not k:
-                    continue
-                if v is None or (isinstance(v, str) and not v.strip()):
-                    notes.pop(k, None)
-                elif isinstance(v, str):
-                    notes[k] = v
-            if notes:
-                disk["status_notes"] = notes
-            else:
-                disk.pop("status_notes", None)
-
-        # 2026-11-08：这里原来有一条「状态属于『不能设更新频率』的账号就 pop 掉 update_freq」
-        # 的不变式。撤销理由：
-        #   ① 它是**无提示的数据销毁** —— 用户只是把某个号标成「不好看了 / 私密账号」，
-        #      之前设好的频率就被抹掉了，改回「正常」也回不来，看着像「数据自己变了」；
-        #   ② 它本来想解决的问题（这类账号不该出现在「更新频率」筛选里）在
-        #      `_t_freq()` 里已经解决了：那个过滤器碰到 locked 状态直接 return False。
-        # 所以频率值一律保留，只在筛选/计数时排除。
-        fixed = normalize_alt_groups(disk["accounts"])
-
-        import tempfile
-        # 临时文件放到标注同目录（os.replace 无需跨盘），名字唯一，避免并发互抢
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=os.path.dirname(USER_DATA), prefix=".user_data.", suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-                json.dump(disk, fp, ensure_ascii=False, indent=2)
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.replace(tmp_path, USER_DATA)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        return fixed
 
 # ============ 路径配置 ============
 import paths
@@ -268,61 +168,7 @@ def save_settings(partial):
                 pass
             raise
         _SETTINGS_CACHE = s
-        # 「不能设置更新频率」的状态列表变了：把这些状态的账号已有的 update_freq 属性清掉，
-        # 不只是前端显示「永不更新」文字，而是真正把属性取消（注销/封号/卖号等没有更新可言）。
-        if new_disabled is not None:
-            _clear_freq_for_disabled_status(new_disabled)
         return s
-
-
-def _clear_freq_for_disabled_status(disabled_statuses):
-    """把状态命中禁用列表的账号的 update_freq 属性清掉（写回 user_data.json + 内存缓存）。
-
-    设置里勾了「注销/禁言封号/卖号等不能设更新频率」后，这些账号若之前设过更新频率，
-    会残留一个失效的 day/3天/周/月，这里一次性清空，让「永不更新」名副其实。
-    """
-    disabled = set(disabled_statuses or [])
-    if not disabled:
-        return
-    with _WRITE_LOCK:
-        try:
-            with open(USER_DATA, "r", encoding="utf-8") as fp:
-                disk = json.load(fp)
-        except (OSError, ValueError):
-            return   # 读不出就不动标注，别因清频率把整库搞坏
-        if not isinstance(disk, dict):
-            return
-        accounts = disk.get("accounts") or {}
-        changed = False
-        for uid, ua in accounts.items():
-            if not isinstance(ua, dict):
-                continue
-            st = str(ua.get("status") or "").strip()
-            if st in disabled and ua.get("update_freq"):
-                ua.pop("update_freq", None)
-                changed = True
-        if not changed:
-            return
-        import tempfile
-        try:
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                dir=os.path.dirname(USER_DATA), prefix=".user_data.", suffix=".tmp")
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fp:
-                json.dump(disk, fp, ensure_ascii=False, indent=2)
-                fp.flush()
-                os.fsync(fp.fileno())
-            os.replace(tmp_path, USER_DATA)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    # 同步内存缓存（下次 /api/authors 直接反映，不用重启）
-    with _CACHE_LOCK:
-        for uid, a in (CACHE.get("accounts") or {}).items():
-            if isinstance(a, dict) and str(a.get("status") or "").strip() in disabled:
-                a.pop("update_freq", None)
 
 
 def effective_path(kind, default):
@@ -2675,66 +2521,6 @@ def _load_user_data_locked(force=False):
     # 的原地修改带上（删字段的比较基准就不准了）
     CACHE["user_applied"] = {u: dict(v) for u, v in new_acc.items() if isinstance(v, dict)}
     return True
-
-
-def normalize_alt_groups(accounts):
-    """把 alt_accounts 归一化成「组内全连」：同一组的所有成员互相关联。
-
-    数据结构：accounts[uid]["alt_accounts"] = [同组其他所有人的 uid]（不含自己）
-    不变量：x ∈ alt[y] ⇔ y ∈ alt[x]，且同组任意两人看到的其他成员集合完全相同。
-
-    老逻辑只写「两端」，会出现「A 关联了 B、C，但 B 只知道 A」。这里用并查集求
-    连通分量，再把每个分量重写成团，顺带修掉空数组等脏数据。
-    幂等：重复调用不会再有变化。返回被修正的条目数。
-    """
-    parent = {}
-
-    def find(x):
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    for uid, ua in accounts.items():
-        find(uid)
-        if not isinstance(ua, dict):
-            continue
-        arr = ua.get("alt_accounts")
-        if not isinstance(arr, list):
-            continue
-        for v in arr:
-            if isinstance(v, str) and v and v != uid:
-                union(uid, v)
-
-    groups = {}
-    for u in list(parent.keys()):
-        groups.setdefault(find(u), []).append(u)
-
-    changed = 0
-    for members in groups.values():
-        if len(members) < 2:
-            ua = accounts.get(members[0])
-            if isinstance(ua, dict) and isinstance(ua.get("alt_accounts"), list) and not ua["alt_accounts"]:
-                ua.pop("alt_accounts", None)
-                changed += 1
-            continue
-        ms = sorted(members)
-        for u in ms:
-            others = [x for x in ms if x != u]
-            ua = accounts.get(u)
-            if not isinstance(ua, dict):
-                ua = accounts[u] = {}
-            cur = ua.get("alt_accounts")
-            if not isinstance(cur, list) or sorted(cur) != others:
-                ua["alt_accounts"] = others
-                changed += 1
-    return changed
 
 
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv"}
@@ -6006,6 +5792,8 @@ class Handler(BaseHTTPRequestHandler):
             self._dispatch_post()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except UserDataError as e:
+            self._send_json({"ok": False, "error": str(e)}, 500)
         except Exception as e:      # noqa: BLE001
             traceback.print_exc()
             try:
@@ -6034,6 +5822,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 标注变了：下次请求重新叠加，星标/标签/状态立刻生效
                 CACHE["user_mtime"] = -1
                 self._send_json({"ok": True})
+            except UserDataError as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
             return
